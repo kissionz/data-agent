@@ -1,5 +1,43 @@
 # Errors
 
+## [ERR-20260623-007] impeccable context script path
+
+**Logged**: 2026-06-23T15:33:49+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+The `impeccable` skill documentation referenced `.claude/skills/impeccable/scripts/context.mjs`, but this Codex workspace does not mirror skills into `.claude/skills`.
+
+### Error
+
+```text
+Error: Cannot find module '/Users/kissionz/Documents/data-agent/.claude/skills/impeccable/scripts/context.mjs'
+```
+
+### Context
+
+- Command attempted: `node .claude/skills/impeccable/scripts/context.mjs`
+- The installed skill exists at `/Users/kissionz/.codex/skills/impeccable`.
+
+### Suggested Fix
+
+When using filesystem-backed Codex skills from this workspace, run helper scripts from the skill's installed source path, for example `node /Users/kissionz/.codex/skills/impeccable/scripts/context.mjs`.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: PRODUCT.md, DESIGN.md
+
+### Resolution
+
+- **Resolved**: 2026-06-23T15:33:49+08:00
+- **Notes**: Re-ran the context script from `/Users/kissionz/.codex/skills/impeccable/scripts/context.mjs` and continued implementation.
+
+---
+
 ## [ERR-20260623-006] npm start script assumption
 
 **Logged**: 2026-06-23T15:24:06+08:00

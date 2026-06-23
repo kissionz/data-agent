@@ -23,6 +23,7 @@ import {
   IconTable,
   IconThumbDown,
   IconThumbUp,
+  IconUsers,
   IconX,
 } from '@tabler/icons-react'
 import {
@@ -38,10 +39,11 @@ import { SemanticGovernance } from './features/semantic'
 import type { SemanticDimension as UiDimension, SemanticMetric as UiMetric } from './features/semantic'
 import { OperationsCenter } from './features/operations'
 import { DataSourceCenter } from './features/data-sources'
+import { CollaborationHub } from './features/collaboration'
 import { createChatBiApplicationService } from './application'
 import type { ActorContext, PublicRunView } from './contracts'
 
-type Page = 'workbench' | 'semantic' | 'dataSources' | 'operations'
+type Page = 'workbench' | 'semantic' | 'dataSources' | 'collaboration' | 'operations'
 type RunStatus = 'waiting_input' | 'understanding' | 'querying' | 'completed' | 'needs_clarification' | 'failed'
 type ResultView = 'chart' | 'table' | 'evidence'
 
@@ -119,6 +121,7 @@ function GlobalRail({ page, onPage, onOpenMenu }: { page: Page; onPage: (page: P
     { id: 'workbench' as const, label: '问答工作台', icon: IconMessage },
     { id: 'semantic' as const, label: '语义中心', icon: IconDatabase },
     { id: 'dataSources' as const, label: '数据源中心', icon: IconTable },
+    { id: 'collaboration' as const, label: '协作资产', icon: IconUsers },
     { id: 'operations' as const, label: '运营中心', icon: IconChartLine },
   ]
   return (
@@ -590,6 +593,7 @@ export function App() {
       return <SemanticGovernance metrics={governanceMetrics} dimensions={governanceDimensions} canEdit canApprove onCreateMetric={() => undefined} onSaveMetric={() => undefined} onRequestApproval={() => undefined} />
     }
     if (page === 'dataSources') return <DataSourceCenter />
+    if (page === 'collaboration') return <CollaborationHub />
     return <OperationsCenter />
   }, [page])
 

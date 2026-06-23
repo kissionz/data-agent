@@ -26,7 +26,7 @@
 
 | 层 | 当前目录 | 当前能力 | 后续演进 |
 |---|---|---|---|
-| UI | `src/App.tsx`、`src/features/*` | 工作台、数据源中心、语义中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
+| UI | `src/App.tsx`、`src/features/*` | 工作台、数据源中心、语义中心、协作资产中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
 | Contracts | `src/contracts/*` | `AnalysisIR v1`、`PublicRunView`、API envelope、审计事件、错误对象、错误码目录、SSE 事件和 schema 草案 | 抽为 `packages/contracts`，使用 TypeBox 生成 OpenAPI |
 | Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；依赖 persistence 端口 | 接检索、Planner、Query Gateway adapter |
 | Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口、内存 adapter、本地 JSON 文件 adapter | SQLite/PostgreSQL/Redis adapter 与 migration |
@@ -35,6 +35,8 @@
 本地 BFF router 支持 `/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify` 和 `POST /v1/runs/{id}/cancel`。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需真实认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
 
 数据源中心当前是 F02 的前端治理切片：用 fixture 表达只读连接、凭据引用、元数据目录、字段分类、样本策略、质量门禁和同步记录，并通过组件测试锁定筛选与连接测试反馈。它尚未接入真实连接器、扫描调度、血缘、枚举采样或 Schema 变更审批；这些能力应在后续 `DataSourceService` 与 `MetadataScanner` adapter 中落地。
+
+协作资产中心当前是 F12 的前端治理切片：用 fixture 表达会话资产、验证案例、问题模板和订阅，展示收藏、归档、分享范围、订阅频率、审核人、版本快照和审计事件，并通过组件测试锁定搜索、状态筛选、收藏反馈和审核中不可订阅规则。它尚未接入真实资产持久化、分享链接、接收者重新鉴权、通知发送或订阅调度；这些能力应在后续 `CollaborationAssetService`、`ShareAuthorization` 与 `NotificationScheduler` adapter 中落地。
 
 ## 2. 系统上下文与边界
 

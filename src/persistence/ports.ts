@@ -1,10 +1,11 @@
 import type { Conversation, Run } from '../domain'
-import type { AnalysisIR, AuditEvent } from '../contracts'
+import type { AnalysisIR, AuditEvent, QueryExecutionSummary } from '../contracts'
 
 export interface StoredRunRecord {
   run: Run
   executedQuery: boolean
   analysisIr?: AnalysisIR
+  queryExecution?: QueryExecutionSummary
   audit: AuditEvent[]
   requestId: string
   traceId: string

@@ -46,9 +46,17 @@ describe('ChatBI application service', () => {
       resultId: result!.id,
       columnId: 'net_revenue',
     })
+    expect(response.data.queryExecution).toMatchObject({
+      dialect: 'postgresql',
+      status: 'executed',
+      appliedGuards: expect.arrayContaining(['tenant_scope', 'read_only_ast', 'budget_limit']),
+    })
+    expect(response.data.queryExecution?.cacheKey).toMatch(/^qcache_/)
+    expect(JSON.stringify(response.data.queryExecution)).not.toContain('SELECT')
     expect(response.data.audit.map((event) => event.type)).toEqual([
       'question.accepted',
       'planner.ir_created',
+      'compiler.plan_created',
       'query.started',
       'query.completed',
       'result.ready',

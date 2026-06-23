@@ -50,6 +50,13 @@ describe('ChatBI local BFF router', () => {
         '/v1/runs/{runId}/clarify': expect.any(Object),
         '/v1/runs/{runId}/events': expect.any(Object),
       },
+      components: {
+        schemas: {
+          QueryExecutionSummary: expect.objectContaining({
+            additionalProperties: false,
+          }),
+        },
+      },
     })
   })
 
@@ -75,6 +82,11 @@ describe('ChatBI local BFF router', () => {
     expect(firstBody).toMatchObject({ ok: true })
     expect((secondBody.data as { runId: string }).runId).toBe((firstBody.data as { runId: string }).runId)
     expect((firstBody.data as { executedQuery: boolean }).executedQuery).toBe(true)
+    expect((firstBody.data as { queryExecution: { cacheKey: string; sqlFingerprint: string } }).queryExecution).toMatchObject({
+      cacheKey: expect.stringMatching(/^qcache_/),
+      sqlFingerprint: expect.any(String),
+    })
+    expect(JSON.stringify((firstBody.data as { queryExecution: unknown }).queryExecution)).not.toContain('SELECT')
   })
 
   it('gets run snapshots and rejects cross-workspace reads with safe 403', () => {

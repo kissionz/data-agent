@@ -67,6 +67,22 @@ export interface AnalysisIR {
   }
 }
 
+export type QueryDialect = 'postgresql' | 'snowflake'
+
+export interface QueryExecutionSummary {
+  dialect: QueryDialect
+  sqlFingerprint: string
+  cacheKey: string
+  permissionDigest: string
+  dataVersion: string
+  estimatedRows: number
+  estimatedScanBytes: number
+  timeoutMs: number
+  maxRows: number
+  appliedGuards: string[]
+  status: 'executed' | 'blocked'
+}
+
 export interface AuditEvent {
   id: string
   at: string
@@ -75,6 +91,8 @@ export interface AuditEvent {
     | 'planner.ir_created'
     | 'planner.clarification_required'
     | 'security.denied'
+    | 'compiler.plan_created'
+    | 'query.blocked'
     | 'query.started'
     | 'query.completed'
     | 'query.cancelled'
@@ -99,6 +117,7 @@ export interface PublicRunView {
   version: number
   executedQuery: boolean
   analysisIr?: AnalysisIR
+  queryExecution?: QueryExecutionSummary
   clarification?: Clarification
   result?: RunResult
   error?: PublicApiError

@@ -59,6 +59,7 @@ describe('SSE and error contracts', () => {
     expect(events.map((event) => event.event)).toEqual([
       'question.accepted',
       'planner.ir_created',
+      'compiler.plan_created',
       'query.started',
       'query.completed',
       'result.ready',

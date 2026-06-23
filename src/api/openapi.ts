@@ -86,6 +86,36 @@ export const openApiDocument = {
   components: {
     schemas: {
       AnalysisIR: analysisIrJsonSchema,
+      QueryExecutionSummary: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'dialect',
+          'sqlFingerprint',
+          'cacheKey',
+          'permissionDigest',
+          'dataVersion',
+          'estimatedRows',
+          'estimatedScanBytes',
+          'timeoutMs',
+          'maxRows',
+          'appliedGuards',
+          'status',
+        ],
+        properties: {
+          dialect: { enum: ['postgresql', 'snowflake'] },
+          sqlFingerprint: { type: 'string', minLength: 1, description: '原始 SQL 不出现在 PublicRunView，仅暴露稳定指纹。' },
+          cacheKey: { type: 'string', minLength: 1 },
+          permissionDigest: { type: 'string', minLength: 1 },
+          dataVersion: { type: 'string', minLength: 1 },
+          estimatedRows: { type: 'integer', minimum: 0 },
+          estimatedScanBytes: { type: 'integer', minimum: 0 },
+          timeoutMs: { type: 'integer', minimum: 1 },
+          maxRows: { type: 'integer', minimum: 1 },
+          appliedGuards: { type: 'array', items: { type: 'string' } },
+          status: { enum: ['executed', 'blocked'] },
+        },
+      },
     },
   },
 } as const

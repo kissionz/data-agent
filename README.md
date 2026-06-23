@@ -2,7 +2,7 @@
 
 面向企业经营分析的自然语言数据问答工作台。当前仓库交付的是第一阶段成果：按照 PRD 与 UI 规范完成的 React 前端工作台、数据源治理、语义治理、协作资产与运营中心页面，以及可测试的 TypeScript 领域 mock 基座。
 
-当前阶段不伪装成生产后端。SSO、真实数据源连接、持久化、Query Gateway、SQL 编译、审计存储、模型网关和评测流水线仍需在后续阶段接入。
+当前阶段不伪装成生产后端。SSO、真实数据源连接、生产持久化、生产 Query Gateway、审计存储、模型网关和评测流水线仍需在后续阶段接入。
 
 ## 当前已实现
 
@@ -21,6 +21,7 @@
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
 - 运行事件流：`GET /v1/runs/{id}/events` 的 SSE 契约、事件序列化、`Last-Event-ID` 续传和工作空间边界检查。
+- 本地编译执行边界：Analysis IR 到只读 SQL 计划、租户/工作区/业务域守卫注入、SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。
 - 持久化端口：conversation、run、idempotency 和 audit events 已抽象为 repository interface，并提供内存 adapter 与本地 JSON 文件 adapter。
 
@@ -110,7 +111,7 @@ pnpm build
 - Fastify/TypeBox API BFF、生产 SSE 长连接、PostgreSQL/Redis 持久化、租户/组织/工作空间模型。
 - OIDC/SAML/SCIM、RBAC + ABAC、策略变更实时生效。
 - 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化。
-- Analysis IR 契约包、Planner、确定性 SQL Compiler、Query Gateway。
+- Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。
 - 真实协作资产持久化、通知发送、导出水印、分享二次鉴权、缓存权限失效。
 - Model Gateway、评测中心、黄金集回归、灰度发布与回滚。
 - Playwright E2E、性能/SLO、安全与多租户隔离测试。

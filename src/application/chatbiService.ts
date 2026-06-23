@@ -11,6 +11,7 @@ import { attachRun } from '../domain'
 import { emptyResult, partialTrendResult, trendResult } from '../mocks'
 import { createInMemoryChatBiPersistence } from '../persistence/memory'
 import type { ChatBiPersistence, StoredRunRecord } from '../persistence/ports'
+import { compileAnalysisQuery, executeReadOnlyQuery } from '../query'
 import {
   ANALYSIS_IR_VERSION,
   CONTRACT_VERSION,
@@ -202,6 +203,7 @@ export function createChatBiApplicationService(
         version: stored.run.version,
         executedQuery: stored.executedQuery,
         analysisIr: stored.analysisIr,
+        queryExecution: stored.queryExecution,
         clarification: stored.run.clarification,
         result: stored.run.result,
         error: stored.run.error ? toPublicError(stored.run.error) : undefined,
@@ -330,6 +332,8 @@ export function createChatBiApplicationService(
       }
 
       const analysisIr = makeIr(request, run.id, /区域|城市/.test(run.question) ? 'breakdown' : 'trend', { executedQuery: true })
+      const compiledPlan = compileAnalysisQuery({ ir: analysisIr, actor: request.actor })
+      const execution = executeReadOnlyQuery({ plan: compiledPlan, actor: request.actor })
       run = transitionRun(run, { type: 'QUERY_STARTED', at: now() })
       const result = selectResult(run.question)
       run = transitionRun(run, { type: 'RESULT_READY', result, at: now() })
@@ -339,11 +343,13 @@ export function createChatBiApplicationService(
         traceId,
         executedQuery: true,
         analysisIr,
+        queryExecution: execution.summary,
         audit: [
           ...auditEvents,
           audit('planner.ir_created', request.actor, run.id, 'Analysis IR 已创建并通过语义、权限和预算校验。'),
-          audit('query.started', request.actor, run.id, '查询网关开始执行。'),
-          audit('query.completed', request.actor, run.id, '查询完成，生成可引用结果集。'),
+          audit('compiler.plan_created', request.actor, run.id, `确定性 SQL 计划已创建，指纹 ${execution.summary.sqlFingerprint}。`),
+          audit('query.started', request.actor, run.id, '查询网关开始执行，只读与预算门禁已生效。'),
+          audit('query.completed', request.actor, run.id, `查询完成，缓存键 ${execution.summary.cacheKey}。`),
           audit('result.ready', request.actor, run.id, '确定性答案已从结果集生成。'),
         ],
       }
@@ -388,16 +394,20 @@ export function createChatBiApplicationService(
           },
         }
         assertAnalysisIR(analysisIr)
+        const compiledPlan = compileAnalysisQuery({ ir: analysisIr, actor: request.actor })
+        const execution = executeReadOnlyQuery({ plan: compiledPlan, actor: request.actor })
         const nextStored: StoredRunRecord = {
           ...stored,
           run,
           executedQuery: true,
           analysisIr,
+          queryExecution: execution.summary,
           audit: [
             ...stored.audit,
             audit('planner.ir_created', request.actor, run.id, '澄清结果已绑定到新版 Analysis IR。'),
-            audit('query.started', request.actor, run.id, '澄清后查询开始执行。'),
-            audit('query.completed', request.actor, run.id, '澄清后查询完成。'),
+            audit('compiler.plan_created', request.actor, run.id, `澄清后 SQL 计划已创建，指纹 ${execution.summary.sqlFingerprint}。`),
+            audit('query.started', request.actor, run.id, '澄清后查询开始执行，只读与预算门禁已生效。'),
+            audit('query.completed', request.actor, run.id, `澄清后查询完成，缓存键 ${execution.summary.cacheKey}。`),
             audit('result.ready', request.actor, run.id, '答案已生成。'),
           ],
         }

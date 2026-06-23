@@ -1,0 +1,117 @@
+import { describe, expect, it } from 'vitest'
+import { ANALYSIS_IR_VERSION, type ActorContext, type AnalysisIR } from '../contracts'
+import { assertReadOnlySql, compileAnalysisQuery, executeReadOnlyQuery } from '../query'
+
+const actor: ActorContext = {
+  tenantId: 'tenant_demo',
+  workspaceId: 'workspace_sales',
+  userId: 'user_lin',
+  roles: ['business_user'],
+  businessDomainId: 'sales',
+  semanticVersion: 'sales-semantic-2026.06.1',
+  locale: 'zh-CN',
+  timezone: 'Asia/Shanghai',
+}
+
+function ir(patch: Partial<AnalysisIR> = {}): AnalysisIR {
+  return {
+    schemaVersion: ANALYSIS_IR_VERSION,
+    irId: 'ir_query_001',
+    revision: 1,
+    mode: 'trusted',
+    semanticVersion: actor.semanticVersion,
+    intent: 'trend',
+    metricIds: ['net_revenue'],
+    dimensionIds: ['order_date'],
+    filters: [],
+    timeRange: {
+      kind: 'relative',
+      expression: 'last_12_complete_months',
+      timezone: 'Asia/Shanghai',
+      grain: 'month',
+    },
+    limit: 500,
+    assumptions: ['使用认证指标。'],
+    safety: {
+      requiresClarification: false,
+      executedQuery: true,
+      permissionChecked: true,
+      budgetChecked: true,
+    },
+    ...patch,
+  }
+}
+
+describe('deterministic SQL compiler and query gateway', () => {
+  it('compiles Analysis IR into deterministic read-only SQL with tenant and workspace guards', () => {
+    const first = compileAnalysisQuery({ ir: ir(), actor })
+    const second = compileAnalysisQuery({ ir: ir(), actor })
+
+    expect(first.sql).toContain('SELECT')
+    expect(first.sql).toContain('f.tenant_id = $1')
+    expect(first.sql).toContain('f.workspace_id = $2')
+    expect(first.sql).toContain('f.business_domain_id = $3')
+    expect(first.parameters.slice(0, 3)).toEqual(['tenant_demo', 'workspace_sales', 'sales'])
+    expect(first.sqlFingerprint).toBe(second.sqlFingerprint)
+    expect(first.appliedGuards).toEqual(expect.arrayContaining(['read_only_ast', 'budget_limit']))
+  })
+
+  it('parameterizes filter values and rejects SQL control tokens', () => {
+    const safe = compileAnalysisQuery({
+      ir: ir({
+        dimensionIds: ['region'],
+        filters: [{
+          dimensionId: 'region',
+          operator: 'eq',
+          values: ['华东'],
+          source: 'user',
+        }],
+      }),
+      actor,
+    })
+
+    expect(safe.sql).toContain('r.region_name = $5')
+    expect(safe.sql).not.toContain('华东')
+    expect(safe.parameters).toContain('华东')
+
+    expect(() => compileAnalysisQuery({
+      ir: ir({
+        filters: [{
+          dimensionId: 'region',
+          operator: 'eq',
+          values: ["华东'; drop table users; --"],
+          source: 'user',
+        }],
+      }),
+      actor,
+    })).toThrow('unsafe SQL control tokens')
+  })
+
+  it('rejects non-read-only SQL and multiple statements at the gateway boundary', () => {
+    expect(() => assertReadOnlySql('delete from orders')).toThrow('SELECT')
+    expect(() => assertReadOnlySql('select * from orders; drop table orders')).toThrow('multiple SQL statements')
+    expect(() => assertReadOnlySql('select * from orders where id = 1')).not.toThrow()
+  })
+
+  it('blocks over-budget plans and returns a public-safe execution summary for allowed plans', () => {
+    const plan = compileAnalysisQuery({ ir: ir(), actor })
+    const execution = executeReadOnlyQuery({ plan, actor })
+
+    expect(execution.summary).toMatchObject({
+      dialect: 'postgresql',
+      sqlFingerprint: plan.sqlFingerprint,
+      permissionDigest: plan.permissionDigest,
+      status: 'executed',
+    })
+    expect(execution.summary.cacheKey).toMatch(/^qcache_/)
+    expect(JSON.stringify(execution.summary)).not.toContain('SELECT')
+
+    const overBudget = compileAnalysisQuery({
+      ir: ir(),
+      actor,
+      budget: { maxScanBytes: 10 },
+    })
+    expect(() => executeReadOnlyQuery({ plan: overBudget, actor })).toThrow('scan estimate exceeds budget')
+  })
+})
+

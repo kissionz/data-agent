@@ -111,6 +111,7 @@ describe('ChatBI persistence ports', () => {
     expect(persistence.listAuditEvents(created.data.runId).map((event) => event.type)).toEqual([
       'question.accepted',
       'planner.ir_created',
+      'compiler.plan_created',
       'query.started',
       'query.completed',
       'result.ready',

@@ -20,6 +20,19 @@
 
 生产演进时，模块按 PRD 边界拆为 Conversation、Retrieval、Planner、Semantic、Compiler、Query Gateway、Result、Evaluation、Audit 服务；API 和事件契约保持不变。
 
+### 1.1 当前仓库落地状态
+
+当前代码仍是单仓 Vite/TypeScript 项目，但已经形成四层边界：
+
+| 层 | 当前目录 | 当前能力 | 后续演进 |
+|---|---|---|---|
+| UI | `src/App.tsx`、`src/features/*` | 工作台、语义中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
+| Contracts | `src/contracts/*` | `AnalysisIR v1`、`PublicRunView`、API envelope、审计事件、错误对象和 schema 草案 | 抽为 `packages/contracts`，使用 TypeBox 生成 OpenAPI |
+| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查 | 接持久化、检索、Planner、Query Gateway adapter |
+| BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、Node server adapter 源码、CORS/状态码映射测试 | 迁移到 `apps/api` Fastify + SSE + 认证中间件 |
+
+本地 BFF router 支持 `/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify` 和 `POST /v1/runs/{id}/cancel`。它是生产 API 的契约基线，不是最终运行时；生产环境仍需真实认证、持久化、SSE、审计落库和网关部署。
+
 ## 2. 系统上下文与边界
 
 ```mermaid

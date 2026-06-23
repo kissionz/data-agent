@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   IconAdjustments,
   IconArchive,
-  IconArrowDown,
   IconArrowUp,
   IconBrain,
   IconChartLine,
@@ -12,8 +11,6 @@ import {
   IconDatabase,
   IconDownload,
   IconHelp,
-  IconHome,
-  IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarRightCollapse,
   IconMenu2,
   IconMessage,
@@ -21,7 +18,6 @@ import {
   IconPlus,
   IconSearch,
   IconSend2,
-  IconSettings,
   IconShieldCheck,
   IconSparkles,
   IconTable,
@@ -41,10 +37,11 @@ import {
 import { SemanticGovernance } from './features/semantic'
 import type { SemanticDimension as UiDimension, SemanticMetric as UiMetric } from './features/semantic'
 import { OperationsCenter } from './features/operations'
+import { DataSourceCenter } from './features/data-sources'
 import { createChatBiApplicationService } from './application'
 import type { ActorContext, PublicRunView } from './contracts'
 
-type Page = 'workbench' | 'semantic' | 'operations'
+type Page = 'workbench' | 'semantic' | 'dataSources' | 'operations'
 type RunStatus = 'waiting_input' | 'understanding' | 'querying' | 'completed' | 'needs_clarification' | 'failed'
 type ResultView = 'chart' | 'table' | 'evidence'
 
@@ -121,6 +118,7 @@ function GlobalRail({ page, onPage, onOpenMenu }: { page: Page; onPage: (page: P
   const nav = [
     { id: 'workbench' as const, label: '问答工作台', icon: IconMessage },
     { id: 'semantic' as const, label: '语义中心', icon: IconDatabase },
+    { id: 'dataSources' as const, label: '数据源中心', icon: IconTable },
     { id: 'operations' as const, label: '运营中心', icon: IconChartLine },
   ]
   return (
@@ -591,6 +589,7 @@ export function App() {
     if (page === 'semantic') {
       return <SemanticGovernance metrics={governanceMetrics} dimensions={governanceDimensions} canEdit canApprove onCreateMetric={() => undefined} onSaveMetric={() => undefined} onRequestApproval={() => undefined} />
     }
+    if (page === 'dataSources') return <DataSourceCenter />
     return <OperationsCenter />
   }, [page])
 

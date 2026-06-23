@@ -1,5 +1,43 @@
 # Errors
 
+## [ERR-20260623-006] npm start script assumption
+
+**Logged**: 2026-06-23T15:24:06+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+Browser smoke verification initially failed because the project does not define an `npm start` script.
+
+### Error
+
+```text
+npm error Missing script: "start"
+```
+
+### Context
+
+- Command attempted: `npm start -- --host 127.0.0.1 --port 4183`
+- The project defines `dev`, `build`, `test`, `test:watch`, and `preview` scripts in `package.json`.
+
+### Suggested Fix
+
+For local Vite browser checks in this repo, use `npm run dev -- --host 127.0.0.1 --port <port>` or `npm exec vite -- --host ...`.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: package.json
+
+### Resolution
+
+- **Resolved**: 2026-06-23T15:24:06+08:00
+- **Notes**: Restarted with `npm run dev -- --host 127.0.0.1 --port 4183` and completed browser smoke verification.
+
+---
+
 ## [ERR-20260623-005] browser bundle imported node persistence adapter
 
 **Logged**: 2026-06-23T00:00:00+08:00

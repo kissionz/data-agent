@@ -37,7 +37,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   background: var(--surface);
 }
 
-.app-shell.page-semantic, .app-shell.page-operations { grid-template-columns: 68px minmax(0, 1fr); }
+.app-shell.page-semantic, .app-shell.page-operations, .app-shell.page-dataSources { grid-template-columns: 68px minmax(0, 1fr); }
 .global-rail { position: relative; z-index: 40; display: flex; flex-direction: column; align-items: center; border-right: 1px solid var(--border); background: #fbfcfe; padding: 12px 0; }
 .brand-mark { width: 44px; height: 44px; display: grid; place-items: center; border: 0; border-radius: 10px; color: white; background: var(--blue); cursor: pointer; }
 .rail-nav { display: grid; gap: 8px; margin-top: 28px; }

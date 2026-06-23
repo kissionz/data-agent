@@ -13,6 +13,7 @@
 - 权限安全 mock：越权问题进入安全拒绝，不泄露无权资源是否存在。
 - 数据源中心：数据源健康度、连接测试反馈、元数据目录、字段分类、样本策略、质量门禁和同步记录。
 - 语义中心：指标列表、详情、编辑态、公式、维度、依赖、版本历史和审批信息。
+- 本地语义 Catalog：认证指标、维度、语义版本、兼容维度和 Join Graph 风险门禁。
 - 协作资产中心：资产库、收藏反馈、归档状态、分享范围、订阅频率、审核人与审计事件展示。
 - 运营中心：SLO/KPI、发布门禁、失败分布、回放队列、模型版本、延迟趋势。
 - 响应式布局：桌面四栏；窄屏抽屉/底部面板；移动端单栏与固定输入。
@@ -21,7 +22,7 @@
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
 - 运行事件流：`GET /v1/runs/{id}/events` 的 SSE 契约、事件序列化、`Last-Event-ID` 续传和工作空间边界检查。
-- 本地编译执行边界：Analysis IR 到只读 SQL 计划、租户/工作区/业务域守卫注入、SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
+- 本地编译执行边界：Analysis IR 经语义 Catalog / Join Graph 校验后生成只读 SQL 计划，注入租户/工作区/业务域守卫，并产出 SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。
 - 持久化端口：conversation、run、idempotency 和 audit events 已抽象为 repository interface，并提供内存 adapter 与本地 JSON 文件 adapter。
 
@@ -110,7 +111,7 @@ pnpm build
 
 - Fastify/TypeBox API BFF、生产 SSE 长连接、PostgreSQL/Redis 持久化、租户/组织/工作空间模型。
 - OIDC/SAML/SCIM、RBAC + ABAC、策略变更实时生效。
-- 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化。
+- 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化与 Join Graph 编辑审批。
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。
 - 真实协作资产持久化、通知发送、导出水印、分享二次鉴权、缓存权限失效。
 - Model Gateway、评测中心、黄金集回归、灰度发布与回滚。

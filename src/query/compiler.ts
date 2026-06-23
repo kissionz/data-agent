@@ -1,45 +1,8 @@
 import type { ActorContext, AnalysisIR, FilterIR, QueryDialect } from '../contracts'
 import { assertAnalysisIR } from '../contracts'
+import { createLocalSemanticCatalog, type ResolvedSemanticDimension } from '../semantic'
 import type { CompileQueryInput, CompiledQueryPlan, QueryBudget, SqlAst } from './types'
 import { stableHash } from './hash'
-
-interface MetricDefinition {
-  id: string
-  expression: string
-  sourceTable: string
-}
-
-interface DimensionDefinition {
-  id: string
-  expression: string
-  groupExpression: string
-}
-
-const metrics: Record<string, MetricDefinition> = {
-  net_revenue: {
-    id: 'net_revenue',
-    expression: 'SUM(f.net_revenue)',
-    sourceTable: 'semantic_sales.dwd_order_settlement',
-  },
-  completed_order_count: {
-    id: 'completed_order_count',
-    expression: 'COUNT(DISTINCT f.completed_order_id)',
-    sourceTable: 'semantic_sales.dwd_order_settlement',
-  },
-}
-
-const dimensions: Record<string, DimensionDefinition> = {
-  order_date: {
-    id: 'order_date',
-    expression: "DATE_TRUNC('month', f.order_date)",
-    groupExpression: "DATE_TRUNC('month', f.order_date)",
-  },
-  region: {
-    id: 'region',
-    expression: 'r.region_name',
-    groupExpression: 'r.region_name',
-  },
-}
 
 const defaultBudget: QueryBudget = {
   timeoutMs: 15_000,
@@ -54,21 +17,9 @@ export function compileAnalysisQuery(input: CompileQueryInput): CompiledQueryPla
   const ir = input.ir
   assertAnalysisIR(ir)
   assertExecutableIr(ir, input.actor)
-
-  const metricDefinitions = ir.metricIds.map((id) => {
-    const metric = metrics[id]
-    if (!metric) throw new Error(`Unsupported governed metric: ${id}`)
-    return metric
-  })
-  const dimensionDefinitions = ir.dimensionIds.map((id) => {
-    const dimension = dimensions[id]
-    if (!dimension) throw new Error(`Unsupported governed dimension: ${id}`)
-    return dimension
-  })
-  const sourceTable = metricDefinitions[0].sourceTable
-  if (metricDefinitions.some((metric) => metric.sourceTable !== sourceTable)) {
-    throw new Error('Cross-source metric plans are not supported in trusted mode')
-  }
+  const semanticCatalog = input.semanticCatalog ?? createLocalSemanticCatalog()
+  const semanticPlan = semanticCatalog.resolvePlan(ir, input.actor)
+  const sourceTable = semanticPlan.metrics[0].sourceTable
 
   const parameters: Array<string | number> = [
     input.actor.tenantId,
@@ -80,17 +31,15 @@ export function compileAnalysisQuery(input: CompileQueryInput): CompiledQueryPla
     'f.workspace_id = $2',
     'f.business_domain_id = $3',
     compileTimeRange(ir, parameters),
-    ...ir.filters.map((filter) => compileFilter(filter, parameters)),
+    ...ir.filters.map((filter) => compileFilter(filter, parameters, [...semanticPlan.dimensions, ...semanticPlan.filterDimensions])),
   ]
-  const joins = ir.dimensionIds.includes('region')
-    ? ['LEFT JOIN semantic_sales.dim_sales_region r ON r.region_id = f.region_id AND r.tenant_id = f.tenant_id']
-    : []
+  const joins = semanticPlan.joins
   const selectExpressions = [
-    ...dimensionDefinitions.map((dimension) => `${dimension.expression} AS ${quoteIdentifier(dimension.id, dialect)}`),
-    ...metricDefinitions.map((metric) => `${metric.expression} AS ${quoteIdentifier(metric.id, dialect)}`),
+    ...semanticPlan.dimensions.map((dimension) => `${dimension.expression} AS ${quoteIdentifier(dimension.id, dialect)}`),
+    ...semanticPlan.metrics.map((metric) => `${metric.expression} AS ${quoteIdentifier(metric.id, dialect)}`),
   ]
-  const groupBy = dimensionDefinitions.map((dimension) => dimension.groupExpression)
-  const orderBy = groupBy.length > 0 ? [`${groupBy[0]} ASC`] : [`${quoteIdentifier(metricDefinitions[0].id, dialect)} DESC`]
+  const groupBy = semanticPlan.dimensions.map((dimension) => dimension.groupExpression)
+  const orderBy = groupBy.length > 0 ? [`${groupBy[0]} ASC`] : [`${quoteIdentifier(semanticPlan.metrics[0].id, dialect)} DESC`]
   const limit = Math.min(ir.limit, budget.maxRows)
   const ast: SqlAst = {
     kind: 'select',
@@ -113,7 +62,7 @@ export function compileAnalysisQuery(input: CompileQueryInput): CompiledQueryPla
     `LIMIT ${limit}`,
   ].filter(Boolean).join('\n')
   assertReadOnlySql(sql)
-  const sqlFingerprint = stableHash([dialect, sql, parameters, ir.semanticVersion])
+  const sqlFingerprint = stableHash([dialect, sql, parameters, ir.semanticVersion, semanticCatalog.version])
   const permissionDigest = stableHash([input.actor.tenantId, input.actor.workspaceId, input.actor.businessDomainId, [...input.actor.roles].sort()])
   return {
     ir,
@@ -131,6 +80,8 @@ export function compileAnalysisQuery(input: CompileQueryInput): CompiledQueryPla
       'tenant_scope',
       'workspace_scope',
       'business_domain_scope',
+      'semantic_catalog',
+      'join_graph',
       'read_only_ast',
       'budget_limit',
     ],
@@ -152,8 +103,8 @@ function compileTimeRange(ir: AnalysisIR, parameters: Array<string | number>) {
   return `f.order_date >= CURRENT_DATE - ($${parameters.length}::int * INTERVAL '1 day')`
 }
 
-function compileFilter(filter: FilterIR, parameters: Array<string | number>) {
-  if (!dimensions[filter.dimensionId] && filter.dimensionId !== 'clarified_metric') {
+function compileFilter(filter: FilterIR, parameters: Array<string | number>, dimensions: ResolvedSemanticDimension[]) {
+  if (!dimensions.some((dimension) => dimension.id === filter.dimensionId) && filter.dimensionId !== 'clarified_metric') {
     throw new Error(`Unsupported governed filter: ${filter.dimensionId}`)
   }
   if (filter.values.some((value) => /;|--|\/\*|\*\/|\b(drop|delete|insert|update|alter|grant|copy)\b/i.test(value))) {
@@ -161,21 +112,21 @@ function compileFilter(filter: FilterIR, parameters: Array<string | number>) {
   }
   if (filter.operator === 'eq') {
     parameters.push(filter.values[0] ?? '')
-    return `${filterColumn(filter.dimensionId)} = $${parameters.length}`
+    return `${filterColumn(filter.dimensionId, dimensions)} = $${parameters.length}`
   }
   if (filter.operator === 'in') {
     const placeholders = filter.values.map((value) => {
       parameters.push(value)
       return `$${parameters.length}`
     })
-    return `${filterColumn(filter.dimensionId)} IN (${placeholders.join(', ')})`
+    return `${filterColumn(filter.dimensionId, dimensions)} IN (${placeholders.join(', ')})`
   }
   throw new Error(`Unsupported filter operator: ${filter.operator}`)
 }
 
-function filterColumn(dimensionId: string) {
-  if (dimensionId === 'region') return 'r.region_name'
-  if (dimensionId === 'order_date') return 'f.order_date'
+function filterColumn(dimensionId: string, dimensions: ResolvedSemanticDimension[]) {
+  const dimension = dimensions.find((item) => item.id === dimensionId)
+  if (dimension) return dimension.filterExpression
   if (dimensionId === 'clarified_metric') return 'f.certified_metric_id'
   return `f.${dimensionId}`
 }

@@ -53,7 +53,7 @@ describe('deterministic SQL compiler and query gateway', () => {
     expect(first.sql).toContain('f.business_domain_id = $3')
     expect(first.parameters.slice(0, 3)).toEqual(['tenant_demo', 'workspace_sales', 'sales'])
     expect(first.sqlFingerprint).toBe(second.sqlFingerprint)
-    expect(first.appliedGuards).toEqual(expect.arrayContaining(['read_only_ast', 'budget_limit']))
+    expect(first.appliedGuards).toEqual(expect.arrayContaining(['semantic_catalog', 'join_graph', 'read_only_ast', 'budget_limit']))
   })
 
   it('parameterizes filter values and rejects SQL control tokens', () => {
@@ -93,6 +93,23 @@ describe('deterministic SQL compiler and query gateway', () => {
     expect(() => assertReadOnlySql('select * from orders where id = 1')).not.toThrow()
   })
 
+  it('refuses untrusted semantic objects and unapproved Join Graph paths before SQL execution', () => {
+    expect(() => compileAnalysisQuery({
+      ir: ir({ metricIds: ['refund_rate'] }),
+      actor,
+    })).toThrow('not certified')
+
+    expect(() => compileAnalysisQuery({
+      ir: ir({ dimensionIds: ['product_line'] }),
+      actor,
+    })).toThrow('high risk')
+
+    expect(() => compileAnalysisQuery({
+      ir: ir({ semanticVersion: 'sales-semantic-2026.04.1' }),
+      actor,
+    })).toThrow('semantic version')
+  })
+
   it('blocks over-budget plans and returns a public-safe execution summary for allowed plans', () => {
     const plan = compileAnalysisQuery({ ir: ir(), actor })
     const execution = executeReadOnlyQuery({ plan, actor })
@@ -114,4 +131,3 @@ describe('deterministic SQL compiler and query gateway', () => {
     expect(() => executeReadOnlyQuery({ plan: overBudget, actor })).toThrow('scan estimate exceeds budget')
   })
 })
-

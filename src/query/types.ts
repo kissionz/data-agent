@@ -1,4 +1,5 @@
 import type { ActorContext, AnalysisIR, QueryDialect, QueryExecutionSummary } from '../contracts'
+import type { SemanticCatalog } from '../semantic'
 
 export interface SqlAst {
   kind: 'select'
@@ -44,10 +45,10 @@ export interface CompileQueryInput {
   dialect?: QueryDialect
   dataVersion?: string
   budget?: Partial<QueryBudget>
+  semanticCatalog?: SemanticCatalog
 }
 
 export interface ExecuteQueryInput {
   plan: CompiledQueryPlan
   actor: ActorContext
 }
-

@@ -29,7 +29,8 @@
 | UI | `src/App.tsx`、`src/features/*` | 工作台、数据源中心、语义中心、协作资产中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
 | Contracts | `src/contracts/*` | `AnalysisIR v1`、`PublicRunView`、API envelope、审计事件、错误对象、错误码目录、SSE 事件和 schema 草案 | 抽为 `packages/contracts`，使用 TypeBox 生成 OpenAPI |
 | Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter |
-| Query | `src/query/*` | Analysis IR 到只读 SQL AST/SQL 的确定性编译、权限守卫注入、SQL 指纹、缓存键和预算阻断 | 方言插件、EXPLAIN 成本模型、连接池、取消传播和真实结果分页 |
+| Semantic | `src/semantic/*` | 本地 Semantic Catalog、认证指标/草稿指标、维度、兼容维度和 Join Graph 风险门禁 | 持久化版本仓库、编辑审批、参考 SQL 对账、血缘和灰度发布 |
+| Query | `src/query/*` | Analysis IR 经 Semantic Catalog 校验后生成只读 SQL AST/SQL，注入权限守卫、SQL 指纹、缓存键和预算阻断 | 方言插件、EXPLAIN 成本模型、连接池、取消传播和真实结果分页 |
 | Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口、内存 adapter、本地 JSON 文件 adapter | SQLite/PostgreSQL/Redis adapter 与 migration |
 | BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、Node server adapter 源码、CORS/状态码映射测试 | 迁移到 `apps/api` Fastify + 生产 SSE 长连接 + 认证中间件 |
 
@@ -39,7 +40,9 @@
 
 协作资产中心当前是 F12 的前端治理切片：用 fixture 表达会话资产、验证案例、问题模板和订阅，展示收藏、归档、分享范围、订阅频率、审核人、版本快照和审计事件，并通过组件测试锁定搜索、状态筛选、收藏反馈和审核中不可订阅规则。它尚未接入真实资产持久化、分享链接、接收者重新鉴权、通知发送或订阅调度；这些能力应在后续 `CollaborationAssetService`、`ShareAuthorization` 与 `NotificationScheduler` adapter 中落地。
 
-本地 Query Gateway 当前是 F06 的安全边界切片：Compiler 只接受规范 Analysis IR 和已治理 metric/dimension ID，生成只读 SQL AST/SQL，并注入 tenant/workspace/business domain 守卫；Gateway 再次校验只读、多语句、预算、语义版本、SQL 指纹、权限摘要、数据版本和缓存键。`PublicRunView` 只返回 public-safe `QueryExecutionSummary`，不向业务用户暴露原始 SQL。它尚未连接真实数仓、EXPLAIN、连接池、取消令牌或方言插件矩阵。
+本地 Semantic Catalog 当前是 F03/F06 的交界切片：它按 tenant/workspace/domain/semanticVersion 解析认证指标、草稿指标、维度、兼容维度和 Join Edge；可信模式只允许 certified metric，高风险或未批准 Join Graph 路径会在 SQL 生成前拒绝。
+
+本地 Query Gateway 当前是 F06 的安全边界切片：Compiler 只接受规范 Analysis IR 和 Semantic Catalog 裁决后的 metric/dimension ID，生成只读 SQL AST/SQL，并注入 tenant/workspace/business domain 守卫；Gateway 再次校验只读、多语句、预算、语义版本、SQL 指纹、权限摘要、数据版本和缓存键。`PublicRunView` 只返回 public-safe `QueryExecutionSummary`，不向业务用户暴露原始 SQL。它尚未连接真实数仓、EXPLAIN、连接池、取消令牌或方言插件矩阵。
 
 ## 2. 系统上下文与边界
 

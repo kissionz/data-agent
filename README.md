@@ -20,6 +20,7 @@
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
 - 运行事件流：`GET /v1/runs/{id}/events` 的 SSE 契约、事件序列化、`Last-Event-ID` 续传和工作空间边界检查。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。
+- 持久化端口：conversation、run、idempotency 和 audit events 已抽象为 repository interface，并提供内存 adapter。
 
 ## 技术栈
 
@@ -65,6 +66,8 @@ pnpm build
 - [src/api/router.ts](/Users/kissionz/Documents/data-agent/src/api/router.ts)
 - [src/api/openapi.ts](/Users/kissionz/Documents/data-agent/src/api/openapi.ts)
 - [src/api/nodeServer.ts](/Users/kissionz/Documents/data-agent/src/api/nodeServer.ts)
+- [src/persistence/ports.ts](/Users/kissionz/Documents/data-agent/src/persistence/ports.ts)
+- [src/persistence/memory.ts](/Users/kissionz/Documents/data-agent/src/persistence/memory.ts)
 
 已覆盖的本地 HTTP 契约：
 
@@ -76,7 +79,7 @@ pnpm build
 - `POST /v1/runs/{runId}/clarify`
 - `POST /v1/runs/{runId}/cancel`
 
-本地 router 已验证状态码映射、幂等键、CORS、跨工作空间拒绝、澄清候选版本绑定、SSE 事件流和 OpenAPI 草案。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、持久化和网关部署。
+本地 router 已验证状态码映射、幂等键、CORS、跨工作空间拒绝、澄清候选版本绑定、SSE 事件流和 OpenAPI 草案。持久化目前是内存 adapter，可跨 service 实例共享状态，但不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
 
 ## 浏览器验收建议
 
@@ -101,7 +104,7 @@ pnpm build
 
 已完成的是“可运行、可审查、可继续开发”的产品基座，不是完整生产系统。当前 `src/application` 是本地 deterministic service，不是网络 API。生产化仍至少需要：
 
-- Fastify/TypeBox API BFF、生产 SSE 长连接、会话持久化、租户/组织/工作空间模型。
+- Fastify/TypeBox API BFF、生产 SSE 长连接、PostgreSQL/Redis 持久化、租户/组织/工作空间模型。
 - OIDC/SAML/SCIM、RBAC + ABAC、策略变更实时生效。
 - 数据源管理、元数据同步、数据质量门禁、语义对象持久化。
 - Analysis IR 契约包、Planner、确定性 SQL Compiler、Query Gateway。
@@ -114,6 +117,7 @@ pnpm build
 ## 建议下一阶段
 
 1. 将当前 `src/contracts` 抽到 `packages/contracts`，并把 `openApiDocument` 改为从 schema 自动生成。
-2. 增加 `apps/api`，用 Fastify/TypeBox 包装当前 deterministic service、router 和 SSE 契约。
-3. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。
-4. 补齐 Playwright E2E：标准查询、澄清、越权拒绝、部分结果、语义编辑、运营回放。
+2. 为 `src/persistence` 增加 SQLite/PostgreSQL adapter，并把审计事件单独落表。
+3. 增加 `apps/api`，用 Fastify/TypeBox 包装当前 deterministic service、router 和 SSE 契约。
+4. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。
+5. 补齐 Playwright E2E：标准查询、澄清、越权拒绝、部分结果、语义编辑、运营回放。

@@ -9,6 +9,7 @@ import {
 } from '../domain'
 import { attachRun } from '../domain'
 import { emptyResult, partialTrendResult, trendResult } from '../mocks'
+import { createInMemoryChatBiPersistence, type ChatBiPersistence, type StoredRunRecord } from '../persistence'
 import {
   ANALYSIS_IR_VERSION,
   CONTRACT_VERSION,
@@ -34,19 +35,18 @@ export interface ChatBiApplicationService {
   getRun(request: GetRunRequest): ApiEnvelope<PublicRunView>
 }
 
-interface StoredRun {
-  run: Run
-  executedQuery: boolean
-  analysisIr?: AnalysisIR
-  audit: AuditEvent[]
-  requestId: string
-  traceId: string
+export interface ChatBiApplicationOptions {
+  now?: () => string
+  persistence?: ChatBiPersistence
 }
 
-export function createChatBiApplicationService(now: () => string = () => new Date().toISOString()): ChatBiApplicationService {
-  const runs = new Map<string, StoredRun>()
-  const idempotency = new Map<string, string>()
-  const conversations = new Map<string, Conversation>()
+export function createChatBiApplicationService(
+  nowOrOptions: (() => string) | ChatBiApplicationOptions = () => new Date().toISOString(),
+): ChatBiApplicationService {
+  const now = typeof nowOrOptions === 'function' ? nowOrOptions : nowOrOptions.now ?? (() => new Date().toISOString())
+  const persistence = typeof nowOrOptions === 'function'
+    ? createInMemoryChatBiPersistence()
+    : nowOrOptions.persistence ?? createInMemoryChatBiPersistence()
   let sequence = 0
 
   function nextId(prefix: string) {
@@ -55,7 +55,7 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
   }
 
   function ensureConversation(request: SubmitQuestionRequest): Conversation {
-    const existing = conversations.get(request.conversationId)
+    const existing = persistence.getConversation(request.conversationId)
     if (existing) return existing
     const createdAt = now()
     const conversation: Conversation = {
@@ -79,14 +79,14 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
         assumptions: ['默认使用已认证指标和完整自然月。'],
       },
     }
-    conversations.set(conversation.id, conversation)
+    persistence.saveConversation(conversation)
     return conversation
   }
 
-  function persist(stored: StoredRun) {
-    runs.set(stored.run.id, stored)
-    const conversation = conversations.get(stored.run.conversationId)
-    if (conversation) conversations.set(conversation.id, attachRun(conversation, stored.run))
+  function persist(stored: StoredRunRecord) {
+    persistence.saveRun(stored)
+    const conversation = persistence.getConversation(stored.run.conversationId)
+    if (conversation) persistence.saveConversation(attachRun(conversation, stored.run))
     return view(stored)
   }
 
@@ -107,7 +107,7 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
   function getStored(runId: string, conversationId: string, actor: ActorContext, requestId = nextId('req'), traceId = nextId('trace')) {
     const actorError = validateActor(actor)
     if (actorError) return { envelope: { ok: false, error: actorError, requestId, traceId } as ApiEnvelope<PublicRunView> }
-    const stored = runs.get(runId)
+    const stored = persistence.getRun(runId)
     if (!stored) {
       return {
         envelope: {
@@ -183,7 +183,7 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
     return trendResult
   }
 
-  function view(stored: StoredRun): ApiEnvelope<PublicRunView> {
+  function view(stored: StoredRunRecord): ApiEnvelope<PublicRunView> {
     return {
       ok: true,
       requestId: stored.requestId,
@@ -217,8 +217,11 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
       const validation = validateSubmitQuestionRequest(request)
       if (validation) return { ok: false, requestId, traceId, error: validation }
 
-      const existingRunId = idempotency.get(request.idempotencyKey)
-      if (existingRunId) return view(runs.get(existingRunId)!)
+      const existingRunId = persistence.getRunIdByIdempotencyKey(request.idempotencyKey)
+      if (existingRunId) {
+        const existing = persistence.getRun(existingRunId)
+        if (existing) return view(existing)
+      }
 
       const conversation = ensureConversation(request)
       if (conversation.activeRunId) {
@@ -257,14 +260,14 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
           debugReference: `sec_${run.id}`,
         })
         run = transitionRun(run, { type: 'FAILED', error, at: now() })
-        const stored: StoredRun = {
+        const stored: StoredRunRecord = {
           run,
           requestId,
           traceId,
           executedQuery: false,
           audit: [...auditEvents, audit('security.denied', request.actor, run.id, '权限校验拒绝，未执行查询。')],
         }
-        idempotency.set(request.idempotencyKey, run.id)
+        persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
         return persist(stored)
       }
 
@@ -277,14 +280,14 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
           safeDetails: '预计扫描量超过工作空间预算',
         }
         run = transitionRun(run, { type: 'FAILED', error, at: now() })
-        const stored: StoredRun = {
+        const stored: StoredRunRecord = {
           run,
           requestId,
           traceId,
           executedQuery: false,
           audit: [...auditEvents, audit('planner.ir_created', request.actor, run.id, '预算门禁阻断，未执行查询。')],
         }
-        idempotency.set(request.idempotencyKey, run.id)
+        persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
         return persist(stored)
       }
 
@@ -313,7 +316,7 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
           ],
         }
         run = transitionRun(run, { type: 'CLARIFICATION_REQUIRED', clarification, at: now() })
-        const stored: StoredRun = {
+        const stored: StoredRunRecord = {
           run,
           requestId,
           traceId,
@@ -321,7 +324,7 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
           analysisIr,
           audit: [...auditEvents, audit('planner.clarification_required', request.actor, run.id, '关键指标口径多义，等待用户澄清。')],
         }
-        idempotency.set(request.idempotencyKey, run.id)
+        persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
         return persist(stored)
       }
 
@@ -329,7 +332,7 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
       run = transitionRun(run, { type: 'QUERY_STARTED', at: now() })
       const result = selectResult(run.question)
       run = transitionRun(run, { type: 'RESULT_READY', result, at: now() })
-      const stored: StoredRun = {
+      const stored: StoredRunRecord = {
         run,
         requestId,
         traceId,
@@ -343,7 +346,7 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
           audit('result.ready', request.actor, run.id, '确定性答案已从结果集生成。'),
         ],
       }
-      idempotency.set(request.idempotencyKey, run.id)
+      persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
       return persist(stored)
     },
 
@@ -384,7 +387,7 @@ export function createChatBiApplicationService(now: () => string = () => new Dat
           },
         }
         assertAnalysisIR(analysisIr)
-        const nextStored: StoredRun = {
+        const nextStored: StoredRunRecord = {
           ...stored,
           run,
           executedQuery: true,

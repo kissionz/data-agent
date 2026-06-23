@@ -28,10 +28,11 @@
 |---|---|---|---|
 | UI | `src/App.tsx`、`src/features/*` | 工作台、语义中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
 | Contracts | `src/contracts/*` | `AnalysisIR v1`、`PublicRunView`、API envelope、审计事件、错误对象、错误码目录、SSE 事件和 schema 草案 | 抽为 `packages/contracts`，使用 TypeBox 生成 OpenAPI |
-| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查 | 接持久化、检索、Planner、Query Gateway adapter |
+| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；依赖 persistence 端口 | 接检索、Planner、Query Gateway adapter |
+| Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口和内存 adapter | SQLite/PostgreSQL/Redis adapter 与 migration |
 | BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、Node server adapter 源码、CORS/状态码映射测试 | 迁移到 `apps/api` Fastify + 生产 SSE 长连接 + 认证中间件 |
 
-本地 BFF router 支持 `/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify` 和 `POST /v1/runs/{id}/cancel`。它是生产 API 的契约基线，不是最终运行时；生产环境仍需真实认证、持久化、长连接生命周期管理、审计落库和网关部署。
+本地 BFF router 支持 `/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify` 和 `POST /v1/runs/{id}/cancel`。它是生产 API 的契约基线，不是最终运行时；生产环境仍需真实认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
 
 ## 2. 系统上下文与边界
 

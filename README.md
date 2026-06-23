@@ -15,6 +15,8 @@
 - 运营中心：SLO/KPI、发布门禁、失败分布、回放队列、模型版本、延迟趋势。
 - 响应式布局：桌面四栏；窄屏抽屉/底部面板；移动端单栏与固定输入。
 - 领域与测试基座：运行状态机、会话模型、语义版本、权限拒绝与安全场景测试。
+- 共享契约：`AnalysisIR v1`、`PublicRunView`、API 包络、澄清、取消、审计事件与错误对象。
+- 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 
 ## 技术栈
 
@@ -74,9 +76,9 @@ pnpm build
 
 ## 当前阶段边界
 
-已完成的是“可运行、可审查、可继续开发”的产品基座，不是完整生产系统。生产化仍至少需要：
+已完成的是“可运行、可审查、可继续开发”的产品基座，不是完整生产系统。当前 `src/application` 是本地 deterministic service，不是网络 API。生产化仍至少需要：
 
-- API/BFF、会话持久化、租户/组织/工作空间模型。
+- Fastify/API BFF、SSE、会话持久化、租户/组织/工作空间模型。
 - OIDC/SAML/SCIM、RBAC + ABAC、策略变更实时生效。
 - 数据源管理、元数据同步、数据质量门禁、语义对象持久化。
 - Analysis IR 契约包、Planner、确定性 SQL Compiler、Query Gateway。
@@ -88,7 +90,7 @@ pnpm build
 
 ## 建议下一阶段
 
-1. 抽出 `packages/contracts`，定义 PRD 中的 Analysis IR、Run、Result、ErrorCode、AuditEvent JSON Schema。
-2. 增加 `apps/api`，先用 deterministic planner + mock query adapter 跑通 `POST /v1/questions`、澄清、取消和状态查询。
-3. 将当前前端 mock 替换为 BFF adapter，同时保留 fixtures 作为黄金问题回归样本。
+1. 将当前 `src/contracts` 抽到 `packages/contracts`，并从 `analysisIrJsonSchema` 生成 OpenAPI。
+2. 增加 `apps/api`，用当前 deterministic service 封装 `POST /v1/questions`、澄清、取消和状态查询。
+3. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。
 4. 补齐 Playwright E2E：标准查询、澄清、越权拒绝、部分结果、语义编辑、运营回放。

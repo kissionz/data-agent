@@ -1,5 +1,79 @@
 # Errors
 
+## [ERR-20260623-003] in-app browser locator timing
+
+**Logged**: 2026-06-23T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The in-app browser Playwright-style locator hit an `Element is not attached` error while clicking a clarification candidate during a React state transition.
+
+### Error
+
+```text
+Browser Use encountered an error interacting with this webpage: Error: Element is not attached
+```
+
+### Context
+
+The click target existed, but a broad locator and immediate wait crossed a DOM replacement caused by React state updates. The app itself continued to work; a later exact accessible-name locator completed the flow.
+
+### Suggested Fix
+
+For Codex in-app browser checks, use exact accessible names for dynamic buttons and add a short post-click wait or re-resolve locators after state transitions.
+
+### Metadata
+
+- Reproducible: intermittent
+- Related Files: src/App.tsx
+
+### Resolution
+
+- **Resolved**: 2026-06-23T00:00:00+08:00
+- **Notes**: Re-ran the check with the exact candidate button name and verified completion.
+
+---
+
+## [ERR-20260623-002] security test scope
+
+**Logged**: 2026-06-23T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The new application service security test treated the user's original question text as system leakage.
+
+### Error
+
+```text
+expected public run view not to match /手机号|客户|事业部|select|policy/i
+```
+
+### Context
+
+The public run view should preserve the user's own question in conversation history. The no-leak assertion should apply to system-generated fields such as errors, audit summaries, Analysis IR, result payloads, clarification candidates, and safe details.
+
+### Suggested Fix
+
+Scope resource-leak assertions to system-generated response fields and keep separate assertions for preserving user question text.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: src/test/application.test.ts
+
+### Resolution
+
+- **Resolved**: 2026-06-23T00:00:00+08:00
+- **Notes**: Updated the test to exclude the `question` field from system leakage checks.
+
+---
+
 ## [ERR-20260623-001] pnpm command lookup
 
 **Logged**: 2026-06-23T00:00:00+08:00

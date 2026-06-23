@@ -41,6 +41,8 @@ import {
 import { SemanticGovernance } from './features/semantic'
 import type { SemanticDimension as UiDimension, SemanticMetric as UiMetric } from './features/semantic'
 import { OperationsCenter } from './features/operations'
+import { createChatBiApplicationService } from './application'
+import type { ActorContext, PublicRunView } from './contracts'
 
 type Page = 'workbench' | 'semantic' | 'operations'
 type RunStatus = 'waiting_input' | 'understanding' | 'querying' | 'completed' | 'needs_clarification' | 'failed'
@@ -102,6 +104,17 @@ const statusCopy: Record<RunStatus, string> = {
   completed: '已完成',
   needs_clarification: '需澄清',
   failed: '失败',
+}
+
+const demoActor: ActorContext = {
+  tenantId: 'tenant_demo',
+  workspaceId: 'workspace_sales',
+  userId: 'user_lin',
+  roles: ['business_user'],
+  businessDomainId: 'sales',
+  semanticVersion: 'sales-semantic-2026.06.1',
+  locale: 'zh-CN',
+  timezone: 'Asia/Shanghai',
 }
 
 function GlobalRail({ page, onPage, onOpenMenu }: { page: Page; onPage: (page: Page) => void; onOpenMenu: () => void }) {
@@ -175,9 +188,11 @@ function SessionRow({ title, meta, active }: { title: string; meta: string; acti
 }
 
 function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions: () => void; onOpenContext: () => void; resetKey: number }) {
+  const serviceRef = useRef(createChatBiApplicationService(() => '2026-06-23T09:00:00+08:00'))
   const [question, setQuestion] = useState('')
   const [submittedQuestion, setSubmittedQuestion] = useState('过去 12 个完整自然月净收入趋势')
   const [status, setStatus] = useState<RunStatus>('completed')
+  const [runView, setRunView] = useState<PublicRunView | null>(null)
   const [resultView, setResultView] = useState<ResultView>('chart')
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null)
   const timerRef = useRef<number[]>([])
@@ -196,6 +211,7 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
     setQuestion('')
     setSubmittedQuestion('')
     setStatus('waiting_input')
+    setRunView(null)
   }, [resetKey])
 
   const runQuestion = (value = question) => {
@@ -205,35 +221,77 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
     setQuestion('')
     setSubmittedQuestion(clean)
     setFeedback(null)
-    if (/其他事业部|手机号|忽略权限/.test(clean)) {
-      setStatus('understanding')
-      timerRef.current.push(window.setTimeout(() => setStatus('failed'), 550))
-      return
-    }
-    if (/最近|销售情况/.test(clean) && !/12|月|季度|年度/.test(clean)) {
-      setStatus('understanding')
-      timerRef.current.push(window.setTimeout(() => setStatus('needs_clarification'), 550))
-      return
-    }
+    setRunView(null)
     setStatus('understanding')
-    timerRef.current.push(window.setTimeout(() => setStatus('querying'), 520))
-    timerRef.current.push(window.setTimeout(() => setStatus('completed'), 1350))
+    timerRef.current.push(window.setTimeout(() => {
+      const response = serviceRef.current.submitQuestion({
+        idempotencyKey: `${Date.now()}_${clean}`,
+        conversationId: 'conversation_workbench',
+        question: clean,
+        mode: 'trusted',
+        actor: demoActor,
+      })
+      if (!response.ok) {
+        setRunView(null)
+        setStatus('failed')
+        return
+      }
+      if (response.data.displayStatus !== 'completed') {
+        setRunView(response.data)
+        setStatus(response.data.displayStatus)
+        return
+      }
+      setStatus('querying')
+      timerRef.current.push(window.setTimeout(() => {
+        setRunView(response.data)
+        setStatus(response.data.displayStatus)
+      }, 720))
+    }, 460))
   }
 
   const cancelRun = () => {
     clearTimers()
+    if (runView && (status === 'understanding' || status === 'querying' || status === 'needs_clarification')) {
+      const response = serviceRef.current.cancelRun({
+        runId: runView.runId,
+        conversationId: runView.conversationId,
+        actor: demoActor,
+      })
+      if (response.ok) setRunView(response.data)
+    }
     setStatus('waiting_input')
   }
 
-  const chooseClarification = (label: string) => {
-    setSubmittedQuestion(`${submittedQuestion}（${label}）`)
+  const chooseClarification = (candidateId: string) => {
+    const candidate = runView?.clarification?.candidates.find((item) => item.id === candidateId)
+    if (!runView || !candidate) return
+    setSubmittedQuestion(`${submittedQuestion}（${candidate.label}）`)
     setStatus('understanding')
-    timerRef.current.push(window.setTimeout(() => setStatus('querying'), 420))
-    timerRef.current.push(window.setTimeout(() => setStatus('completed'), 1100))
+    timerRef.current.push(window.setTimeout(() => {
+      const response = serviceRef.current.clarifyRun({
+        runId: runView.runId,
+        conversationId: runView.conversationId,
+        candidateId: candidate.id,
+        candidateVersion: candidate.candidateVersion,
+        actor: demoActor,
+      })
+      if (!response.ok) {
+        setStatus('failed')
+        return
+      }
+      setStatus('querying')
+      timerRef.current.push(window.setTimeout(() => {
+        setRunView(response.data)
+        setStatus(response.data.displayStatus)
+      }, 680))
+    }, 420))
   }
 
   const exportCsv = () => {
-    const content = ['月份,净收入（万元）', ...revenueData.map((row) => `${row.month},${row.revenue}`)].join('\n')
+    const rows = runView?.result?.rows
+    const content = rows?.length
+      ? ['月份,净收入', ...rows.map((row) => `${row.values.month ?? row.key},${row.values.net_revenue ?? ''}`)].join('\n')
+      : ['月份,净收入（万元）', ...revenueData.map((row) => `${row.month},${row.revenue}`)].join('\n')
     const url = URL.createObjectURL(new Blob([`\ufeff${content}`], { type: 'text/csv;charset=utf-8' }))
     const anchor = document.createElement('a')
     anchor.href = url
@@ -266,10 +324,11 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
               <p>{submittedQuestion}</p>
             </div>
             {status !== 'waiting_input' && <RunStage status={status} />}
-            {status === 'needs_clarification' && <Clarification onChoose={chooseClarification} />}
-            {status === 'failed' && <PermissionFailure onRetry={() => setQuestion('仅查看我有权限的业务域汇总')} />}
+            {status === 'needs_clarification' && <Clarification clarification={runView?.clarification} onChoose={chooseClarification} />}
+            {status === 'failed' && <PermissionFailure requestId={runView?.requestId} onRetry={() => setQuestion('仅查看我有权限的业务域汇总')} />}
             {status === 'completed' && (
               <AnswerResult
+                runView={runView}
                 view={resultView}
                 onView={setResultView}
                 onExport={exportCsv}
@@ -324,24 +383,28 @@ function RunStage({ status }: { status: RunStatus }) {
   )
 }
 
-function Clarification({ onChoose }: { onChoose: (value: string) => void }) {
+function Clarification({ clarification, onChoose }: { clarification?: PublicRunView['clarification']; onChoose: (candidateId: string) => void }) {
+  const candidates = clarification?.candidates ?? []
   return (
     <section className="clarification-card">
       <div className="card-heading">
-        <div><IconHelp size={20} /><h2>“销售情况”需要确认口径</h2></div>
+        <div><IconHelp size={20} /><h2>{clarification?.prompt ?? '需要确认口径'}</h2></div>
         <span>查询尚未执行</span>
       </div>
       <p>请选择分析指标和时间范围。该选择会记录在本次分析的默认条件中。</p>
       <div className="clarification-options">
-        <button onClick={() => onChoose('净收入，最近30个完整自然日')}><strong>净收入</strong><span>最近 30 个完整自然日</span></button>
-        <button onClick={() => onChoose('含税销售额，本季度截至昨日')}><strong>含税销售额</strong><span>本季度截至昨日</span></button>
-        <button onClick={() => onChoose('订单量，最近30个完整自然日')}><strong>订单量</strong><span>最近 30 个完整自然日</span></button>
+        {candidates.map((candidate) => (
+          <button key={candidate.id} onClick={() => onChoose(candidate.id)}>
+            <strong>{candidate.label}</strong>
+            <span>{candidate.description}</span>
+          </button>
+        ))}
       </div>
     </section>
   )
 }
 
-function PermissionFailure({ onRetry }: { onRetry: () => void }) {
+function PermissionFailure({ requestId, onRetry }: { requestId?: string; onRetry: () => void }) {
   return (
     <section className="failure-card">
       <IconShieldCheck size={22} />
@@ -352,13 +415,14 @@ function PermissionFailure({ onRetry }: { onRetry: () => void }) {
           <button className="secondary-button" onClick={onRetry}>修改为已授权范围</button>
           <button className="text-button">查看访问申请流程</button>
         </div>
-        <span className="audit-note">安全事件已记录 · request_id req_7h2m9k</span>
+        <span className="audit-note">安全事件已记录 · request_id {requestId ?? 'req_local'}</span>
       </div>
     </section>
   )
 }
 
-function AnswerResult({ view, onView, onExport, feedback, onFeedback, onFollowup }: {
+function AnswerResult({ runView, view, onView, onExport, feedback, onFeedback, onFollowup }: {
+  runView: PublicRunView | null
   view: ResultView
   onView: (view: ResultView) => void
   onExport: () => void
@@ -366,13 +430,17 @@ function AnswerResult({ view, onView, onExport, feedback, onFeedback, onFollowup
   onFeedback: (value: 'up' | 'down') => void
   onFollowup: (value: string) => void
 }) {
+  const headline = runView?.result?.answer.headline ?? '净收入全年保持增长，四季度增速进一步扩大'
+  const summary = runView?.result?.answer.summary ?? '过去 12 个完整自然月净收入合计 1.35 亿元。12 月达到 1,486 万元，较 1 月增长 79.9%。'
+  const freshness = runView?.result?.freshnessAt ?? '2026-06-22 08:12'
+  const semanticVersion = runView?.semanticVersion ?? 'sales@2026.06.3'
   return (
     <article className="answer-card">
       <div className="answer-header">
         <div>
           <span className="answer-label">分析结论</span>
-          <h2>净收入全年保持增长，四季度增速进一步扩大</h2>
-          <p>过去 12 个完整自然月净收入合计 <strong>1.35 亿元</strong>。12 月达到 1,486 万元，较 1 月增长 79.9%。</p>
+          <h2>{headline}</h2>
+          <p>{summary}</p>
         </div>
         <button className="secondary-button export-button" onClick={onExport}><IconDownload size={17} /> 导出 CSV</button>
       </div>
@@ -408,7 +476,7 @@ function AnswerResult({ view, onView, onExport, feedback, onFeedback, onFollowup
       </div>
 
       <footer className="answer-footer">
-        <span>数据更新于 2026-06-22 08:12 · 语义版本 sales@2026.06.3</span>
+        <span>数据更新于 {freshness} · 语义版本 {semanticVersion}</span>
         <div>
           <span>{feedback ? '感谢反馈' : '这个结果有帮助吗？'}</span>
           <button className={feedback === 'up' ? 'icon-button selected' : 'icon-button'} onClick={() => onFeedback('up')} aria-label="结果有帮助"><IconThumbUp size={16} /></button>

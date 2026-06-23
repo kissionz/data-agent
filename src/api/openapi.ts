@@ -56,6 +56,22 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/runs/{runId}/events': {
+      get: {
+        summary: 'Run SSE 增量事件',
+        description: '返回 text/event-stream。支持 Last-Event-ID 请求头或 last_event_id query 参数进行断点续传。',
+        parameters: [
+          { name: 'runId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'Last-Event-ID', in: 'header', required: false, schema: { type: 'string' } },
+          { name: 'conversation_id', in: 'query', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          200: { description: 'SSE event stream' },
+          403: { description: '租户/工作空间边界拒绝' },
+          404: { description: 'Run 不存在' },
+        },
+      },
+    },
     '/v1/runs/{runId}/cancel': {
       post: {
         summary: '取消 Run',

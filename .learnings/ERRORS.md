@@ -1,5 +1,42 @@
 # Errors
 
+## [ERR-20260623-004] public error catalog typing
+
+**Logged**: 2026-06-23T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: contracts
+
+### Summary
+
+Adding `PUBLIC_ERROR_CATALOG` failed TypeScript because `PARTIAL_RESULT` is a public result condition with HTTP 200, while the catalog status union only allowed error statuses.
+
+### Error
+
+```text
+Type '200' is not assignable to type '400 | 403 | 404 | 409 | 422 | 429 | 500 | 503'
+```
+
+### Context
+
+`PARTIAL_RESULT` is exposed through the same public code catalog but should not be treated as a failed HTTP response. The test also needed `PublicErrorCode` re-exported from `src/contracts`.
+
+### Suggested Fix
+
+Allow `200` in the public catalog status union and explicitly re-export shared domain code types from the contracts package boundary.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: src/contracts/api.ts
+
+### Resolution
+
+- **Resolved**: 2026-06-23T00:00:00+08:00
+- **Notes**: Updated `PublicErrorCatalogItem.httpStatus` and re-exported `PublicErrorCode`.
+
+---
+
 ## [ERR-20260623-003] in-app browser locator timing
 
 **Logged**: 2026-06-23T00:00:00+08:00

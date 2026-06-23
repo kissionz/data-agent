@@ -1,5 +1,9 @@
 import { createChatBiApplicationService, type ChatBiApplicationService } from '../application'
 import {
+  filterSseEventsAfter,
+  httpStatusForError,
+  runViewToSseEvents,
+  serializeSseEvents,
   validationError,
   type ActorContext,
   type ApiEnvelope,
@@ -60,19 +64,7 @@ export function createChatBiBffRouter(
 
   function envelopeStatus(envelope: ApiEnvelope<PublicRunView>, successStatus = 200): number {
     if (envelope.ok) return successStatus
-    switch (envelope.error.code) {
-      case 'VALIDATION_FAILED':
-        return 400
-      case 'PERMISSION_DENIED':
-        return 403
-      case 'SEMANTIC_NOT_FOUND':
-        return 404
-      case 'RUN_ALREADY_ACTIVE':
-      case 'RUN_CANCELLED':
-        return 409
-      default:
-        return 500
-    }
+    return httpStatusForError(envelope.error.code)
   }
 
   function actorFrom(request: HttpRequestLike): ActorContext {
@@ -169,12 +161,30 @@ export function createChatBiBffRouter(
         return withCors(respond(envelopeStatus(envelope), envelope))
       }
 
-      const runMatch = path.match(/^\/v1\/runs\/([^/]+)(?:\/(clarify|cancel))?$/)
+      const runMatch = path.match(/^\/v1\/runs\/([^/]+)(?:\/(clarify|cancel|events))?$/)
       if (runMatch) {
         const [, runId, action] = runMatch
         if (method === 'GET' && !action) {
           const envelope = service.getRun(getRequest(request, decodeURIComponent(runId)))
           return withCors(respond(envelopeStatus(envelope), envelope))
+        }
+        if (method === 'GET' && action === 'events') {
+          const envelope = service.getRun(getRequest(request, decodeURIComponent(runId)))
+          if (!envelope.ok) return withCors(respond(envelopeStatus(envelope), envelope))
+          const events = filterSseEventsAfter(
+            runViewToSseEvents(envelope.data),
+            request.headers?.['last-event-id'] || request.query?.last_event_id,
+          )
+          return withCors({
+            status: 200,
+            headers: {
+              'content-type': 'text/event-stream; charset=utf-8',
+              'cache-control': 'no-store',
+              'connection': 'keep-alive',
+              'x-content-type-options': 'nosniff',
+            },
+            body: serializeSseEvents(events),
+          })
         }
         if (method === 'POST' && action === 'clarify') {
           const envelope = service.clarifyRun(clarifyRequest(request, decodeURIComponent(runId)))

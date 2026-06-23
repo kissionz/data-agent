@@ -6,6 +6,8 @@ import type {
   RunResult,
 } from '../domain'
 
+export type { PublicErrorCode } from '../domain'
+
 export const CONTRACT_VERSION = 'chatbi.contracts.v0.2' as const
 export const ANALYSIS_IR_VERSION = 'analysis_ir.v1' as const
 
@@ -109,6 +111,31 @@ export interface PublicApiError {
   message: string
   retryable: boolean
   debugReference: string
+}
+
+export interface PublicErrorCatalogItem {
+  httpStatus: 200 | 400 | 403 | 404 | 409 | 422 | 429 | 500 | 503
+  title: string
+  retryableDefault: boolean
+  safeForUser: boolean
+}
+
+export const PUBLIC_ERROR_CATALOG = {
+  AMBIGUOUS_QUERY: { httpStatus: 422, title: '问题需要澄清', retryableDefault: true, safeForUser: true },
+  SEMANTIC_NOT_FOUND: { httpStatus: 404, title: '语义对象不存在或不可见', retryableDefault: false, safeForUser: true },
+  PERMISSION_DENIED: { httpStatus: 403, title: '无权访问该内容', retryableDefault: false, safeForUser: true },
+  QUERY_TOO_EXPENSIVE: { httpStatus: 422, title: '查询范围过大', retryableDefault: true, safeForUser: true },
+  DATA_STALE: { httpStatus: 422, title: '数据新鲜度不足', retryableDefault: true, safeForUser: true },
+  PARTIAL_RESULT: { httpStatus: 200, title: '结果部分完成', retryableDefault: true, safeForUser: true },
+  MODEL_UNAVAILABLE: { httpStatus: 503, title: '模型服务不可用', retryableDefault: true, safeForUser: true },
+  RUN_ALREADY_ACTIVE: { httpStatus: 409, title: '当前会话已有运行中的问题', retryableDefault: true, safeForUser: true },
+  RUN_CANCELLED: { httpStatus: 409, title: '运行已取消或不可取消', retryableDefault: false, safeForUser: true },
+  VALIDATION_FAILED: { httpStatus: 400, title: '请求契约无效', retryableDefault: true, safeForUser: true },
+  INTERNAL_ERROR: { httpStatus: 500, title: '内部错误', retryableDefault: false, safeForUser: false },
+} as const satisfies Record<PublicErrorCode, PublicErrorCatalogItem>
+
+export function httpStatusForError(code: PublicErrorCode): PublicErrorCatalogItem['httpStatus'] {
+  return PUBLIC_ERROR_CATALOG[code].httpStatus
 }
 
 export type ApiEnvelope<T> =

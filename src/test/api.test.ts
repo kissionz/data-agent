@@ -48,6 +48,7 @@ describe('ChatBI local BFF router', () => {
       paths: {
         '/v1/questions': expect.any(Object),
         '/v1/runs/{runId}/clarify': expect.any(Object),
+        '/v1/runs/{runId}/events': expect.any(Object),
       },
     })
   })
@@ -140,6 +141,57 @@ describe('ChatBI local BFF router', () => {
       ok: true,
       data: { displayStatus: 'completed', executedQuery: true },
     })
+  })
+
+  it('serves run SSE events and supports Last-Event-ID resume', () => {
+    const router = createChatBiBffRouter()
+    const created = router.handle({
+      method: 'POST',
+      path: '/v1/questions',
+      headers: { ...actorHeaders, 'idempotency-key': 'api_events' },
+      body: submitBody('过去 12 个月净收入趋势', 'conversation_events_api'),
+    })
+    const createdData = (created.body as { data: { runId: string; conversationId: string; audit: Array<{ id: string }> } }).data
+
+    const events = router.handle({
+      method: 'GET',
+      path: `/v1/runs/${createdData.runId}/events`,
+      headers: actorHeaders,
+      query: { conversation_id: createdData.conversationId },
+    })
+    expect(events.status).toBe(200)
+    expect(events.headers['content-type']).toContain('text/event-stream')
+    expect(events.body).toContain('event: run.snapshot')
+    expect(events.body).toContain('event: run.result_ready')
+
+    const resumed = router.handle({
+      method: 'GET',
+      path: `/v1/runs/${createdData.runId}/events`,
+      headers: { ...actorHeaders, 'last-event-id': createdData.audit[0].id },
+      query: { conversation_id: createdData.conversationId },
+    })
+    expect(resumed.status).toBe(200)
+    expect(String(resumed.body)).not.toContain(`id: ${createdData.audit[0].id}`)
+  })
+
+  it('keeps event streams behind the same workspace boundary', () => {
+    const router = createChatBiBffRouter()
+    const created = router.handle({
+      method: 'POST',
+      path: '/v1/questions',
+      headers: { ...actorHeaders, 'idempotency-key': 'api_events_boundary' },
+      body: submitBody('过去 12 个月净收入趋势', 'conversation_events_boundary'),
+    })
+    const createdData = (created.body as { data: { runId: string; conversationId: string } }).data
+
+    const denied = router.handle({
+      method: 'GET',
+      path: `/v1/runs/${createdData.runId}/events`,
+      headers: { ...actorHeaders, 'x-workspace-id': 'other_workspace' },
+      query: { conversation_id: createdData.conversationId },
+    })
+    expect(denied.status).toBe(403)
+    expect(denied.headers['content-type']).toContain('application/json')
   })
 
   it('uses 409 for active run and invalid cancel states', () => {

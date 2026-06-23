@@ -9,7 +9,8 @@ import {
 } from '../domain'
 import { attachRun } from '../domain'
 import { emptyResult, partialTrendResult, trendResult } from '../mocks'
-import { createInMemoryChatBiPersistence, type ChatBiPersistence, type StoredRunRecord } from '../persistence'
+import { createInMemoryChatBiPersistence } from '../persistence/memory'
+import type { ChatBiPersistence, StoredRunRecord } from '../persistence/ports'
 import {
   ANALYSIS_IR_VERSION,
   CONTRACT_VERSION,

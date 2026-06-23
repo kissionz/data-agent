@@ -7,3 +7,5 @@ vite.config.d.ts
 .DS_Store
 coverage/
 .impeccable/
+.data/
+chatbi-local-store.json

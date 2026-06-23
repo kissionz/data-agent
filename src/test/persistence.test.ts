@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createChatBiApplicationService } from '../application'
-import { createInMemoryChatBiPersistence } from '../persistence'
+import { createFileChatBiPersistence } from '../persistence/file'
+import { createInMemoryChatBiPersistence } from '../persistence/memory'
 import type { ActorContext } from '../contracts'
 
 const actor: ActorContext = {
@@ -115,5 +116,62 @@ describe('ChatBI persistence ports', () => {
       'result.ready',
     ])
     expect(persistence.listAuditEvents('missing')).toEqual([])
+  })
+
+  it('persists runs to a local JSON file that a new adapter instance can read', () => {
+    const filePath = `/private/tmp/chatbi-persistence-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+    const firstPersistence = createFileChatBiPersistence(filePath)
+    const firstService = createChatBiApplicationService({
+      now: () => '2026-06-23T09:00:00+08:00',
+      persistence: firstPersistence,
+    })
+    const created = firstService.submitQuestion({
+      idempotencyKey: 'file_persisted_run',
+      conversationId: 'conversation_file_persisted',
+      question: '过去 12 个月净收入趋势',
+      mode: 'trusted',
+      actor,
+    })
+    if (!created.ok) throw new Error('expected persisted file run')
+
+    const secondPersistence = createFileChatBiPersistence(filePath)
+    const secondService = createChatBiApplicationService({
+      now: () => '2026-06-23T09:05:00+08:00',
+      persistence: secondPersistence,
+    })
+    const loaded = secondService.getRun({
+      runId: created.data.runId,
+      conversationId: created.data.conversationId,
+      actor,
+    })
+
+    expect(loaded.ok).toBe(true)
+    if (!loaded.ok) throw new Error('expected loaded file run')
+    expect(loaded.data.runId).toBe(created.data.runId)
+    expect(secondPersistence.getRunIdByIdempotencyKey('file_persisted_run')).toBe(created.data.runId)
+    expect(secondPersistence.listAuditEvents(created.data.runId).map((event) => event.type)).toContain('result.ready')
+  })
+
+  it('uses cloned file records so caller mutations do not leak back into disk state', () => {
+    const filePath = `/private/tmp/chatbi-persistence-clone-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+    const persistence = createFileChatBiPersistence(filePath)
+    const service = createChatBiApplicationService({
+      now: () => '2026-06-23T09:00:00+08:00',
+      persistence,
+    })
+    const created = service.submitQuestion({
+      idempotencyKey: 'file_clone_guard',
+      conversationId: 'conversation_file_clone_guard',
+      question: '过去 12 个月净收入趋势',
+      mode: 'trusted',
+      actor,
+    })
+    if (!created.ok) throw new Error('expected file run')
+    const record = persistence.getRun(created.data.runId)
+    if (!record?.run.result) throw new Error('expected result')
+    record.run.result.rows[0].values.net_revenue = 0
+
+    const freshAdapter = createFileChatBiPersistence(filePath)
+    expect(freshAdapter.getRun(created.data.runId)?.run.result?.rows[0].values.net_revenue).toBe(1184000)
   })
 })

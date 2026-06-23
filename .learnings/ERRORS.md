@@ -1,5 +1,43 @@
 # Errors
 
+## [ERR-20260623-005] browser bundle imported node persistence adapter
+
+**Logged**: 2026-06-23T00:00:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: build
+
+### Summary
+
+Vite production build failed because the browser application imported the persistence barrel, which re-exported the Node-only file adapter using `node:fs` and `node:path`.
+
+### Error
+
+```text
+Module "node:fs" has been externalized for browser compatibility
+"existsSync" is not exported by "__vite-browser-external"
+```
+
+### Context
+
+`src/App.tsx` imports the application service. The service imported from `../persistence`, whose barrel also exported `file.ts`. That made Rollup include the Node-only adapter in the browser graph.
+
+### Suggested Fix
+
+Keep Node-only adapters out of browser import paths. Application/browser-safe code should import `persistence/memory` and `persistence/ports` directly; tests or Node API code can import `persistence/file` explicitly.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: src/application/chatbiService.ts, src/persistence/index.ts
+
+### Resolution
+
+- **Resolved**: 2026-06-23T00:00:00+08:00
+- **Notes**: Updated browser-facing application imports to avoid the persistence barrel.
+
+---
+
 ## [ERR-20260623-004] public error catalog typing
 
 **Logged**: 2026-06-23T00:00:00+08:00

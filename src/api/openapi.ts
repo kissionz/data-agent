@@ -65,6 +65,37 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/sharing/exports': {
+      post: {
+        summary: '请求导出结果或资产',
+        description: '导出前重新鉴权，检查分类策略、100k 行/50MB 在线限制，生成水印、脱敏计划和短期下载链接预览。',
+        responses: {
+          200: { description: '导出任务，可能 completed 或 blocked' },
+          400: { description: '请求契约无效' },
+        },
+      },
+    },
+    '/v1/sharing/shares': {
+      post: {
+        summary: '创建分享引用',
+        description: '分享只保存 run/asset 引用，不复制高权限结果；接收者打开时必须重新鉴权。',
+        responses: {
+          200: { description: '分享引用已创建' },
+          400: { description: '接收者或有效期无效' },
+        },
+      },
+    },
+    '/v1/sharing/shares/{shareId}/reauthorize': {
+      post: {
+        summary: '分享接收者重新鉴权',
+        description: '按接收者当前身份、工作空间、业务域和策略版本裁决，不复用分享者结果。',
+        parameters: [{ name: 'shareId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '重新鉴权结果' },
+          404: { description: '分享不存在或不可见' },
+        },
+      },
+    },
     '/v1/runs/{runId}': {
       get: {
         summary: '获取 Run 快照',

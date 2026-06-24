@@ -5,17 +5,20 @@ import {
   createEvaluationApplicationService,
   createIdentityPolicyApplicationService,
   createSemanticGovernanceApplicationService,
+  createSharingExportApplicationService,
   httpStatusForAssetEnvelope,
   httpStatusForDataSourceEnvelope,
   httpStatusForEvaluationEnvelope,
   httpStatusForIdentityEnvelope,
   httpStatusForSemanticEnvelope,
+  httpStatusForSharingEnvelope,
   type ChatBiApplicationService,
   type CollaborationAssetApplicationService,
   type DataSourceApplicationService,
   type EvaluationApplicationService,
   type IdentityPolicyApplicationService,
   type SemanticGovernanceApplicationService,
+  type SharingExportApplicationService,
 } from '../application'
 import {
   filterSseEventsAfter,
@@ -56,6 +59,7 @@ export interface ChatBiBffRouter {
   evaluation: EvaluationApplicationService
   identity: IdentityPolicyApplicationService
   semantic: SemanticGovernanceApplicationService
+  sharing: SharingExportApplicationService
 }
 
 const defaultActor: ActorContext = {
@@ -82,6 +86,7 @@ export function createChatBiBffRouter(
   evaluation: EvaluationApplicationService = createEvaluationApplicationService(),
   identity: IdentityPolicyApplicationService = createIdentityPolicyApplicationService(),
   semantic: SemanticGovernanceApplicationService = createSemanticGovernanceApplicationService(),
+  sharing: SharingExportApplicationService = createSharingExportApplicationService(),
 ): ChatBiBffRouter {
   function respond(status: number, body: unknown, extraHeaders: Record<string, string> = {}): HttpResponseLike {
     return {
@@ -190,6 +195,7 @@ export function createChatBiBffRouter(
     evaluation,
     identity,
     semantic,
+    sharing,
     handle(request) {
       const method = request.method.toUpperCase()
       const path = normalizePath(request.path)
@@ -227,6 +233,44 @@ export function createChatBiBffRouter(
           note: String(body.note ?? ''),
         })
         return withCors(respond(httpStatusForIdentityEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/sharing/exports') {
+        const body = bodyObject(request)
+        const envelope = sharing.requestExport({
+          actor: actorFrom(request),
+          source: (body.source || { type: 'run', runId: '', conversationId: '' }) as never,
+          format: (body.format || 'csv') as never,
+          estimatedRows: Number(body.estimatedRows ?? body.estimated_rows ?? 0),
+          estimatedBytes: Number(body.estimatedBytes ?? body.estimated_bytes ?? 0),
+          classification: (body.classification || 'internal') as never,
+        })
+        return withCors(respond(httpStatusForSharingEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/sharing/shares') {
+        const body = bodyObject(request)
+        const envelope = sharing.createShare({
+          actor: actorFrom(request),
+          source: (body.source || { type: 'run', runId: '', conversationId: '' }) as never,
+          scope: (body.scope || 'private_link') as never,
+          recipientUserIds: Array.isArray(body.recipientUserIds)
+            ? body.recipientUserIds.map(String)
+            : Array.isArray(body.recipient_user_ids)
+              ? body.recipient_user_ids.map(String)
+              : [],
+          expiresInDays: Number(body.expiresInDays ?? body.expires_in_days ?? 7),
+        })
+        return withCors(respond(httpStatusForSharingEnvelope(envelope), envelope))
+      }
+
+      const shareReauthMatch = path.match(/^\/v1\/sharing\/shares\/([^/]+)\/reauthorize$/)
+      if (method === 'POST' && shareReauthMatch) {
+        const envelope = sharing.reauthorizeShare({
+          actor: actorFrom(request),
+          shareId: decodeURIComponent(shareReauthMatch[1]),
+        })
+        return withCors(respond(httpStatusForSharingEnvelope(envelope), envelope))
       }
 
       if (method === 'GET' && path === '/v1/semantic/metrics') {

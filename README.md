@@ -26,6 +26,7 @@
 - 运行事件流：`GET /v1/runs/{id}/events` 的 SSE 契约、事件序列化、`Last-Event-ID` 续传和工作空间边界检查。
 - 数据源服务：`/v1/data-sources` 支持数据源列表、元数据详情和只读连接测试，服务层覆盖可见范围过滤、credential ref、不暴露真实凭据、质量门禁与受限字段样本策略。
 - 语义治理服务：`/v1/semantic` 支持指标列表、详情、提交评审和认证发布，服务层覆盖角色权限、参考 SQL 对账门禁、不可变版本、Join Graph 风险暴露和 public audit event。
+- 导出分享服务：`/v1/sharing` 支持导出请求、分享引用和接收者重新鉴权，服务层覆盖导出前重新鉴权、100k 行/50MB 限制、水印计划、脱敏规则和“不复制高权限结果”。
 - 评测回放服务：`/v1/evaluation` 支持黄金集发布门禁、失败回放列表和回放详情，服务层覆盖 P0 门禁阻断、阻断样本角色可见性、脱敏重放计划和不使用生产凭据规则。
 - 协作资产服务：`/v1/assets` 支持资产列表、收藏、订阅和审计链路，服务层覆盖可见范围过滤、审核中不可订阅、接收者重新鉴权摘要和 public audit event。
 - 本地编译执行边界：Analysis IR 经语义 Catalog / Join Graph 校验后生成只读 SQL 计划，注入租户/工作区/业务域守卫，并产出 SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
@@ -81,6 +82,7 @@ pnpm build
 - [src/application/identityPolicy.ts](/Users/kissionz/Documents/data-agent/src/application/identityPolicy.ts)
 - [src/application/dataSources.ts](/Users/kissionz/Documents/data-agent/src/application/dataSources.ts)
 - [src/application/semanticGovernance.ts](/Users/kissionz/Documents/data-agent/src/application/semanticGovernance.ts)
+- [src/application/sharingExports.ts](/Users/kissionz/Documents/data-agent/src/application/sharingExports.ts)
 - [src/application/evaluation.ts](/Users/kissionz/Documents/data-agent/src/application/evaluation.ts)
 - [src/application/collaborationAssets.ts](/Users/kissionz/Documents/data-agent/src/application/collaborationAssets.ts)
 - [src/persistence/ports.ts](/Users/kissionz/Documents/data-agent/src/persistence/ports.ts)
@@ -106,6 +108,9 @@ pnpm build
 - `GET /v1/semantic/metrics/{metricId}`
 - `POST /v1/semantic/metrics/{metricId}/submit-review`
 - `POST /v1/semantic/metrics/{metricId}/certify`
+- `POST /v1/sharing/exports`
+- `POST /v1/sharing/shares`
+- `POST /v1/sharing/shares/{shareId}/reauthorize`
 - `GET /v1/evaluation/gates/current`
 - `GET /v1/evaluation/replays`
 - `GET /v1/evaluation/replays/{runId}`
@@ -114,7 +119,7 @@ pnpm build
 - `POST /v1/assets/{assetId}/subscription`
 - `GET /v1/assets/{assetId}/audit`
 
-本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、评测发布阻断、回放脱敏计划、协作资产门禁和 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
+本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、协作资产门禁和 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
 
 ## 浏览器验收建议
 
@@ -143,7 +148,7 @@ pnpm build
 - OIDC/SAML/SCIM、外部 Policy Engine、服务账号短期令牌、策略审批和审计落库。
 - 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化与 Join Graph 编辑审批。
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。
-- 真实协作资产持久化、通知发送、导出水印文件生成、分享二次鉴权、缓存权限失效。
+- 真实协作资产持久化、通知发送、真实导出文件生成、水印写入、分享链接服务、缓存权限失效。
 - Model Gateway、真实黄金集回归调度、灰度发布与回滚。
 - Playwright E2E、性能/SLO、安全与多租户隔离测试。
 

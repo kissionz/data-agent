@@ -515,6 +515,107 @@ export interface IdentityContextRequest {
   actor: ActorContext
 }
 
+export type ExportFormat = 'csv' | 'xlsx' | 'png' | 'pdf'
+export type ShareGrantScope = 'private_link' | 'workspace' | 'domain_leads'
+
+export interface SharingAuditEvent {
+  id: string
+  at: string
+  type:
+    | 'export.requested'
+    | 'export.completed'
+    | 'export.blocked'
+    | 'share.created'
+    | 'share.reauthorized'
+    | 'share.denied'
+  actorUserId: string
+  tenantId: string
+  workspaceId: string
+  policyVersion: string
+  summary: string
+}
+
+export interface ExportRequest {
+  actor: ActorContext
+  source:
+    | { type: 'run'; runId: string; conversationId: string }
+    | { type: 'asset'; assetId: string }
+  format: ExportFormat
+  estimatedRows: number
+  estimatedBytes: number
+  classification: 'public' | 'internal' | 'confidential' | 'restricted'
+}
+
+export interface ExportJobView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  status: 'completed' | 'blocked'
+  source: ExportRequest['source']
+  format: ExportFormat
+  estimatedRows: number
+  estimatedBytes: number
+  limits: {
+    maxRows: number
+    maxBytes: number
+  }
+  policyVersion: string
+  permissionDigest: string
+  watermark: {
+    enabled: boolean
+    text: string
+  }
+  desensitization: {
+    required: boolean
+    rules: string[]
+  }
+  download: {
+    available: boolean
+    expiresAt?: string
+    signedUrlPreview?: string
+  }
+  blockingReasons: string[]
+  audit: SharingAuditEvent[]
+}
+
+export interface CreateShareRequest {
+  actor: ActorContext
+  source:
+    | { type: 'run'; runId: string; conversationId: string }
+    | { type: 'asset'; assetId: string }
+  scope: ShareGrantScope
+  recipientUserIds: string[]
+  expiresInDays: number
+}
+
+export interface ShareGrantView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  source: CreateShareRequest['source']
+  scope: ShareGrantScope
+  recipientUserIds: string[]
+  expiresAt: string
+  policyVersion: string
+  storesResultSnapshot: false
+  requiresRecipientReauth: true
+  audit: SharingAuditEvent[]
+}
+
+export interface ReauthorizeShareRequest {
+  actor: ActorContext
+  shareId: string
+}
+
+export interface ShareReauthorizationView {
+  contractVersion: typeof CONTRACT_VERSION
+  shareId: string
+  allowed: boolean
+  decision: 'allow' | 'deny'
+  reason: string
+  rerunRequired: boolean
+  policyVersion: string
+  audit: SharingAuditEvent[]
+}
+
 export interface PublicApiError {
   code: PublicErrorCode
   message: string

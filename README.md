@@ -19,6 +19,7 @@
 - 响应式布局：桌面四栏；窄屏抽屉/底部面板；移动端单栏与固定输入。
 - 领域与测试基座：运行状态机、会话模型、语义版本、权限拒绝与安全场景测试。
 - 共享契约：`AnalysisIR v1`、`PublicRunView`、API 包络、澄清、取消、审计事件与错误对象。
+- 共享契约包入口：`@insightflow/contracts` workspace 包已暴露版本、schema、错误码和 SSE helper，供前端、API 与未来 SDK 统一 import。
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
 - API 应用壳：`apps/api` 提供运行时配置、`/readyz`、生产式 header actor 校验、memory/file persistence 模式和 Node adapter 组合入口。
@@ -79,6 +80,7 @@ pnpm build
 - [src/api/router.ts](/Users/kissionz/Documents/data-agent/src/api/router.ts)
 - [src/api/openapi.ts](/Users/kissionz/Documents/data-agent/src/api/openapi.ts)
 - [src/api/nodeServer.ts](/Users/kissionz/Documents/data-agent/src/api/nodeServer.ts)
+- [packages/contracts/src/index.ts](/Users/kissionz/Documents/data-agent/packages/contracts/src/index.ts)
 - [src/application/identityPolicy.ts](/Users/kissionz/Documents/data-agent/src/application/identityPolicy.ts)
 - [src/application/dataSources.ts](/Users/kissionz/Documents/data-agent/src/application/dataSources.ts)
 - [src/application/semanticGovernance.ts](/Users/kissionz/Documents/data-agent/src/application/semanticGovernance.ts)
@@ -156,7 +158,7 @@ pnpm build
 
 ## 建议下一阶段
 
-1. 将当前 `src/contracts` 抽到 `packages/contracts`，并把 `openApiDocument` 改为从 schema 自动生成。
+1. 将 `@insightflow/contracts` 从当前过渡入口迁移为真正源码包，并把 `openApiDocument` 改为从 schema 自动生成。
 2. 为 `src/persistence` 增加 SQLite/PostgreSQL adapter，并把审计事件单独落表；本地 JSON adapter 只作为开发替代。
 3. 增加 `apps/api`，用 Fastify/TypeBox 包装当前 deterministic service、router 和 SSE 契约。
 4. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。

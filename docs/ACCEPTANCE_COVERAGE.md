@@ -6,7 +6,7 @@
 
 ## 总体结论
 
-当前阶段已经完成 ChatBI 核心体验的可视化、身份/工作空间/策略服务契约、数据源治理入口与服务契约、语义治理入口与服务契约、导出分享治理契约、协作资产入口与服务契约、评测回放入口与门禁契约、领域状态机、共享契约、本地编译执行边界、API app 壳和本地 BFF router 基座，足以作为产品评审、前后端契约拆分和后续 API 开发的起点。完整 PRD 的生产验收尚未完成，尤其是真实 OIDC/SAML/SCIM、真实数据源、审计存储、线上评测流水线和 SLO 证明仍需后续阶段实现。
+当前阶段已经完成 ChatBI 核心体验的可视化、身份/工作空间/策略服务契约、数据源治理入口与服务契约、语义治理入口与服务契约、导出分享治理契约、协作资产入口与服务契约、评测回放入口与门禁契约、领域状态机、共享契约包入口、本地编译执行边界、API app 壳和本地 BFF router 基座，足以作为产品评审、前后端契约拆分和后续 API 开发的起点。完整 PRD 的生产验收尚未完成，尤其是真实 OIDC/SAML/SCIM、真实数据源、审计存储、线上评测流水线和 SLO 证明仍需后续阶段实现。
 
 ## 功能覆盖
 
@@ -22,7 +22,7 @@
 | F08 导出、分享与嵌入 | 部分覆盖 | UI 上预留导出/分享动作和上下文约束展示；协作资产中心展示分享范围、导出水印/脱敏审计策略和重新鉴权提示；新增 `SharingExportApplicationService` 与 `/v1/sharing/*` API，覆盖导出前重新鉴权、100k 行/50MB 在线限制、受限分类阻断、水印计划、脱敏规则、短期下载链接预览、分享只保存引用不复制结果、接收者重新鉴权和 public audit event。 | 真实 CSV/XLSX/PDF/PNG 文件生成、真实水印写入、异步大文件导出、嵌入式 SDK、短期 embed token 和通知。 |
 | F09 运营、模型与监控 | 部分覆盖 | 运营中心页面；SLO、门禁、失败分布、回放队列、模型版本、延迟趋势；`EvaluationApplicationService` 暴露当前候选版本黄金集门禁和失败回放列表，支持按状态/业务域/关键词过滤。 | 真实监控事件、模型路由、配额、降级链、灰度发布、成本与告警。 |
 | F10 评测、审计与回放 | 部分覆盖 | 领域测试覆盖状态、安全、语义版本；PublicRunView 携带审计事件；审计事件可通过 persistence 端口列出，并可由本地 JSON 文件 adapter 落盘；新增评测服务与 `/v1/evaluation/*` API，覆盖黄金集 P0 门禁阻断、失败回放详情、阻断样本角色可见性、脱敏重放计划和“不使用生产凭据”规则。 | 黄金集管理、批量回归调度、生产审计存储、真实失败链路回放执行、灰度发布联动和发布阻断落库。 |
-| F11 开放 API / SDK | 部分覆盖 | `apps/api` 提供 API app 壳、运行时配置、`/readyz`、header actor guard、memory/file persistence mode；本地 BFF router 覆盖 `/healthz`、`/openapi.json`、身份上下文/策略裁决、问题提交、Run 查询、SSE 事件、澄清、取消、数据源列表/详情/连接测试、语义指标列表/评审/认证、导出/分享治理、评测门禁/回放、协作资产列表/收藏/订阅/审计；OpenAPI 草案已存在；错误码目录已覆盖全部 public code。 | API Key/服务账号、Fastify/TypeBox 生产 OpenAPI 生成、SDK、Webhook、配额和调用审计。 |
+| F11 开放 API / SDK | 部分覆盖 | `apps/api` 提供 API app 壳、运行时配置、`/readyz`、header actor guard、memory/file persistence mode；新增 `@insightflow/contracts` workspace 包入口，应用可通过包名消费共享契约；本地 BFF router 覆盖 `/healthz`、`/openapi.json`、身份上下文/策略裁决、问题提交、Run 查询、SSE 事件、澄清、取消、数据源列表/详情/连接测试、语义指标列表/评审/认证、导出/分享治理、评测门禁/回放、协作资产列表/收藏/订阅/审计；OpenAPI 草案已存在；错误码目录已覆盖全部 public code。 | API Key/服务账号、Fastify/TypeBox 生产 OpenAPI 生成、SDK、Webhook、配额和调用审计；契约源仍需完全迁入 `packages/contracts` 并移除对 app/domain 源码的过渡 re-export。 |
 | F12 协作资产与订阅 | 部分覆盖 | 协作资产中心页面；资产库、搜索/状态筛选、收藏反馈、归档状态、订阅反馈、分享范围、审核人、版本快照、审计事件；新增 `CollaborationAssetApplicationService` 与 `/v1/assets` API，覆盖 actor 可见范围过滤、收藏更新、审核中/归档不可订阅、订阅更新、接收者重新鉴权摘要和 public audit event；组件测试和服务/API 测试覆盖关键规则。 | 真实资产持久化、重命名、权限分享链接、通知发送、订阅调度、协作权限策略落库和导出水印文件生成。 |
 
 ## UI 验收覆盖
@@ -47,7 +47,7 @@
 | 领域状态机测试 | 已覆盖，`src/test/run.test.ts`。 |
 | 权限与安全拒绝测试 | 已覆盖，`src/test/security.test.ts`。 |
 | 语义与模型测试 | 已覆盖，`src/test/models.test.ts` 验证语义指标、Semantic Catalog、版本边界和 Join Graph 风险门禁。 |
-| 契约测试 | 已覆盖，`src/test/contracts.test.ts` 验证未知字段拒绝、IR schema 与安全护栏。 |
+| 契约测试 | 已覆盖，`src/test/contracts.test.ts` 验证未知字段拒绝、IR schema 与安全护栏；`src/test/contractsPackage.test.ts` 验证 `@insightflow/contracts` 包入口导出版本、schema、错误码和 SSE helper。 |
 | 应用服务测试 | 已覆盖，`src/test/application.test.ts` 验证提交、幂等、澄清、越权、跨工作空间拒绝。 |
 | 本地编译/网关测试 | 已覆盖，`src/test/query.test.ts` 验证确定性 SQL 指纹、语义 Catalog 校验、Join Graph 拒绝、权限守卫注入、参数化过滤、只读拒绝、预算阻断和 public-safe 执行摘要。 |
 | 本地 BFF/API 测试 | 已覆盖，`src/test/api.test.ts` 验证健康检查、OpenAPI、HTTP 状态码、CORS、幂等、澄清和取消；`src/test/apiRuntime.test.ts` 验证 `apps/api` readiness、header actor guard 和 file persistence runtime；`src/test/identityPolicyService.test.ts` 验证身份策略服务与 `/v1/identity/*` API；`src/test/dataSourceService.test.ts` 验证数据源服务与 `/v1/data-sources` API；`src/test/semanticGovernanceService.test.ts` 验证语义治理服务与 `/v1/semantic/*` API；`src/test/sharingExportService.test.ts` 验证导出分享服务与 `/v1/sharing/*` API；`src/test/evaluationService.test.ts` 验证评测门禁、失败回放和 `/v1/evaluation/*` API；`src/test/collaborationService.test.ts` 验证协作资产服务与 `/v1/assets` API。 |
@@ -61,7 +61,7 @@
 
 ## 下一阶段验收门槛建议
 
-1. 将 `src/contracts` 独立为共享包，并用 TypeBox/JSON Schema 生成生产 OpenAPI。
+1. 将 `@insightflow/contracts` 从当前过渡 re-export 迁移为真正源码包，并用 TypeBox/JSON Schema 生成生产 OpenAPI。
 2. 将本地 JSON persistence adapter 替换为 SQLite/PostgreSQL adapter，并补 migration 与审计事件表。
 3. 将当前 `apps/api` Node adapter 替换为 Fastify/TypeBox，补 OIDC/API key 中间件、生产 SSE 长连接和错误码表落地文档。
 4. 每个 PRD P0 流程至少有一个可重复测试：标准查询、澄清、权限拒绝、取消、部分结果、语义发布、回放门禁。

@@ -28,14 +28,14 @@
 |---|---|---|---|
 | UI | `src/App.tsx`、`src/features/*` | 工作台、数据源中心、语义中心、协作资产中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
 | Contracts | `src/contracts/*` | `AnalysisIR v1`、`PublicRunView`、API envelope、审计事件、错误对象、错误码目录、SSE 事件和 schema 草案 | 抽为 `packages/contracts`，使用 TypeBox 生成 OpenAPI |
-| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；数据源列表/详情/连接测试；协作资产列表、收藏、订阅门禁和审计；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter、数据源/协作资产持久化与通知调度 |
+| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；数据源列表/详情/连接测试；评测门禁与失败回放；协作资产列表、收藏、订阅门禁和审计；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter、评测流水线、数据源/协作资产持久化与通知调度 |
 | Semantic | `src/semantic/*` | 本地 Semantic Catalog、认证指标/草稿指标、维度、兼容维度和 Join Graph 风险门禁 | 持久化版本仓库、编辑审批、参考 SQL 对账、血缘和灰度发布 |
 | Query | `src/query/*` | Analysis IR 经 Semantic Catalog 校验后生成只读 SQL AST/SQL，注入权限守卫、SQL 指纹、缓存键和预算阻断 | 方言插件、EXPLAIN 成本模型、连接池、取消传播和真实结果分页 |
 | Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口、内存 adapter、本地 JSON 文件 adapter | SQLite/PostgreSQL/Redis adapter 与 migration |
 | API App | `apps/api/*` | API 运行时配置、`/readyz`、header actor guard、memory/file persistence mode、Node adapter 组合入口 | 替换为 Fastify/TypeBox、OIDC/API key 中间件、生产 SSE 长连接 |
-| BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、数据源 API、协作资产 API、Node server adapter 源码、CORS/状态码映射测试 | 保持为框架无关 router 或拆入 `packages/contracts`/`apps/api` |
+| BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、数据源 API、评测回放 API、协作资产 API、Node server adapter 源码、CORS/状态码映射测试 | 保持为框架无关 router 或拆入 `packages/contracts`/`apps/api` |
 
-`apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/data-sources` 数据源列表/详情/连接测试和 `/v1/assets` 协作资产列表/收藏/订阅/审计接口。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
+`apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/data-sources` 数据源列表/详情/连接测试、`/v1/evaluation` 黄金集门禁/失败回放和 `/v1/assets` 协作资产列表/收藏/订阅/审计接口。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
 
 数据源中心当前是 F02 的前端 + 服务治理切片：用 fixture 表达只读连接、凭据引用、元数据目录、字段分类、样本策略、质量门禁和同步记录，并通过组件测试锁定筛选与连接测试反馈。`DataSourceApplicationService` 进一步把 actor 可见范围过滤、只读 credential ref、元数据详情、连接测试、质量门禁状态和受限字段样本策略接入 `/v1/data-sources` API，且 public view 不暴露真实凭据。它尚未接入真实连接器、扫描调度、血缘、枚举采样或 Schema 变更审批；这些能力应在后续 `DataSourceService` 与 `MetadataScanner` adapter 中落地。
 
@@ -44,6 +44,8 @@
 本地 Semantic Catalog 当前是 F03/F06 的交界切片：它按 tenant/workspace/domain/semanticVersion 解析认证指标、草稿指标、维度、兼容维度和 Join Edge；可信模式只允许 certified metric，高风险或未批准 Join Graph 路径会在 SQL 生成前拒绝。
 
 本地 Query Gateway 当前是 F06 的安全边界切片：Compiler 只接受规范 Analysis IR 和 Semantic Catalog 裁决后的 metric/dimension ID，生成只读 SQL AST/SQL，并注入 tenant/workspace/business domain 守卫；Gateway 再次校验只读、多语句、预算、语义版本、SQL 指纹、权限摘要、数据版本和缓存键。`PublicRunView` 只返回 public-safe `QueryExecutionSummary`，不向业务用户暴露原始 SQL。它尚未连接真实数仓、EXPLAIN、连接池、取消令牌或方言插件矩阵。
+
+评测回放当前是 F09/F10 的服务治理切片：`EvaluationApplicationService` 使用运营中心 fixtures 形成可测试的黄金集门禁和失败回放契约。任一 P0 门禁低于目标时 `releaseAllowed=false`，阻断样本按角色过滤，回放计划显式声明需要脱敏且不能使用生产凭据。它尚未接入真实黄金集管理、批量回归队列、OpenTelemetry trace、灰度发布控制面或审计落库；这些能力应在后续 `EvaluationService`、`ReplayRunner` 与 `ReleaseGate` adapter 中落地。
 
 ## 2. 系统上下文与边界
 

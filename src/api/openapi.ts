@@ -110,6 +110,45 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/evaluation/gates/current': {
+      get: {
+        summary: '获取当前候选版本黄金集发布门禁',
+        description: '返回 P0/P1 指标、发布裁决、阻断原因和评测审计事件；任一 P0 指标失败时 releaseAllowed=false。',
+        parameters: [
+          { name: 'candidate_version', in: 'query', required: false, schema: { type: 'string' } },
+        ],
+        responses: {
+          200: { description: '发布门禁报告' },
+          400: { description: '身份上下文无效' },
+        },
+      },
+    },
+    '/v1/evaluation/replays': {
+      get: {
+        summary: '列出失败回放样本',
+        description: '返回可见的失败、阻断和部分结果回放样本；阻断样本受角色限制。',
+        parameters: [
+          { name: 'q', in: 'query', required: false, schema: { type: 'string' } },
+          { name: 'status', in: 'query', required: false, schema: { enum: ['all', 'failed', 'partial', 'blocked'] } },
+          { name: 'domain', in: 'query', required: false, schema: { type: 'string' } },
+        ],
+        responses: {
+          200: { description: '失败回放列表' },
+          400: { description: '身份上下文无效' },
+        },
+      },
+    },
+    '/v1/evaluation/replays/{runId}': {
+      get: {
+        summary: '获取失败回放详情',
+        description: '返回执行阶段、失败原因、SQL/执行摘要和候选版本重放计划；重放计划不会使用生产凭据。',
+        parameters: [{ name: 'runId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '失败回放详情' },
+          404: { description: '回放不存在或不可见' },
+        },
+      },
+    },
     '/v1/data-sources/{dataSourceId}': {
       get: {
         summary: '获取数据源元数据目录',

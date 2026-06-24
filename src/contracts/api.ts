@@ -289,6 +289,78 @@ export interface DataSourceConnectionTestResult {
   audit: DataSourceAuditEvent[]
 }
 
+export interface EvaluationAuditEvent {
+  id: string
+  at: string
+  type: 'evaluation.gate_evaluated' | 'evaluation.replay_listed' | 'evaluation.replay_viewed' | 'evaluation.release_blocked'
+  actorUserId: string
+  tenantId: string
+  workspaceId: string
+  summary: string
+}
+
+export interface EvaluationGateMetricView {
+  name: string
+  value: number
+  target: number
+  result: 'pass' | 'fail'
+  severity: 'p0' | 'p1'
+}
+
+export interface EvaluationGateReport {
+  contractVersion: typeof CONTRACT_VERSION
+  candidateVersion: string
+  sampleSize: number
+  decision: 'pass' | 'blocked'
+  failedP0: number
+  failedMetrics: EvaluationGateMetricView[]
+  metrics: EvaluationGateMetricView[]
+  releaseAllowed: boolean
+  summary: string
+  audit: EvaluationAuditEvent[]
+}
+
+export interface ReplayRunView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  question: string
+  domain: string
+  model: string
+  status: 'failed' | 'partial' | 'blocked'
+  reason: string
+  timestamp: string
+  duration: string
+  traceId: string
+  stage: string
+  semanticVersion: string
+  sqlSummary: string
+  resolution: string
+  safeForReplay: boolean
+  replayPlan: {
+    candidateVersion: string
+    requiresDesensitization: boolean
+    canUseProductionCredentials: false
+  }
+  audit: EvaluationAuditEvent[]
+}
+
+export interface ListReplayRunsRequest {
+  actor: ActorContext
+  query?: string
+  status?: ReplayRunView['status'] | 'all'
+  domain?: string
+}
+
+export interface GetReplayRunRequest {
+  actor: ActorContext
+  runId: string
+}
+
+export interface EvaluateReleaseGateRequest {
+  actor: ActorContext
+  candidateVersion?: string
+}
+
 export interface PublicApiError {
   code: PublicErrorCode
   message: string

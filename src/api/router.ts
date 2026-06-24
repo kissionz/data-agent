@@ -2,11 +2,14 @@ import {
   createChatBiApplicationService,
   createCollaborationAssetApplicationService,
   createDataSourceApplicationService,
+  createEvaluationApplicationService,
   httpStatusForAssetEnvelope,
   httpStatusForDataSourceEnvelope,
+  httpStatusForEvaluationEnvelope,
   type ChatBiApplicationService,
   type CollaborationAssetApplicationService,
   type DataSourceApplicationService,
+  type EvaluationApplicationService,
 } from '../application'
 import {
   filterSseEventsAfter,
@@ -44,6 +47,7 @@ export interface ChatBiBffRouter {
   service: ChatBiApplicationService
   assets: CollaborationAssetApplicationService
   dataSources: DataSourceApplicationService
+  evaluation: EvaluationApplicationService
 }
 
 const defaultActor: ActorContext = {
@@ -67,6 +71,7 @@ export function createChatBiBffRouter(
   service: ChatBiApplicationService = createChatBiApplicationService(),
   assets: CollaborationAssetApplicationService = createCollaborationAssetApplicationService(),
   dataSources: DataSourceApplicationService = createDataSourceApplicationService(),
+  evaluation: EvaluationApplicationService = createEvaluationApplicationService(),
 ): ChatBiBffRouter {
   function respond(status: number, body: unknown, extraHeaders: Record<string, string> = {}): HttpResponseLike {
     return {
@@ -171,6 +176,7 @@ export function createChatBiBffRouter(
     service,
     assets,
     dataSources,
+    evaluation,
     handle(request) {
       const method = request.method.toUpperCase()
       const path = normalizePath(request.path)
@@ -184,6 +190,33 @@ export function createChatBiBffRouter(
       if (method === 'POST' && path === '/v1/questions') {
         const envelope = service.submitQuestion(questionRequest(request))
         return withCors(respond(envelopeStatus(envelope), envelope))
+      }
+
+      if (method === 'GET' && path === '/v1/evaluation/gates/current') {
+        const envelope = evaluation.evaluateReleaseGate({
+          actor: actorFrom(request),
+          candidateVersion: request.query?.candidate_version || request.query?.candidateVersion,
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
+      }
+
+      if (method === 'GET' && path === '/v1/evaluation/replays') {
+        const envelope = evaluation.listReplayRuns({
+          actor: actorFrom(request),
+          query: request.query?.q || request.query?.query,
+          status: request.query?.status as never,
+          domain: request.query?.domain,
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
+      }
+
+      const replayMatch = path.match(/^\/v1\/evaluation\/replays\/([^/]+)$/)
+      if (replayMatch && method === 'GET') {
+        const envelope = evaluation.getReplayRun({
+          actor: actorFrom(request),
+          runId: decodeURIComponent(replayMatch[1]),
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
       }
 
       if (method === 'GET' && path === '/v1/data-sources') {

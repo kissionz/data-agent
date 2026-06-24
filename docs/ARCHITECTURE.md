@@ -28,14 +28,14 @@
 |---|---|---|---|
 | UI | `src/App.tsx`、`src/features/*` | 工作台、数据源中心、语义中心、协作资产中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
 | Contracts | `src/contracts/*`、`packages/contracts/*` | `AnalysisIR v1`、`PublicRunView`、API envelope、审计事件、错误对象、错误码目录、SSE 事件和 schema 草案；`@insightflow/contracts` workspace 包入口已可供应用/未来 SDK 按包名消费 | 将过渡 re-export 迁移为真正源码包，使用 TypeBox 生成 OpenAPI |
-| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；身份上下文与策略裁决；服务账号/API Key/Webhook/embed token 开发者接入治理；数据源列表/详情/连接测试；语义指标评审/认证；导出分享重新鉴权；评测门禁与失败回放；模型路由、配额、降级链、灰度回滚；协作资产列表、收藏、订阅门禁和审计；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter、真实 Model Gateway、外部身份/策略引擎、API Key 验签和 Webhook 投递队列、语义对象持久化、真实导出文件生成、评测流水线、数据源/协作资产持久化与通知调度 |
+| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；身份上下文与策略裁决；服务账号/API Key/Webhook/embed token 开发者接入治理；数据源列表/详情/连接测试；语义指标评审/认证；导出分享重新鉴权；评测门禁与失败回放；模型路由、配额、降级链、灰度回滚；SLO 报告与性能预算评估；协作资产列表、收藏、订阅门禁和审计；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter、真实 Model Gateway、外部身份/策略引擎、API Key 验签和 Webhook 投递队列、语义对象持久化、真实导出文件生成、评测流水线、真实监控告警、数据源/协作资产持久化与通知调度 |
 | Semantic | `src/semantic/*` | 本地 Semantic Catalog、认证指标/草稿指标、维度、兼容维度和 Join Graph 风险门禁；治理服务暴露提交评审、认证发布、参考 SQL 对账门禁和 public audit | 持久化版本仓库、Join Graph 编辑审批、参考 SQL 自动对账、血缘和灰度发布 |
 | Query | `src/query/*` | Analysis IR 经 Semantic Catalog 校验后生成只读 SQL AST/SQL，注入权限守卫、SQL 指纹、缓存键和预算阻断 | 方言插件、EXPLAIN 成本模型、连接池、取消传播和真实结果分页 |
 | Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口、内存 adapter、本地 JSON 文件 adapter | SQLite/PostgreSQL/Redis adapter 与 migration |
 | API App | `apps/api/*` | API 运行时配置、`/readyz`、header actor guard、memory/file persistence mode、Node adapter 组合入口 | 替换为 Fastify/TypeBox、OIDC/API key 中间件、生产 SSE 长连接 |
-| BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、身份策略 API、开发者接入 API、数据源 API、语义治理 API、导出分享 API、评测回放 API、模型运营 API、协作资产 API、Node server adapter 源码、CORS/状态码映射测试 | 保持为框架无关 router 或拆入 `packages/contracts`/`apps/api` |
+| BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、身份策略 API、开发者接入 API、数据源 API、语义治理 API、导出分享 API、评测回放 API、模型运营 API、SLO/性能预算 API、协作资产 API、Node server adapter 源码、CORS/状态码映射测试 | 保持为框架无关 router 或拆入 `packages/contracts`/`apps/api` |
 
-`apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`/v1/identity` 身份上下文/策略裁决、`/v1/developer` 服务账号/API Key/Webhook/embed token、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/data-sources` 数据源列表/详情/连接测试、`/v1/semantic` 语义指标评审/认证、`/v1/sharing` 导出/分享治理、`/v1/evaluation` 黄金集门禁/失败回放、`/v1/model-ops` 模型路由/决策/回滚和 `/v1/assets` 协作资产列表/收藏/订阅/审计接口。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
+`apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`/v1/identity` 身份上下文/策略裁决、`/v1/developer` 服务账号/API Key/Webhook/embed token、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/data-sources` 数据源列表/详情/连接测试、`/v1/semantic` 语义指标评审/认证、`/v1/sharing` 导出/分享治理、`/v1/evaluation` 黄金集门禁/失败回放、`/v1/model-ops` 模型路由/决策/回滚、`/v1/operations/slo` SLO 报告/性能预算评估和 `/v1/assets` 协作资产列表/收藏/订阅/审计接口。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
 
 共享契约包当前是 F11/API SDK 的过渡切片：`packages/contracts` 暴露 `@insightflow/contracts` 包名，使用 Vite/TS path alias 指向既有契约源，并通过包入口测试锁定版本、schema、错误码和 SSE helper。这样前端、API 和未来 SDK 可以先统一 import 边界；下一阶段再把契约源码完全迁入包内，解除对 `src/domain` 的历史依赖。
 
@@ -58,6 +58,8 @@
 评测回放当前是 F09/F10 的服务治理切片：`EvaluationApplicationService` 使用运营中心 fixtures 形成可测试的黄金集门禁和失败回放契约。任一 P0 门禁低于目标时 `releaseAllowed=false`，阻断样本按角色过滤，回放计划显式声明需要脱敏且不能使用生产凭据。它尚未接入真实黄金集管理、批量回归队列、OpenTelemetry trace、灰度发布控制面或审计落库；这些能力应在后续 `EvaluationService`、`ReplayRunner` 与 `ReleaseGate` adapter 中落地。
 
 模型运营当前是 F09 的服务治理切片：`ModelOpsApplicationService` 使用运营中心模型版本 fixture 形成可测试的路由控制面契约。每条路由包含能力、供应商、active/candidate 版本、灰度流量、超时、温度、租户训练/留存覆盖、租户/工作区日配额和降级链；路由决策按租户策略、配额、供应商可用性和发布门禁选择 active、candidate 或 fallback；回滚仅允许 `platform_ops` / `security_admin`，并将流量切回 active 100%。它尚未调用真实模型供应商、采集真实成本/延迟、写入生产模型审计或执行自动告警回滚；这些能力应在后续 `ModelGateway`、`ModelTelemetry` 与 `ReleaseController` adapter 中落地。
+
+SLO 与性能预算当前是 F09 的运营控制面切片：`SloApplicationService` 复用运营中心 SLO、延迟、成本和回放 fixture，提供 `/v1/operations/slo` 报告与 `/v1/operations/slo/budget-evaluations` 单次 Run 预算决策。报告覆盖可用性、首个状态反馈 P95、完整答案 P95、单次成功成本、取消传播 P95、错误预算、告警 runbook 和审计事件；预算决策按延迟、成本、扫描量和可选取消传播时间返回 `allow/warn/block`，并在预警或阻断时生成 public-safe 审计。它尚未接入 Prometheus/OpenTelemetry、真实压测、线上告警投递或自动回滚阈值执行；这些能力应在后续 `TelemetryIngestor`、`SloEvaluator` 与 `AlertDispatcher` adapter 中落地。
 
 ## 2. 系统上下文与边界
 
@@ -244,6 +246,8 @@ IR 使用严格 JSON Schema（`additionalProperties: false`），服务端维护
 | `GET` | `/v1/model-ops/routes` | 模型路由、版本、配额、超时、温度和降级链 |
 | `POST` | `/v1/model-ops/route` | 按能力、配额、供应商可用性和门禁执行一次模型路由决策 |
 | `POST` | `/v1/model-ops/routes/{id}/rollback` | 运维/安全管理员回滚候选版本灰度流量 |
+| `GET` | `/v1/operations/slo` | 获取 SLO 目标、错误预算、告警 runbook 和审计事件 |
+| `POST` | `/v1/operations/slo/budget-evaluations` | 按延迟、成本、扫描量和取消传播评估单次 Run 性能预算 |
 
 `POST /v1/questions` 请求：
 

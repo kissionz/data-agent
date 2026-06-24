@@ -703,6 +703,94 @@ export interface RollbackModelRouteRequest {
   reason: string
 }
 
+export type SloWindow = '7d' | '30d' | '90d'
+export type SloObjectiveStatus = 'healthy' | 'warning' | 'breach'
+export type SloObjectiveCategory = 'availability' | 'latency' | 'cost' | 'cancellation' | 'quality'
+export type SloComparator = 'gte' | 'lte'
+
+export interface SloAuditEvent {
+  id: string
+  at: string
+  type: 'slo.report_generated' | 'slo.budget_evaluated' | 'slo.alert_triggered'
+  actorUserId: string
+  tenantId: string
+  workspaceId: string
+  summary: string
+}
+
+export interface SloObjectiveView {
+  name: string
+  category: SloObjectiveCategory
+  value: number
+  formattedValue: string
+  target: number
+  comparator: SloComparator
+  formattedTarget: string
+  status: SloObjectiveStatus
+  errorBudgetRemaining: number
+  window: SloWindow
+  evidence: string[]
+}
+
+export interface SloAlertView {
+  id: string
+  severity: 'info' | 'warning' | 'critical'
+  status: 'open' | 'acknowledged' | 'closed'
+  objective: string
+  message: string
+  runbook: string
+  rollbackRequired: boolean
+  createdAt: string
+}
+
+export interface SloReportView {
+  contractVersion: typeof CONTRACT_VERSION
+  window: SloWindow
+  tenantId: string
+  workspaceId: string
+  generatedAt: string
+  summary: {
+    status: SloObjectiveStatus
+    healthy: number
+    warning: number
+    breach: number
+    costPerSuccessCny: number
+    p95LatencySeconds: number
+    p95CancelSeconds: number
+  }
+  objectives: SloObjectiveView[]
+  alerts: SloAlertView[]
+  audit: SloAuditEvent[]
+}
+
+export interface GetSloReportRequest {
+  actor: ActorContext
+  window?: SloWindow
+}
+
+export interface EvaluatePerformanceBudgetRequest {
+  actor: ActorContext
+  runId: string
+  latencySeconds: number
+  costCny: number
+  scanBytes: number
+  cancelledPropagationSeconds?: number
+}
+
+export interface PerformanceBudgetDecisionView {
+  contractVersion: typeof CONTRACT_VERSION
+  runId: string
+  decision: 'allow' | 'warn' | 'block'
+  reasons: string[]
+  budgets: {
+    latencySeconds: { actual: number; target: number; status: SloObjectiveStatus }
+    costCny: { actual: number; target: number; status: SloObjectiveStatus }
+    scanBytes: { actual: number; target: number; status: SloObjectiveStatus }
+    cancelledPropagationSeconds?: { actual: number; target: number; status: SloObjectiveStatus }
+  }
+  audit: SloAuditEvent[]
+}
+
 export type DeveloperScope =
   | 'questions:write'
   | 'runs:read'

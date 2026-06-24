@@ -101,6 +101,29 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/operations/slo': {
+      get: {
+        summary: '获取运营 SLO 报告',
+        description: '返回可用性、延迟、成本、取消传播等目标的当前窗口状态、错误预算、告警和审计事件。当前为本地 deterministic 控制面，生产需接入真实监控事件。',
+        parameters: [
+          { name: 'window', in: 'query', required: false, schema: { enum: ['7d', '30d', '90d'] } },
+        ],
+        responses: {
+          200: { description: 'SLO 报告' },
+          400: { description: '身份上下文或窗口无效' },
+        },
+      },
+    },
+    '/v1/operations/slo/budget-evaluations': {
+      post: {
+        summary: '评估单次 Run 的性能预算',
+        description: '按完整答案延迟、单次成本、扫描量和可选取消传播时间返回 allow/warn/block 决策，并在预警或阻断时生成告警审计。',
+        responses: {
+          200: { description: '性能预算决策' },
+          400: { description: '请求契约或身份上下文无效' },
+        },
+      },
+    },
     '/v1/developer/service-accounts': {
       post: {
         summary: '创建服务账号',

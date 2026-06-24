@@ -51,6 +51,8 @@ describe('ChatBI local BFF router', () => {
         '/v1/developer/embed-tokens': expect.any(Object),
         '/v1/model-ops/routes': expect.any(Object),
         '/v1/model-ops/route': expect.any(Object),
+        '/v1/operations/slo': expect.any(Object),
+        '/v1/operations/slo/budget-evaluations': expect.any(Object),
         '/v1/runs/{runId}/clarify': expect.any(Object),
         '/v1/runs/{runId}/events': expect.any(Object),
       },

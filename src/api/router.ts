@@ -8,6 +8,7 @@ import {
   createModelOpsApplicationService,
   createSemanticGovernanceApplicationService,
   createSharingExportApplicationService,
+  createSloApplicationService,
   httpStatusForAssetEnvelope,
   httpStatusForDataSourceEnvelope,
   httpStatusForDeveloperAccessEnvelope,
@@ -16,6 +17,7 @@ import {
   httpStatusForModelOpsEnvelope,
   httpStatusForSemanticEnvelope,
   httpStatusForSharingEnvelope,
+  httpStatusForSloEnvelope,
   type ChatBiApplicationService,
   type CollaborationAssetApplicationService,
   type DataSourceApplicationService,
@@ -25,6 +27,7 @@ import {
   type ModelOpsApplicationService,
   type SemanticGovernanceApplicationService,
   type SharingExportApplicationService,
+  type SloApplicationService,
 } from '../application'
 import {
   filterSseEventsAfter,
@@ -39,6 +42,7 @@ import {
   type GetRunRequest,
   type ModelCapability,
   type PublicRunView,
+  type SloWindow,
   type SubscriptionCadence,
   type SubmitQuestionRequest,
 } from '../contracts'
@@ -69,6 +73,7 @@ export interface ChatBiBffRouter {
   modelOps: ModelOpsApplicationService
   semantic: SemanticGovernanceApplicationService
   sharing: SharingExportApplicationService
+  slo: SloApplicationService
 }
 
 const defaultActor: ActorContext = {
@@ -98,6 +103,7 @@ export function createChatBiBffRouter(
   modelOps: ModelOpsApplicationService = createModelOpsApplicationService(),
   semantic: SemanticGovernanceApplicationService = createSemanticGovernanceApplicationService(),
   sharing: SharingExportApplicationService = createSharingExportApplicationService(),
+  slo: SloApplicationService = createSloApplicationService(),
 ): ChatBiBffRouter {
   function respond(status: number, body: unknown, extraHeaders: Record<string, string> = {}): HttpResponseLike {
     return {
@@ -209,6 +215,7 @@ export function createChatBiBffRouter(
     modelOps,
     semantic,
     sharing,
+    slo,
     handle(request) {
       const method = request.method.toUpperCase()
       const path = normalizePath(request.path)
@@ -315,6 +322,29 @@ export function createChatBiBffRouter(
           reason: String(body.reason ?? body.note ?? ''),
         })
         return withCors(respond(httpStatusForModelOpsEnvelope(envelope), envelope))
+      }
+
+      if (method === 'GET' && path === '/v1/operations/slo') {
+        const envelope = slo.getReport({
+          actor: actorFrom(request),
+          window: request.query?.window as SloWindow | undefined,
+        })
+        return withCors(respond(httpStatusForSloEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/operations/slo/budget-evaluations') {
+        const body = bodyObject(request)
+        const envelope = slo.evaluateBudget({
+          actor: actorFrom(request),
+          runId: String(body.runId ?? body.run_id ?? ''),
+          latencySeconds: Number(body.latencySeconds ?? body.latency_seconds ?? 0),
+          costCny: Number(body.costCny ?? body.cost_cny ?? 0),
+          scanBytes: Number(body.scanBytes ?? body.scan_bytes ?? 0),
+          cancelledPropagationSeconds: body.cancelledPropagationSeconds === undefined && body.cancelled_propagation_seconds === undefined
+            ? undefined
+            : Number(body.cancelledPropagationSeconds ?? body.cancelled_propagation_seconds),
+        })
+        return withCors(respond(httpStatusForSloEnvelope(envelope), envelope))
       }
 
       if (method === 'POST' && path === '/v1/questions') {

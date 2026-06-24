@@ -31,6 +31,7 @@
 - 导出分享服务：`/v1/sharing` 支持导出请求、分享引用和接收者重新鉴权，服务层覆盖导出前重新鉴权、100k 行/50MB 限制、水印计划、脱敏规则和“不复制高权限结果”。
 - 评测回放服务：`/v1/evaluation` 支持黄金集发布门禁、失败回放列表和回放详情，服务层覆盖 P0 门禁阻断、阻断样本角色可见性、脱敏重放计划和不使用生产凭据规则。
 - 模型运营服务：`/v1/model-ops` 支持模型路由列表、单次路由决策和灰度回滚，服务层覆盖版本化 active/candidate、超时、温度、租户覆盖、配额、降级链、发布门禁阻断和 platform_ops/security_admin 回滚权限。
+- SLO 与性能预算服务：`/v1/operations/slo` 支持 SLO 报告和单次 Run 性能预算评估，服务层覆盖可用性、P95 延迟、成本、取消传播、扫描量、告警 runbook 和 allow/warn/block 决策。
 - 协作资产服务：`/v1/assets` 支持资产列表、收藏、订阅和审计链路，服务层覆盖可见范围过滤、审核中不可订阅、接收者重新鉴权摘要和 public audit event。
 - 本地编译执行边界：Analysis IR 经语义 Catalog / Join Graph 校验后生成只读 SQL 计划，注入租户/工作区/业务域守卫，并产出 SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。
@@ -90,6 +91,7 @@ pnpm build
 - [src/application/sharingExports.ts](/Users/kissionz/Documents/data-agent/src/application/sharingExports.ts)
 - [src/application/evaluation.ts](/Users/kissionz/Documents/data-agent/src/application/evaluation.ts)
 - [src/application/modelOps.ts](/Users/kissionz/Documents/data-agent/src/application/modelOps.ts)
+- [src/application/slo.ts](/Users/kissionz/Documents/data-agent/src/application/slo.ts)
 - [src/application/collaborationAssets.ts](/Users/kissionz/Documents/data-agent/src/application/collaborationAssets.ts)
 - [src/persistence/ports.ts](/Users/kissionz/Documents/data-agent/src/persistence/ports.ts)
 - [src/persistence/memory.ts](/Users/kissionz/Documents/data-agent/src/persistence/memory.ts)
@@ -129,12 +131,14 @@ pnpm build
 - `GET /v1/model-ops/routes`
 - `POST /v1/model-ops/route`
 - `POST /v1/model-ops/routes/{routeId}/rollback`
+- `GET /v1/operations/slo`
+- `POST /v1/operations/slo/budget-evaluations`
 - `GET /v1/assets`
 - `POST /v1/assets/{assetId}/favorite`
 - `POST /v1/assets/{assetId}/subscription`
 - `GET /v1/assets/{assetId}/audit`
 
-本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、协作资产门禁和 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
+本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
 
 ## 浏览器验收建议
 
@@ -164,8 +168,8 @@ pnpm build
 - 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化与 Join Graph 编辑审批。
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。
 - 真实协作资产持久化、通知发送、真实导出文件生成、水印写入、分享链接服务、缓存权限失效。
-- 真实 Model Gateway、成本采集、模型调用审计、真实黄金集回归调度、线上灰度发布控制面与自动回滚。
-- Playwright E2E、性能/SLO、安全与多租户隔离测试。
+- 真实 Model Gateway、成本采集、模型调用审计、真实黄金集回归调度、线上灰度发布控制面、真实监控告警与自动回滚。
+- Playwright E2E、真实压测/SLO 证明、安全与多租户隔离测试。
 
 语义中心和运营中心的筛选、刷新、审批、回放等交互当前均为 fixture/mock 交互，不代表已连接真实审批流、监控平台或评测流水线。
 

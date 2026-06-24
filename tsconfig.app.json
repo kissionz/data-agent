@@ -13,7 +13,8 @@
     "moduleResolution": "Bundler",
     "baseUrl": ".",
     "paths": {
-      "@insightflow/contracts": ["packages/contracts/src/index.ts"]
+      "@insightflow/contracts": ["packages/contracts/src/index.ts"],
+      "@insightflow/contracts/*": ["packages/contracts/src/*"]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

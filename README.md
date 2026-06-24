@@ -19,7 +19,7 @@
 - 响应式布局：桌面四栏；窄屏抽屉/底部面板；移动端单栏与固定输入。
 - 领域与测试基座：运行状态机、会话模型、语义版本、权限拒绝与安全场景测试。
 - 共享契约：`AnalysisIR v1`、`PublicRunView`、API 包络、澄清、取消、审计事件与错误对象。
-- 共享契约包入口：`@insightflow/contracts` workspace 包已暴露版本、schema、错误码和 SSE helper，供前端、API 与未来 SDK 统一 import。
+- 共享契约包：`@insightflow/contracts` workspace 包已拥有独立的 `api`、`domain`、`events` 契约源码，暴露版本、schema、错误码、公共 DTO 和 SSE helper，供前端、API 与未来 SDK 统一 import。
 - 开发者接入契约：`/v1/developer` 支持服务账号、API Key、Webhook 和短期 embed token 的本地治理契约，覆盖 scope、配额、过期、撤销、签名、重放保护和不暴露明文密钥/数据库凭据。
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
@@ -175,7 +175,7 @@ pnpm build
 
 ## 建议下一阶段
 
-1. 将 `@insightflow/contracts` 从当前过渡入口迁移为真正源码包，并把 `openApiDocument` 改为从 schema 自动生成。
+1. 将 `openApiDocument` 改为从 `@insightflow/contracts` schema 自动生成，并补 SDK 代码生成/发布流程。
 2. 为 `src/persistence` 增加 SQLite/PostgreSQL adapter，并把审计事件单独落表；本地 JSON adapter 只作为开发替代。
 3. 增加 `apps/api`，用 Fastify/TypeBox 包装当前 deterministic service、router 和 SSE 契约。
 4. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。

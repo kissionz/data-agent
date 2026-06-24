@@ -27,7 +27,7 @@
 | 层 | 当前目录 | 当前能力 | 后续演进 |
 |---|---|---|---|
 | UI | `src/App.tsx`、`src/features/*` | 工作台、数据源中心、语义中心、协作资产中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
-| Contracts | `src/contracts/*`、`packages/contracts/*` | `AnalysisIR v1`、`PublicRunView`、API envelope、审计事件、错误对象、错误码目录、SSE 事件和 schema 草案；`@insightflow/contracts` workspace 包入口已可供应用/未来 SDK 按包名消费 | 将过渡 re-export 迁移为真正源码包，使用 TypeBox 生成 OpenAPI |
+| Contracts | `packages/contracts/*`、`src/contracts/*` | `@insightflow/contracts` 已拥有独立 `api`、`domain`、`events` 源码，覆盖 `AnalysisIR v1`、`PublicRunView`、API envelope、公共 DTO、审计事件、错误对象、错误码目录、SSE 事件和 schema 草案；`src/contracts` 仅作为旧相对 import 的兼容层 | 使用 TypeBox/JSON Schema 生成 OpenAPI 和 SDK，逐步让应用直接从包名 import |
 | Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；身份上下文与策略裁决；服务账号/API Key/Webhook/embed token 开发者接入治理；数据源列表/详情/连接测试；语义指标评审/认证；导出分享重新鉴权；评测门禁与失败回放；模型路由、配额、降级链、灰度回滚；SLO 报告与性能预算评估；协作资产列表、收藏、订阅门禁和审计；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter、真实 Model Gateway、外部身份/策略引擎、API Key 验签和 Webhook 投递队列、语义对象持久化、真实导出文件生成、评测流水线、真实监控告警、数据源/协作资产持久化与通知调度 |
 | Semantic | `src/semantic/*` | 本地 Semantic Catalog、认证指标/草稿指标、维度、兼容维度和 Join Graph 风险门禁；治理服务暴露提交评审、认证发布、参考 SQL 对账门禁和 public audit | 持久化版本仓库、Join Graph 编辑审批、参考 SQL 自动对账、血缘和灰度发布 |
 | Query | `src/query/*` | Analysis IR 经 Semantic Catalog 校验后生成只读 SQL AST/SQL，注入权限守卫、SQL 指纹、缓存键和预算阻断 | 方言插件、EXPLAIN 成本模型、连接池、取消传播和真实结果分页 |
@@ -37,7 +37,7 @@
 
 `apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`/v1/identity` 身份上下文/策略裁决、`/v1/developer` 服务账号/API Key/Webhook/embed token、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/data-sources` 数据源列表/详情/连接测试、`/v1/semantic` 语义指标评审/认证、`/v1/sharing` 导出/分享治理、`/v1/evaluation` 黄金集门禁/失败回放、`/v1/model-ops` 模型路由/决策/回滚、`/v1/operations/slo` SLO 报告/性能预算评估和 `/v1/assets` 协作资产列表/收藏/订阅/审计接口。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
 
-共享契约包当前是 F11/API SDK 的过渡切片：`packages/contracts` 暴露 `@insightflow/contracts` 包名，使用 Vite/TS path alias 指向既有契约源，并通过包入口测试锁定版本、schema、错误码和 SSE helper。这样前端、API 和未来 SDK 可以先统一 import 边界；下一阶段再把契约源码完全迁入包内，解除对 `src/domain` 的历史依赖。
+共享契约包当前是 F11/API SDK 的源码切片：`packages/contracts` 暴露 `@insightflow/contracts` 包名和 `api`、`domain`、`events` 子路径，包内持有公共契约源码，不再从 `src/contracts` 或 `src/domain` 反向 re-export。`src/contracts` 只保留兼容层，服务旧的相对 import；包级测试锁定版本、schema、错误码、公共状态词表和 SSE helper。下一阶段应把 OpenAPI 生成、SDK 代码生成和包发布流程接到这组 schema 上。
 
 开发者接入当前是 F11/F12 的服务治理切片：`DeveloperAccessApplicationService` 提供服务账号、API Key、Webhook 和短期 embed token 的本地契约。服务账号绑定当前工作区/业务域、scope、过期时间和日配额；API Key 只返回前缀、脱敏预览与 hash 指纹，可撤销但不暴露明文；Webhook 强制 HTTPS、HMAC-SHA256 签名、300 秒重放保护、指数退避和死信策略，并声明不投递越权数据；embed token 由 Host 以自身权限换取，5–120 分钟有效，组件不能接触数据库凭据。它尚未实现真实 API Key 验签、SDK 代码生成、Webhook 异步投递或 embed SDK 包。
 

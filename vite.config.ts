@@ -4,9 +4,16 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
-      '@insightflow/contracts': new URL('./packages/contracts/src/index.ts', import.meta.url).pathname,
-    },
+    alias: [
+      {
+        find: /^@insightflow\/contracts$/,
+        replacement: new URL('./packages/contracts/src/index.ts', import.meta.url).pathname,
+      },
+      {
+        find: /^@insightflow\/contracts\/(.+)$/,
+        replacement: new URL('./packages/contracts/src/$1.ts', import.meta.url).pathname,
+      },
+    ],
   },
   test: {
     environment: 'jsdom',

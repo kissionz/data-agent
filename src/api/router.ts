@@ -3,15 +3,18 @@ import {
   createCollaborationAssetApplicationService,
   createDataSourceApplicationService,
   createEvaluationApplicationService,
+  createIdentityPolicyApplicationService,
   createSemanticGovernanceApplicationService,
   httpStatusForAssetEnvelope,
   httpStatusForDataSourceEnvelope,
   httpStatusForEvaluationEnvelope,
+  httpStatusForIdentityEnvelope,
   httpStatusForSemanticEnvelope,
   type ChatBiApplicationService,
   type CollaborationAssetApplicationService,
   type DataSourceApplicationService,
   type EvaluationApplicationService,
+  type IdentityPolicyApplicationService,
   type SemanticGovernanceApplicationService,
 } from '../application'
 import {
@@ -51,6 +54,7 @@ export interface ChatBiBffRouter {
   assets: CollaborationAssetApplicationService
   dataSources: DataSourceApplicationService
   evaluation: EvaluationApplicationService
+  identity: IdentityPolicyApplicationService
   semantic: SemanticGovernanceApplicationService
 }
 
@@ -76,6 +80,7 @@ export function createChatBiBffRouter(
   assets: CollaborationAssetApplicationService = createCollaborationAssetApplicationService(),
   dataSources: DataSourceApplicationService = createDataSourceApplicationService(),
   evaluation: EvaluationApplicationService = createEvaluationApplicationService(),
+  identity: IdentityPolicyApplicationService = createIdentityPolicyApplicationService(),
   semantic: SemanticGovernanceApplicationService = createSemanticGovernanceApplicationService(),
 ): ChatBiBffRouter {
   function respond(status: number, body: unknown, extraHeaders: Record<string, string> = {}): HttpResponseLike {
@@ -105,6 +110,7 @@ export function createChatBiBffRouter(
       roles: roles?.length ? roles : defaultActor.roles,
       businessDomainId: headers['x-business-domain-id'] || defaultActor.businessDomainId,
       semanticVersion: headers['x-semantic-version'] || defaultActor.semanticVersion,
+      policyVersion: headers['x-policy-version'],
     }
   }
 
@@ -163,7 +169,7 @@ export function createChatBiBffRouter(
       headers: {
         'access-control-allow-origin': '*',
         'access-control-allow-methods': 'GET,POST,OPTIONS',
-        'access-control-allow-headers': 'content-type,idempotency-key,x-tenant-id,x-workspace-id,x-user-roles,x-business-domain-id,x-semantic-version',
+        'access-control-allow-headers': 'content-type,idempotency-key,x-tenant-id,x-workspace-id,x-user-roles,x-business-domain-id,x-semantic-version,x-policy-version',
         'access-control-max-age': '600',
       },
       body: '',
@@ -182,6 +188,7 @@ export function createChatBiBffRouter(
     assets,
     dataSources,
     evaluation,
+    identity,
     semantic,
     handle(request) {
       const method = request.method.toUpperCase()
@@ -196,6 +203,30 @@ export function createChatBiBffRouter(
       if (method === 'POST' && path === '/v1/questions') {
         const envelope = service.submitQuestion(questionRequest(request))
         return withCors(respond(envelopeStatus(envelope), envelope))
+      }
+
+      if (method === 'GET' && path === '/v1/identity/context') {
+        const envelope = identity.getContext({ actor: actorFrom(request) })
+        return withCors(respond(httpStatusForIdentityEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/identity/policies/evaluate') {
+        const body = bodyObject(request)
+        const envelope = identity.evaluatePolicy({
+          actor: actorFrom(request),
+          action: (body.action || 'read') as never,
+          resource: (body.resource || { type: 'workspace', workspaceId: actorFrom(request).workspaceId }) as never,
+        })
+        return withCors(respond(httpStatusForIdentityEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/identity/policies/current') {
+        const body = bodyObject(request)
+        const envelope = identity.updatePolicy({
+          actor: actorFrom(request),
+          note: String(body.note ?? ''),
+        })
+        return withCors(respond(httpStatusForIdentityEnvelope(envelope), envelope))
       }
 
       if (method === 'GET' && path === '/v1/semantic/metrics') {

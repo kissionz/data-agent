@@ -28,6 +28,7 @@ export interface ActorContext {
   roles: UserRole[]
   businessDomainId: string
   semanticVersion: string
+  policyVersion?: string
   locale: 'zh-CN'
   timezone: string
 }
@@ -439,6 +440,79 @@ export interface CertifySemanticMetricRequest {
   metricId: string
   note: string
   referenceSqlReconciled: boolean
+}
+
+export interface IdentityAuditEvent {
+  id: string
+  at: string
+  type:
+    | 'identity.context_resolved'
+    | 'identity.workspace_listed'
+    | 'identity.policy_evaluated'
+    | 'identity.policy_updated'
+    | 'identity.permission_denied'
+  actorUserId: string
+  tenantId: string
+  workspaceId?: string
+  policyVersion: string
+  summary: string
+}
+
+export interface WorkspaceView {
+  id: string
+  organizationId: string
+  name: string
+  businessDomains: Array<{ id: string; name: string }>
+  roles: UserRole[]
+  lastAccessedAt: string
+  policyVersion: string
+}
+
+export interface IdentityContextView {
+  contractVersion: typeof CONTRACT_VERSION
+  actor: ActorContext & { policyVersion: string }
+  tenant: { id: string; name: string }
+  organization: { id: string; name: string }
+  currentWorkspace: WorkspaceView
+  availableWorkspaces: WorkspaceView[]
+  permissionDigest: string
+  policy: {
+    version: string
+    updatedAt: string
+    effectiveWithinSeconds: number
+    cacheInvalidAfter: string
+  }
+  audit: IdentityAuditEvent[]
+}
+
+export interface PolicyEvaluationRequest {
+  actor: ActorContext
+  resource:
+    | { type: 'workspace'; workspaceId: string }
+    | { type: 'business_domain'; workspaceId: string; businessDomainId: string }
+    | { type: 'export'; workspaceId: string; businessDomainId: string; classification: 'public' | 'internal' | 'confidential' | 'restricted' }
+  action: 'read' | 'query' | 'export' | 'manage_policy'
+}
+
+export interface PolicyEvaluationView {
+  contractVersion: typeof CONTRACT_VERSION
+  allowed: boolean
+  decision: 'allow' | 'deny'
+  reason: string
+  policyVersion: string
+  permissionDigest: string
+  cacheKeyScope: string
+  effectiveWithinSeconds: number
+  audit: IdentityAuditEvent[]
+}
+
+export interface UpdatePolicyRequest {
+  actor: ActorContext
+  note: string
+}
+
+export interface IdentityContextRequest {
+  actor: ActorContext
 }
 
 export interface PublicApiError {

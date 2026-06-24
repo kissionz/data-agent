@@ -35,6 +35,36 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/identity/context': {
+      get: {
+        summary: '获取当前身份、租户、工作空间和策略上下文',
+        description: '返回可访问工作空间、业务域、角色、策略版本、权限摘要和缓存失效窗口。',
+        responses: {
+          200: { description: '身份上下文' },
+          400: { description: '身份上下文无效' },
+        },
+      },
+    },
+    '/v1/identity/policies/evaluate': {
+      post: {
+        summary: '评估 RBAC/ABAC 策略',
+        description: '返回 allow/deny、策略版本、权限摘要和 cacheKeyScope；跨租户/跨工作空间/受限导出会拒绝。',
+        responses: {
+          200: { description: '策略裁决结果' },
+          400: { description: '请求契约无效' },
+        },
+      },
+    },
+    '/v1/identity/policies/current': {
+      post: {
+        summary: '更新当前策略版本',
+        description: '本地 deterministic 策略更新接口；仅 security_admin 可调用。更新后旧缓存必须按新 policyVersion 失效。',
+        responses: {
+          200: { description: '策略版本已更新' },
+          403: { description: '非安全管理员不可更新策略' },
+        },
+      },
+    },
     '/v1/runs/{runId}': {
       get: {
         summary: '获取 Run 快照',

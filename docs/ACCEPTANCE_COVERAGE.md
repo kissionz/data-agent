@@ -37,7 +37,7 @@
 | 权限拒绝 | 已覆盖 | 越权场景返回安全拒绝，不展示候选值或无权资源名称。 |
 | 图表替代表格 | 已覆盖 | 结果支持图表、表格、证据三种 tab。 |
 | 响应式 | 已覆盖 | CSS 覆盖桌面、平板抽屉、移动单栏与底部面板。 |
-| 可访问性基础 | 部分覆盖 | 表单、按钮、状态文本和 reduced-motion 已处理；仍需系统性键盘与屏幕阅读器 E2E。 |
+| 可访问性基础 | 部分覆盖 | 表单、按钮、状态文本、图表替代表格、tablist、dialog、焦点可见样式和 reduced-motion 已处理；`src/test/accessibility.test.tsx` 已覆盖关键导航、键盘提交、焦点可达、状态非颜色依赖、图表表格替代和命名 dialog。仍需真实浏览器屏幕阅读器与跨断点键盘 E2E。 |
 
 ## 自动化验证覆盖
 
@@ -56,7 +56,7 @@
 | 组件级 UI 测试 | 已覆盖主要 P0/P1 页面，`src/test/workbench.test.tsx` 覆盖工作台默认结果、约束可见、表格替代、澄清和权限安全失败；`src/test/semanticGovernance.test.tsx` 覆盖语义中心指标定义、筛选、编辑和审批；`src/test/operationsCenter.test.tsx` 覆盖运营中心 SLO、发布门禁、模型版本、失败分布、回放详情和刷新反馈；`src/test/dataSources.test.tsx` 覆盖数据源中心关键状态；`src/test/collaboration.test.tsx` 覆盖协作资产关键状态。 |
 | 浏览器人工验收 | 部分覆盖，当前阶段已人工核验主工作台、澄清、权限拒绝、语义中心、运营中心和移动布局。 |
 | 浏览器自动 E2E | 未覆盖，建议下一阶段使用 Playwright 固化关键路径。 |
-| 可访问性 E2E | 未覆盖，需要补键盘、焦点管理、屏幕阅读器和图表替代表达测试。 |
+| 可访问性 E2E | 部分覆盖，`src/test/accessibility.test.tsx` 在 jsdom 中覆盖键盘提交、焦点、ARIA 角色、命名 dialog、tablist、图表替代表格和状态文本；仍需 Playwright + 屏幕阅读器级真实浏览器 E2E。 |
 | 性能与 SLO | 未覆盖，需要真实 API、数据和监控后验证。 |
 
 ## 下一阶段验收门槛建议

@@ -32,9 +32,10 @@
 | Semantic | `src/semantic/*` | 本地 Semantic Catalog、认证指标/草稿指标、维度、兼容维度和 Join Graph 风险门禁 | 持久化版本仓库、编辑审批、参考 SQL 对账、血缘和灰度发布 |
 | Query | `src/query/*` | Analysis IR 经 Semantic Catalog 校验后生成只读 SQL AST/SQL，注入权限守卫、SQL 指纹、缓存键和预算阻断 | 方言插件、EXPLAIN 成本模型、连接池、取消传播和真实结果分页 |
 | Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口、内存 adapter、本地 JSON 文件 adapter | SQLite/PostgreSQL/Redis adapter 与 migration |
-| BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、Node server adapter 源码、CORS/状态码映射测试 | 迁移到 `apps/api` Fastify + 生产 SSE 长连接 + 认证中间件 |
+| API App | `apps/api/*` | API 运行时配置、`/readyz`、header actor guard、memory/file persistence mode、Node adapter 组合入口 | 替换为 Fastify/TypeBox、OIDC/API key 中间件、生产 SSE 长连接 |
+| BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、Node server adapter 源码、CORS/状态码映射测试 | 保持为框架无关 router 或拆入 `packages/contracts`/`apps/api` |
 
-本地 BFF router 支持 `/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify` 和 `POST /v1/runs/{id}/cancel`。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需真实认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
+`apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify` 和 `POST /v1/runs/{id}/cancel`。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
 
 数据源中心当前是 F02 的前端治理切片：用 fixture 表达只读连接、凭据引用、元数据目录、字段分类、样本策略、质量门禁和同步记录，并通过组件测试锁定筛选与连接测试反馈。它尚未接入真实连接器、扫描调度、血缘、枚举采样或 Schema 变更审批；这些能力应在后续 `DataSourceService` 与 `MetadataScanner` adapter 中落地。
 

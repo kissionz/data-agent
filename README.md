@@ -21,6 +21,7 @@
 - 共享契约：`AnalysisIR v1`、`PublicRunView`、API 包络、澄清、取消、审计事件与错误对象。
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
+- API 应用壳：`apps/api` 提供运行时配置、`/readyz`、生产式 header actor 校验、memory/file persistence 模式和 Node adapter 组合入口。
 - 运行事件流：`GET /v1/runs/{id}/events` 的 SSE 契约、事件序列化、`Last-Event-ID` 续传和工作空间边界检查。
 - 本地编译执行边界：Analysis IR 经语义 Catalog / Join Graph 校验后生成只读 SQL 计划，注入租户/工作区/业务域守卫，并产出 SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。
@@ -67,6 +68,8 @@ pnpm build
 
 当前 API 处于本地 BFF/router 阶段，核心代码位于：
 
+- [apps/api/src/app.ts](/Users/kissionz/Documents/data-agent/apps/api/src/app.ts)
+- [apps/api/src/config.ts](/Users/kissionz/Documents/data-agent/apps/api/src/config.ts)
 - [src/api/router.ts](/Users/kissionz/Documents/data-agent/src/api/router.ts)
 - [src/api/openapi.ts](/Users/kissionz/Documents/data-agent/src/api/openapi.ts)
 - [src/api/nodeServer.ts](/Users/kissionz/Documents/data-agent/src/api/nodeServer.ts)
@@ -109,7 +112,7 @@ pnpm build
 
 已完成的是“可运行、可审查、可继续开发”的产品基座，不是完整生产系统。当前 `src/application` 是本地 deterministic service，不是网络 API。生产化仍至少需要：
 
-- Fastify/TypeBox API BFF、生产 SSE 长连接、PostgreSQL/Redis 持久化、租户/组织/工作空间模型。
+- Fastify/TypeBox API BFF 替换当前 Node adapter、生产 SSE 长连接、PostgreSQL/Redis 持久化、租户/组织/工作空间模型。
 - OIDC/SAML/SCIM、RBAC + ABAC、策略变更实时生效。
 - 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化与 Join Graph 编辑审批。
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。

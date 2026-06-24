@@ -4,12 +4,14 @@ import {
   createDataSourceApplicationService,
   createEvaluationApplicationService,
   createIdentityPolicyApplicationService,
+  createModelOpsApplicationService,
   createSemanticGovernanceApplicationService,
   createSharingExportApplicationService,
   httpStatusForAssetEnvelope,
   httpStatusForDataSourceEnvelope,
   httpStatusForEvaluationEnvelope,
   httpStatusForIdentityEnvelope,
+  httpStatusForModelOpsEnvelope,
   httpStatusForSemanticEnvelope,
   httpStatusForSharingEnvelope,
   type ChatBiApplicationService,
@@ -17,6 +19,7 @@ import {
   type DataSourceApplicationService,
   type EvaluationApplicationService,
   type IdentityPolicyApplicationService,
+  type ModelOpsApplicationService,
   type SemanticGovernanceApplicationService,
   type SharingExportApplicationService,
 } from '../application'
@@ -31,6 +34,7 @@ import {
   type CancelRunRequest,
   type ClarifyRunRequest,
   type GetRunRequest,
+  type ModelCapability,
   type PublicRunView,
   type SubscriptionCadence,
   type SubmitQuestionRequest,
@@ -58,6 +62,7 @@ export interface ChatBiBffRouter {
   dataSources: DataSourceApplicationService
   evaluation: EvaluationApplicationService
   identity: IdentityPolicyApplicationService
+  modelOps: ModelOpsApplicationService
   semantic: SemanticGovernanceApplicationService
   sharing: SharingExportApplicationService
 }
@@ -85,6 +90,7 @@ export function createChatBiBffRouter(
   dataSources: DataSourceApplicationService = createDataSourceApplicationService(),
   evaluation: EvaluationApplicationService = createEvaluationApplicationService(),
   identity: IdentityPolicyApplicationService = createIdentityPolicyApplicationService(),
+  modelOps: ModelOpsApplicationService = createModelOpsApplicationService(),
   semantic: SemanticGovernanceApplicationService = createSemanticGovernanceApplicationService(),
   sharing: SharingExportApplicationService = createSharingExportApplicationService(),
 ): ChatBiBffRouter {
@@ -194,6 +200,7 @@ export function createChatBiBffRouter(
     dataSources,
     evaluation,
     identity,
+    modelOps,
     semantic,
     sharing,
     handle(request) {
@@ -205,6 +212,41 @@ export function createChatBiBffRouter(
         return withCors(respond(200, { ok: true, service: 'chatbi-local-bff' }))
       }
       if (method === 'GET' && path === '/openapi.json') return withCors(respond(200, openApiDocument))
+
+      if (method === 'GET' && path === '/v1/model-ops/routes') {
+        const envelope = modelOps.listRoutes({
+          actor: actorFrom(request),
+          capability: request.query?.capability as ModelCapability | 'all' | undefined,
+        })
+        return withCors(respond(httpStatusForModelOpsEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/model-ops/route') {
+        const body = bodyObject(request)
+        const envelope = modelOps.routeModel({
+          actor: actorFrom(request),
+          capability: (body.capability || 'planner') as ModelCapability,
+          estimatedTokens: Number(body.estimatedTokens ?? body.estimated_tokens ?? 0),
+          providerAvailable: body.providerAvailable === undefined && body.provider_available === undefined
+            ? undefined
+            : Boolean(body.providerAvailable ?? body.provider_available),
+          requireNoTraining: body.requireNoTraining === undefined && body.require_no_training === undefined
+            ? undefined
+            : Boolean(body.requireNoTraining ?? body.require_no_training),
+        })
+        return withCors(respond(httpStatusForModelOpsEnvelope(envelope), envelope))
+      }
+
+      const modelRouteRollbackMatch = path.match(/^\/v1\/model-ops\/routes\/([^/]+)\/rollback$/)
+      if (method === 'POST' && modelRouteRollbackMatch) {
+        const body = bodyObject(request)
+        const envelope = modelOps.rollbackRoute({
+          actor: actorFrom(request),
+          routeId: decodeURIComponent(modelRouteRollbackMatch[1]),
+          reason: String(body.reason ?? body.note ?? ''),
+        })
+        return withCors(respond(httpStatusForModelOpsEnvelope(envelope), envelope))
+      }
 
       if (method === 'POST' && path === '/v1/questions') {
         const envelope = service.submitQuestion(questionRequest(request))

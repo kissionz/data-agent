@@ -616,6 +616,93 @@ export interface ShareReauthorizationView {
   audit: SharingAuditEvent[]
 }
 
+export type ModelCapability = 'planner' | 'entity_linker' | 'answer'
+export type ModelProvider = 'openai' | 'azure_openai' | 'anthropic' | 'local_template'
+export type ModelRouteStatus = 'active' | 'canary' | 'blocked' | 'rolled_back'
+
+export interface ModelOpsAuditEvent {
+  id: string
+  at: string
+  type:
+    | 'model.route_evaluated'
+    | 'model.quota_checked'
+    | 'model.fallback_selected'
+    | 'model.release_blocked'
+    | 'model.rollback_completed'
+  actorUserId: string
+  tenantId: string
+  workspaceId: string
+  routeId: string
+  summary: string
+}
+
+export interface ModelRouteView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  capability: ModelCapability
+  provider: ModelProvider
+  activeVersion: string
+  candidateVersion?: string
+  status: ModelRouteStatus
+  trafficSplit: { active: number; candidate: number }
+  timeoutMs: number
+  temperature: number
+  quota: {
+    tenantDailyLimit: number
+    tenantUsedToday: number
+    workspaceDailyLimit: number
+    workspaceUsedToday: number
+  }
+  fallbackChain: Array<{
+    provider: ModelProvider
+    version: string
+    reason: 'quota_exhausted' | 'provider_unavailable' | 'policy_blocked'
+  }>
+  tenantOverride?: {
+    tenantId: string
+    region: 'cn' | 'us' | 'eu'
+    dataRetention: 'none' | 'zero_day' | 'thirty_days'
+    trainingAllowed: false
+  }
+  audit: ModelOpsAuditEvent[]
+}
+
+export interface ListModelRoutesRequest {
+  actor: ActorContext
+  capability?: ModelCapability | 'all'
+}
+
+export interface RouteModelRequest {
+  actor: ActorContext
+  capability: ModelCapability
+  estimatedTokens: number
+  providerAvailable?: boolean
+  requireNoTraining?: boolean
+}
+
+export interface ModelRouteDecisionView {
+  contractVersion: typeof CONTRACT_VERSION
+  routeId: string
+  selected: {
+    provider: ModelProvider
+    version: string
+    source: 'active' | 'candidate' | 'fallback'
+  }
+  status: 'routed' | 'fallback' | 'blocked'
+  reason: string
+  quotaRemaining: number
+  timeoutMs: number
+  temperature: number
+  policyVersion?: string
+  audit: ModelOpsAuditEvent[]
+}
+
+export interface RollbackModelRouteRequest {
+  actor: ActorContext
+  routeId: string
+  reason: string
+}
+
 export interface PublicApiError {
   code: PublicErrorCode
   message: string

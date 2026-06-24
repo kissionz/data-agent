@@ -121,4 +121,3 @@ function normalizePath(path: string) {
   const [withoutQuery] = path.split('?')
   return withoutQuery || '/'
 }
-

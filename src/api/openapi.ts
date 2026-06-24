@@ -65,6 +65,42 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/model-ops/routes': {
+      get: {
+        summary: '列出模型路由、配额和降级链',
+        description: '返回按租户覆盖后的模型能力、供应商、生产/候选版本、灰度流量、超时、温度、配额、降级链和审计事件。',
+        parameters: [
+          { name: 'capability', in: 'query', required: false, schema: { enum: ['all', 'planner', 'entity_linker', 'answer'] } },
+        ],
+        responses: {
+          200: { description: '模型路由列表' },
+          400: { description: '身份上下文无效' },
+        },
+      },
+    },
+    '/v1/model-ops/route': {
+      post: {
+        summary: '执行一次模型路由决策',
+        description: '按能力、租户策略、配额、供应商可用性、发布门禁和灰度配置选择 active/candidate/fallback 模型。',
+        responses: {
+          200: { description: '模型路由决策，可能 routed、fallback 或 blocked' },
+          400: { description: '请求契约或身份上下文无效' },
+          404: { description: '模型能力没有对应路由' },
+        },
+      },
+    },
+    '/v1/model-ops/routes/{routeId}/rollback': {
+      post: {
+        summary: '回滚模型路由灰度版本',
+        description: '仅 platform_ops/security_admin 可调用；回滚后流量切回 active=100%、candidate=0%。',
+        parameters: [{ name: 'routeId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '模型路由已回滚' },
+          403: { description: '角色无权回滚模型路由' },
+          404: { description: '模型路由不存在' },
+        },
+      },
+    },
     '/v1/sharing/exports': {
       post: {
         summary: '请求导出结果或资产',

@@ -53,7 +53,7 @@
 | 本地 BFF/API 测试 | 已覆盖，`src/test/api.test.ts` 验证健康检查、OpenAPI、HTTP 状态码、CORS、幂等、澄清和取消；`src/test/apiRuntime.test.ts` 验证 `apps/api` readiness、header actor guard 和 file persistence runtime；`src/test/identityPolicyService.test.ts` 验证身份策略服务与 `/v1/identity/*` API；`src/test/developerAccessService.test.ts` 验证服务账号、API Key、Webhook、embed token 和 `/v1/developer/*` API；`src/test/dataSourceService.test.ts` 验证数据源服务与 `/v1/data-sources` API；`src/test/semanticGovernanceService.test.ts` 验证语义治理服务与 `/v1/semantic/*` API；`src/test/sharingExportService.test.ts` 验证导出分享服务与 `/v1/sharing/*` API；`src/test/evaluationService.test.ts` 验证评测门禁、失败回放和 `/v1/evaluation/*` API；`src/test/modelOpsService.test.ts` 验证模型运营路由、配额、降级、门禁、回滚和 `/v1/model-ops/*` API；`src/test/collaborationService.test.ts` 验证协作资产服务与 `/v1/assets` API。 |
 | SSE/错误码契约测试 | 已覆盖，`src/test/events.test.ts` 验证 public error catalog、Run 事件序列和 Last-Event-ID 过滤。 |
 | 持久化端口测试 | 已覆盖，`src/test/persistence.test.ts` 验证跨 service 实例读取、幂等键、clone 防引用污染、audit list 和本地 JSON 文件恢复。 |
-| 组件级 UI 测试 | 部分覆盖，`src/test/dataSources.test.tsx` 已覆盖数据源中心关键状态，`src/test/collaboration.test.tsx` 已覆盖协作资产关键状态；仍需补工作台、语义中心、运营中心组件测试。 |
+| 组件级 UI 测试 | 已覆盖主要 P0/P1 页面，`src/test/workbench.test.tsx` 覆盖工作台默认结果、约束可见、表格替代、澄清和权限安全失败；`src/test/semanticGovernance.test.tsx` 覆盖语义中心指标定义、筛选、编辑和审批；`src/test/operationsCenter.test.tsx` 覆盖运营中心 SLO、发布门禁、模型版本、失败分布、回放详情和刷新反馈；`src/test/dataSources.test.tsx` 覆盖数据源中心关键状态；`src/test/collaboration.test.tsx` 覆盖协作资产关键状态。 |
 | 浏览器人工验收 | 部分覆盖，当前阶段已人工核验主工作台、澄清、权限拒绝、语义中心、运营中心和移动布局。 |
 | 浏览器自动 E2E | 未覆盖，建议下一阶段使用 Playwright 固化关键路径。 |
 | 可访问性 E2E | 未覆盖，需要补键盘、焦点管理、屏幕阅读器和图表替代表达测试。 |

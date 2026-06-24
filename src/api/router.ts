@@ -1,9 +1,12 @@
 import {
   createChatBiApplicationService,
   createCollaborationAssetApplicationService,
+  createDataSourceApplicationService,
   httpStatusForAssetEnvelope,
+  httpStatusForDataSourceEnvelope,
   type ChatBiApplicationService,
   type CollaborationAssetApplicationService,
+  type DataSourceApplicationService,
 } from '../application'
 import {
   filterSseEventsAfter,
@@ -40,6 +43,7 @@ export interface ChatBiBffRouter {
   handle(request: HttpRequestLike): HttpResponseLike
   service: ChatBiApplicationService
   assets: CollaborationAssetApplicationService
+  dataSources: DataSourceApplicationService
 }
 
 const defaultActor: ActorContext = {
@@ -62,6 +66,7 @@ const jsonHeaders = {
 export function createChatBiBffRouter(
   service: ChatBiApplicationService = createChatBiApplicationService(),
   assets: CollaborationAssetApplicationService = createCollaborationAssetApplicationService(),
+  dataSources: DataSourceApplicationService = createDataSourceApplicationService(),
 ): ChatBiBffRouter {
   function respond(status: number, body: unknown, extraHeaders: Record<string, string> = {}): HttpResponseLike {
     return {
@@ -165,6 +170,7 @@ export function createChatBiBffRouter(
   return {
     service,
     assets,
+    dataSources,
     handle(request) {
       const method = request.method.toUpperCase()
       const path = normalizePath(request.path)
@@ -178,6 +184,29 @@ export function createChatBiBffRouter(
       if (method === 'POST' && path === '/v1/questions') {
         const envelope = service.submitQuestion(questionRequest(request))
         return withCors(respond(envelopeStatus(envelope), envelope))
+      }
+
+      if (method === 'GET' && path === '/v1/data-sources') {
+        const envelope = dataSources.listDataSources({
+          actor: actorFrom(request),
+          query: request.query?.q || request.query?.query,
+          status: request.query?.status as never,
+        })
+        return withCors(respond(httpStatusForDataSourceEnvelope(envelope), envelope))
+      }
+
+      const dataSourceMatch = path.match(/^\/v1\/data-sources\/([^/]+)(?:\/(test-connection))?$/)
+      if (dataSourceMatch) {
+        const [, pathDataSourceId, action] = dataSourceMatch
+        const dataSourceId = decodeURIComponent(pathDataSourceId)
+        if (method === 'GET' && !action) {
+          const envelope = dataSources.getDataSource({ actor: actorFrom(request), dataSourceId })
+          return withCors(respond(httpStatusForDataSourceEnvelope(envelope), envelope))
+        }
+        if (method === 'POST' && action === 'test-connection') {
+          const envelope = dataSources.testConnection({ actor: actorFrom(request), dataSourceId })
+          return withCors(respond(httpStatusForDataSourceEnvelope(envelope), envelope))
+        }
       }
 
       if (method === 'GET' && path === '/v1/assets') {

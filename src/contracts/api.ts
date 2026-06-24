@@ -199,6 +199,96 @@ export interface GetAssetAuditRequest {
   assetId: string
 }
 
+export type DataSourceConnectionStatus = 'healthy' | 'degraded' | 'failed' | 'syncing' | 'draft'
+
+export interface DataSourceAuditEvent {
+  id: string
+  at: string
+  type: 'data_source.listed' | 'data_source.connection_tested' | 'data_source.metadata_viewed' | 'data_source.quality_blocked'
+  actorUserId: string
+  tenantId: string
+  workspaceId: string
+  dataSourceId: string
+  summary: string
+}
+
+export interface DataSourceView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  name: string
+  engine: string
+  businessDomain: string
+  status: DataSourceConnectionStatus
+  connection: string
+  lastSyncAt: string
+  nextSyncAt: string
+  freshness: string
+  owner: string
+  credentialRef: string
+  scannedTables: number
+  classifiedFields: number
+  qualityScore: number
+  scanBudget: string
+  qualityGates: Array<{
+    name: string
+    status: 'pass' | 'warning' | 'fail'
+    value: string
+    target: string
+    detail: string
+  }>
+  syncEvents: Array<{ at: string; status: 'success' | 'warning' | 'failed'; summary: string }>
+  tables: Array<{
+    id: string
+    name: string
+    displayName: string
+    rowCount: string
+    freshness: string
+    owner: string
+    qualityScore: number
+    columns: Array<{
+      name: string
+      type: string
+      nullable: boolean
+      classification: 'public' | 'internal' | 'confidential' | 'restricted'
+      description: string
+      samplePolicy: string
+    }>
+  }>
+  safetySummary: {
+    readOnlyCredential: boolean
+    credentialRefOnly: boolean
+    restrictedFieldsExcludedFromSamples: boolean
+    usableInTrustedMode: boolean
+  }
+  audit: DataSourceAuditEvent[]
+}
+
+export interface ListDataSourcesRequest {
+  actor: ActorContext
+  query?: string
+  status?: DataSourceConnectionStatus | 'all'
+}
+
+export interface GetDataSourceRequest {
+  actor: ActorContext
+  dataSourceId: string
+}
+
+export interface TestDataSourceConnectionRequest {
+  actor: ActorContext
+  dataSourceId: string
+}
+
+export interface DataSourceConnectionTestResult {
+  dataSourceId: string
+  status: 'passed' | 'warning' | 'failed'
+  latencyMs: number
+  readOnlyCredential: boolean
+  credentialRef: string
+  blockedReason?: string
+  audit: DataSourceAuditEvent[]
+}
+
 export interface PublicApiError {
   code: PublicErrorCode
   message: string

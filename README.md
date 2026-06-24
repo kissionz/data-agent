@@ -23,6 +23,7 @@
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
 - API 应用壳：`apps/api` 提供运行时配置、`/readyz`、生产式 header actor 校验、memory/file persistence 模式和 Node adapter 组合入口。
 - 运行事件流：`GET /v1/runs/{id}/events` 的 SSE 契约、事件序列化、`Last-Event-ID` 续传和工作空间边界检查。
+- 数据源服务：`/v1/data-sources` 支持数据源列表、元数据详情和只读连接测试，服务层覆盖可见范围过滤、credential ref、不暴露真实凭据、质量门禁与受限字段样本策略。
 - 协作资产服务：`/v1/assets` 支持资产列表、收藏、订阅和审计链路，服务层覆盖可见范围过滤、审核中不可订阅、接收者重新鉴权摘要和 public audit event。
 - 本地编译执行边界：Analysis IR 经语义 Catalog / Join Graph 校验后生成只读 SQL 计划，注入租户/工作区/业务域守卫，并产出 SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。
@@ -74,6 +75,7 @@ pnpm build
 - [src/api/router.ts](/Users/kissionz/Documents/data-agent/src/api/router.ts)
 - [src/api/openapi.ts](/Users/kissionz/Documents/data-agent/src/api/openapi.ts)
 - [src/api/nodeServer.ts](/Users/kissionz/Documents/data-agent/src/api/nodeServer.ts)
+- [src/application/dataSources.ts](/Users/kissionz/Documents/data-agent/src/application/dataSources.ts)
 - [src/application/collaborationAssets.ts](/Users/kissionz/Documents/data-agent/src/application/collaborationAssets.ts)
 - [src/persistence/ports.ts](/Users/kissionz/Documents/data-agent/src/persistence/ports.ts)
 - [src/persistence/memory.ts](/Users/kissionz/Documents/data-agent/src/persistence/memory.ts)
@@ -88,12 +90,15 @@ pnpm build
 - `GET /v1/runs/{runId}/events?conversation_id=...`
 - `POST /v1/runs/{runId}/clarify`
 - `POST /v1/runs/{runId}/cancel`
+- `GET /v1/data-sources`
+- `GET /v1/data-sources/{dataSourceId}`
+- `POST /v1/data-sources/{dataSourceId}/test-connection`
 - `GET /v1/assets`
 - `POST /v1/assets/{assetId}/favorite`
 - `POST /v1/assets/{assetId}/subscription`
 - `GET /v1/assets/{assetId}/audit`
 
-本地 router 已验证状态码映射、幂等键、CORS、跨工作空间拒绝、澄清候选版本绑定、SSE 事件流、协作资产门禁和 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
+本地 router 已验证状态码映射、幂等键、CORS、跨工作空间拒绝、澄清候选版本绑定、SSE 事件流、数据源安全摘要、协作资产门禁和 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
 
 ## 浏览器验收建议
 

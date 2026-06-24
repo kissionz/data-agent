@@ -96,6 +96,41 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/data-sources': {
+      get: {
+        summary: '列出数据源',
+        description: '返回当前 actor 可见的数据源、连接状态、质量门禁、安全摘要和元数据目录。',
+        parameters: [
+          { name: 'q', in: 'query', required: false, schema: { type: 'string' } },
+          { name: 'status', in: 'query', required: false, schema: { enum: ['all', 'healthy', 'degraded', 'failed', 'syncing', 'draft'] } },
+        ],
+        responses: {
+          200: { description: '数据源列表' },
+          400: { description: '身份上下文无效' },
+        },
+      },
+    },
+    '/v1/data-sources/{dataSourceId}': {
+      get: {
+        summary: '获取数据源元数据目录',
+        parameters: [{ name: 'dataSourceId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '数据源详情、表、字段分类和质量门禁' },
+          404: { description: '数据源不存在或不可见' },
+        },
+      },
+    },
+    '/v1/data-sources/{dataSourceId}/test-connection': {
+      post: {
+        summary: '测试数据源只读连接',
+        description: '返回连接测试结果；只暴露 credential reference，不暴露真实凭据。',
+        parameters: [{ name: 'dataSourceId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '连接测试结果' },
+          404: { description: '数据源不存在或不可见' },
+        },
+      },
+    },
     '/v1/assets/{assetId}/favorite': {
       post: {
         summary: '更新协作资产收藏状态',

@@ -149,6 +149,54 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/semantic/metrics': {
+      get: {
+        summary: '列出语义指标治理对象',
+        description: '返回当前 actor 可见的语义指标、维度、Join Graph 风险和发布就绪状态。',
+        parameters: [
+          { name: 'q', in: 'query', required: false, schema: { type: 'string' } },
+          { name: 'lifecycle', in: 'query', required: false, schema: { enum: ['all', 'draft', 'review', 'certified', 'deprecated', 'offline'] } },
+        ],
+        responses: {
+          200: { description: '语义指标列表' },
+          400: { description: '身份上下文无效' },
+        },
+      },
+    },
+    '/v1/semantic/metrics/{metricId}': {
+      get: {
+        summary: '获取语义指标治理详情',
+        parameters: [{ name: 'metricId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '语义指标详情、发布就绪状态和审计事件' },
+          404: { description: '指标不存在或不可见' },
+        },
+      },
+    },
+    '/v1/semantic/metrics/{metricId}/submit-review': {
+      post: {
+        summary: '提交语义指标评审',
+        description: '仅 metric_admin/data_admin/platform_ops 可提交；只有 draft 指标可进入 review。',
+        parameters: [{ name: 'metricId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '指标已进入评审' },
+          403: { description: '角色无权提交' },
+          400: { description: '生命周期状态不允许提交' },
+        },
+      },
+    },
+    '/v1/semantic/metrics/{metricId}/certify': {
+      post: {
+        summary: '认证发布语义指标',
+        description: '需要参考 SQL 对账通过，且 Join Graph 无高风险/未批准路径。',
+        parameters: [{ name: 'metricId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '指标已认证发布' },
+          400: { description: '对账或 Join Graph 门禁阻断' },
+          403: { description: '角色无权认证' },
+        },
+      },
+    },
     '/v1/data-sources/{dataSourceId}': {
       get: {
         summary: '获取数据源元数据目录',

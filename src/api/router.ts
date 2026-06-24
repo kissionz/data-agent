@@ -3,13 +3,16 @@ import {
   createCollaborationAssetApplicationService,
   createDataSourceApplicationService,
   createEvaluationApplicationService,
+  createSemanticGovernanceApplicationService,
   httpStatusForAssetEnvelope,
   httpStatusForDataSourceEnvelope,
   httpStatusForEvaluationEnvelope,
+  httpStatusForSemanticEnvelope,
   type ChatBiApplicationService,
   type CollaborationAssetApplicationService,
   type DataSourceApplicationService,
   type EvaluationApplicationService,
+  type SemanticGovernanceApplicationService,
 } from '../application'
 import {
   filterSseEventsAfter,
@@ -48,6 +51,7 @@ export interface ChatBiBffRouter {
   assets: CollaborationAssetApplicationService
   dataSources: DataSourceApplicationService
   evaluation: EvaluationApplicationService
+  semantic: SemanticGovernanceApplicationService
 }
 
 const defaultActor: ActorContext = {
@@ -72,6 +76,7 @@ export function createChatBiBffRouter(
   assets: CollaborationAssetApplicationService = createCollaborationAssetApplicationService(),
   dataSources: DataSourceApplicationService = createDataSourceApplicationService(),
   evaluation: EvaluationApplicationService = createEvaluationApplicationService(),
+  semantic: SemanticGovernanceApplicationService = createSemanticGovernanceApplicationService(),
 ): ChatBiBffRouter {
   function respond(status: number, body: unknown, extraHeaders: Record<string, string> = {}): HttpResponseLike {
     return {
@@ -177,6 +182,7 @@ export function createChatBiBffRouter(
     assets,
     dataSources,
     evaluation,
+    semantic,
     handle(request) {
       const method = request.method.toUpperCase()
       const path = normalizePath(request.path)
@@ -190,6 +196,43 @@ export function createChatBiBffRouter(
       if (method === 'POST' && path === '/v1/questions') {
         const envelope = service.submitQuestion(questionRequest(request))
         return withCors(respond(envelopeStatus(envelope), envelope))
+      }
+
+      if (method === 'GET' && path === '/v1/semantic/metrics') {
+        const envelope = semantic.listMetrics({
+          actor: actorFrom(request),
+          lifecycle: request.query?.lifecycle as never,
+          query: request.query?.q || request.query?.query,
+        })
+        return withCors(respond(httpStatusForSemanticEnvelope(envelope), envelope))
+      }
+
+      const semanticMetricMatch = path.match(/^\/v1\/semantic\/metrics\/([^/]+)(?:\/(submit-review|certify))?$/)
+      if (semanticMetricMatch) {
+        const [, pathMetricId, action] = semanticMetricMatch
+        const metricId = decodeURIComponent(pathMetricId)
+        const body = bodyObject(request)
+        if (method === 'GET' && !action) {
+          const envelope = semantic.getMetric({ actor: actorFrom(request), metricId })
+          return withCors(respond(httpStatusForSemanticEnvelope(envelope), envelope))
+        }
+        if (method === 'POST' && action === 'submit-review') {
+          const envelope = semantic.submitForReview({
+            actor: actorFrom(request),
+            metricId,
+            note: String(body.note ?? ''),
+          })
+          return withCors(respond(httpStatusForSemanticEnvelope(envelope), envelope))
+        }
+        if (method === 'POST' && action === 'certify') {
+          const envelope = semantic.certifyMetric({
+            actor: actorFrom(request),
+            metricId,
+            note: String(body.note ?? ''),
+            referenceSqlReconciled: Boolean(body.referenceSqlReconciled ?? body.reference_sql_reconciled),
+          })
+          return withCors(respond(httpStatusForSemanticEnvelope(envelope), envelope))
+        }
       }
 
       if (method === 'GET' && path === '/v1/evaluation/gates/current') {

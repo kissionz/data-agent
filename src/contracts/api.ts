@@ -361,6 +361,86 @@ export interface EvaluateReleaseGateRequest {
   candidateVersion?: string
 }
 
+export interface SemanticGovernanceAuditEvent {
+  id: string
+  at: string
+  type:
+    | 'semantic.metric_listed'
+    | 'semantic.metric_viewed'
+    | 'semantic.metric_submitted'
+    | 'semantic.metric_certified'
+    | 'semantic.release_blocked'
+  actorUserId: string
+  tenantId: string
+  workspaceId: string
+  semanticObjectId: string
+  summary: string
+}
+
+export interface SemanticMetricGovernanceView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  name: string
+  businessDomainId: string
+  semanticVersion: string
+  lifecycle: 'draft' | 'review' | 'certified' | 'deprecated' | 'offline'
+  expression: string
+  sourceTable: string
+  supportedGrains: AnalysisIR['timeRange']['grain'][]
+  compatibleDimensions: string[]
+  immutableVersion: boolean
+  canUseInTrustedMode: boolean
+  releaseReadiness: {
+    referenceSqlReconciled: boolean
+    approvedJoinGraph: boolean
+    certifiedBy?: string
+    blockingReasons: string[]
+  }
+  audit: SemanticGovernanceAuditEvent[]
+}
+
+export interface SemanticDimensionGovernanceView {
+  id: string
+  name: string
+  semanticVersion: string
+  lifecycle: 'draft' | 'review' | 'certified' | 'deprecated' | 'offline'
+  requiresJoin?: string
+}
+
+export interface JoinGraphEdgeView {
+  id: string
+  leftTable: string
+  rightTable: string
+  cardinality: 'one_to_one' | 'many_to_one' | 'one_to_many' | 'many_to_many'
+  direction: 'left' | 'right' | 'bidirectional'
+  risk: 'low' | 'medium' | 'high'
+  approved: boolean
+}
+
+export interface ListSemanticMetricsRequest {
+  actor: ActorContext
+  lifecycle?: SemanticMetricGovernanceView['lifecycle'] | 'all'
+  query?: string
+}
+
+export interface GetSemanticMetricRequest {
+  actor: ActorContext
+  metricId: string
+}
+
+export interface SubmitSemanticMetricReviewRequest {
+  actor: ActorContext
+  metricId: string
+  note: string
+}
+
+export interface CertifySemanticMetricRequest {
+  actor: ActorContext
+  metricId: string
+  note: string
+  referenceSqlReconciled: boolean
+}
+
 export interface PublicApiError {
   code: PublicErrorCode
   message: string

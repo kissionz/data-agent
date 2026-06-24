@@ -27,6 +27,7 @@ const server = createNodeBffServer({
     assets: runtime.router.assets,
     dataSources: runtime.router.dataSources,
     evaluation: runtime.router.evaluation,
+    semantic: runtime.router.semantic,
     handle: runtime.handle,
   },
 })

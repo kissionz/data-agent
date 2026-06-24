@@ -24,6 +24,7 @@ const runtime = createApiRuntime(input)
 const server = createNodeBffServer({
   router: {
     service: runtime.router.service,
+    assets: runtime.router.assets,
     handle: runtime.handle,
   },
 })

@@ -82,6 +82,52 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/assets': {
+      get: {
+        summary: '列出协作资产',
+        description: '返回当前 actor 可见的会话资产、验证案例、问题模板和订阅，已按分享范围与审核状态过滤。',
+        parameters: [
+          { name: 'q', in: 'query', required: false, schema: { type: 'string' } },
+          { name: 'status', in: 'query', required: false, schema: { enum: ['all', 'active', 'review', 'archived'] } },
+        ],
+        responses: {
+          200: { description: '协作资产列表' },
+          400: { description: '身份上下文无效' },
+        },
+      },
+    },
+    '/v1/assets/{assetId}/favorite': {
+      post: {
+        summary: '更新协作资产收藏状态',
+        parameters: [{ name: 'assetId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '收藏状态已更新' },
+          404: { description: '资产不存在或不可见' },
+        },
+      },
+    },
+    '/v1/assets/{assetId}/subscription': {
+      post: {
+        summary: '更新协作资产订阅',
+        description: '审核中或已归档资产不能开启订阅；接收者读取时仍需重新鉴权。',
+        parameters: [{ name: 'assetId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '订阅状态已更新' },
+          400: { description: '订阅频率无效或资产状态不允许订阅' },
+          404: { description: '资产不存在或不可见' },
+        },
+      },
+    },
+    '/v1/assets/{assetId}/audit': {
+      get: {
+        summary: '获取协作资产审计链路',
+        parameters: [{ name: 'assetId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '资产审计事件' },
+          404: { description: '资产不存在或不可见' },
+        },
+      },
+    },
   },
   components: {
     schemas: {

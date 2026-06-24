@@ -1,12 +1,12 @@
 # PRD 验收覆盖矩阵
 
-> 阶段：前端、领域 mock、本地契约、API app 壳与 BFF router 基座  
-> 日期：2026-06-23  
+> 阶段：前端、领域 mock、本地契约、API app 壳、协作资产服务与 BFF router 基座  
+> 日期：2026-06-24  
 > 口径：只把已经在仓库中可运行、可检查、可测试的内容标为“已覆盖”。需要真实后端、权限系统、数据源、模型或评测平台的要求标为“部分覆盖”或“未覆盖”。
 
 ## 总体结论
 
-当前阶段已经完成 ChatBI 核心体验的可视化、数据源治理入口、协作资产入口、领域状态机、共享契约、本地编译执行边界、API app 壳和本地 BFF router 基座，足以作为产品评审、前后端契约拆分和后续 API 开发的起点。完整 PRD 的生产验收尚未完成，尤其是身份权限、真实数据源、审计存储、评测和 SLO 证明仍需后续阶段实现。
+当前阶段已经完成 ChatBI 核心体验的可视化、数据源治理入口、协作资产入口与服务契约、领域状态机、共享契约、本地编译执行边界、API app 壳和本地 BFF router 基座，足以作为产品评审、前后端契约拆分和后续 API 开发的起点。完整 PRD 的生产验收尚未完成，尤其是身份权限、真实数据源、审计存储、评测和 SLO 证明仍需后续阶段实现。
 
 ## 功能覆盖
 
@@ -22,8 +22,8 @@
 | F08 导出、分享与嵌入 | 部分覆盖 | UI 上预留导出/分享动作和上下文约束展示；协作资产中心展示分享范围、导出水印/脱敏审计策略和重新鉴权提示。 | 导出重新鉴权执行、水印文件生成、大小限制、脱敏、分享接收者后端鉴权、嵌入式 SDK。 |
 | F09 运营、模型与监控 | 部分覆盖 | 运营中心页面；SLO、门禁、失败分布、回放队列、模型版本、延迟趋势。 | 真实监控事件、模型路由、配额、降级链、灰度发布、成本与告警。 |
 | F10 评测、审计与回放 | 部分覆盖 | 领域测试覆盖状态、安全、语义版本；PublicRunView 携带审计事件；审计事件可通过 persistence 端口列出，并可由本地 JSON 文件 adapter 落盘；运营 UI 展示回放和门禁概念。 | 黄金集管理、批量回归、生产审计存储、失败链路回放、发布阻断。 |
-| F11 开放 API / SDK | 部分覆盖 | `apps/api` 提供 API app 壳、运行时配置、`/readyz`、header actor guard、memory/file persistence mode；本地 BFF router 覆盖 `/healthz`、`/openapi.json`、问题提交、Run 查询、SSE 事件、澄清、取消；OpenAPI 草案已存在；错误码目录已覆盖全部 public code。 | API Key/服务账号、Fastify/TypeBox 生产 OpenAPI 生成、SDK、Webhook、配额和调用审计。 |
-| F12 协作资产与订阅 | 部分覆盖 | 协作资产中心页面；资产库、搜索/状态筛选、收藏反馈、归档状态、订阅反馈、分享范围、审核人、版本快照、审计事件；组件测试覆盖搜索、审核状态、收藏和审核中不可订阅。 | 真实资产持久化、重命名、权限分享链接、接收者重新鉴权、通知发送、订阅调度、协作权限策略和资产 API。 |
+| F11 开放 API / SDK | 部分覆盖 | `apps/api` 提供 API app 壳、运行时配置、`/readyz`、header actor guard、memory/file persistence mode；本地 BFF router 覆盖 `/healthz`、`/openapi.json`、问题提交、Run 查询、SSE 事件、澄清、取消、协作资产列表/收藏/订阅/审计；OpenAPI 草案已存在；错误码目录已覆盖全部 public code。 | API Key/服务账号、Fastify/TypeBox 生产 OpenAPI 生成、SDK、Webhook、配额和调用审计。 |
+| F12 协作资产与订阅 | 部分覆盖 | 协作资产中心页面；资产库、搜索/状态筛选、收藏反馈、归档状态、订阅反馈、分享范围、审核人、版本快照、审计事件；新增 `CollaborationAssetApplicationService` 与 `/v1/assets` API，覆盖 actor 可见范围过滤、收藏更新、审核中/归档不可订阅、订阅更新、接收者重新鉴权摘要和 public audit event；组件测试和服务/API 测试覆盖关键规则。 | 真实资产持久化、重命名、权限分享链接、通知发送、订阅调度、协作权限策略落库和导出水印文件生成。 |
 
 ## UI 验收覆盖
 
@@ -50,7 +50,7 @@
 | 契约测试 | 已覆盖，`src/test/contracts.test.ts` 验证未知字段拒绝、IR schema 与安全护栏。 |
 | 应用服务测试 | 已覆盖，`src/test/application.test.ts` 验证提交、幂等、澄清、越权、跨工作空间拒绝。 |
 | 本地编译/网关测试 | 已覆盖，`src/test/query.test.ts` 验证确定性 SQL 指纹、语义 Catalog 校验、Join Graph 拒绝、权限守卫注入、参数化过滤、只读拒绝、预算阻断和 public-safe 执行摘要。 |
-| 本地 BFF/API 测试 | 已覆盖，`src/test/api.test.ts` 验证健康检查、OpenAPI、HTTP 状态码、CORS、幂等、澄清和取消；`src/test/apiRuntime.test.ts` 验证 `apps/api` readiness、header actor guard 和 file persistence runtime。 |
+| 本地 BFF/API 测试 | 已覆盖，`src/test/api.test.ts` 验证健康检查、OpenAPI、HTTP 状态码、CORS、幂等、澄清和取消；`src/test/apiRuntime.test.ts` 验证 `apps/api` readiness、header actor guard 和 file persistence runtime；`src/test/collaborationService.test.ts` 验证协作资产服务与 `/v1/assets` API。 |
 | SSE/错误码契约测试 | 已覆盖，`src/test/events.test.ts` 验证 public error catalog、Run 事件序列和 Last-Event-ID 过滤。 |
 | 持久化端口测试 | 已覆盖，`src/test/persistence.test.ts` 验证跨 service 实例读取、幂等键、clone 防引用污染、audit list 和本地 JSON 文件恢复。 |
 | 组件级 UI 测试 | 部分覆盖，`src/test/dataSources.test.tsx` 已覆盖数据源中心关键状态，`src/test/collaboration.test.tsx` 已覆盖协作资产关键状态；仍需补工作台、语义中心、运营中心组件测试。 |

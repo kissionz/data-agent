@@ -125,6 +125,80 @@ export interface PublicRunView {
   updatedAt: string
 }
 
+export type AssetType = 'conversation' | 'verified_case' | 'template' | 'subscription'
+export type AssetStatus = 'active' | 'review' | 'archived'
+export type ShareScope = 'private' | 'workspace' | 'domain_leads' | 'external_blocked'
+export type SubscriptionCadence = 'daily' | 'weekly' | 'threshold' | 'none'
+
+export interface CollaborationAuditEvent {
+  id: string
+  at: string
+  type:
+    | 'asset.listed'
+    | 'asset.favorite_updated'
+    | 'asset.subscription_updated'
+    | 'asset.subscription_blocked'
+    | 'asset.audit_viewed'
+  actorUserId: string
+  tenantId: string
+  workspaceId: string
+  assetId: string
+  summary: string
+}
+
+export interface CollaborationAssetView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  title: string
+  type: AssetType
+  status: AssetStatus
+  businessDomain: string
+  owner: string
+  updatedAt: string
+  description: string
+  semanticVersion: string
+  analysisIrVersion: string
+  questionTemplate: string
+  scope: string
+  isFavorite: boolean
+  isArchived: boolean
+  shareScope: ShareScope
+  subscriptionCadence: SubscriptionCadence
+  subscribers: number
+  reviewers: Array<{ name: string; role: string }>
+  lastAudit: string
+  watermarkedExport: boolean
+  permissionSummary: {
+    workspaceScoped: boolean
+    requiresRecipientReauth: boolean
+    exportWatermarkRequired: boolean
+  }
+  audit: CollaborationAuditEvent[]
+}
+
+export interface ListAssetsRequest {
+  actor: ActorContext
+  query?: string
+  status?: AssetStatus | 'all'
+}
+
+export interface UpdateAssetFavoriteRequest {
+  actor: ActorContext
+  assetId: string
+  favorite: boolean
+}
+
+export interface UpdateAssetSubscriptionRequest {
+  actor: ActorContext
+  assetId: string
+  cadence: SubscriptionCadence
+}
+
+export interface GetAssetAuditRequest {
+  actor: ActorContext
+  assetId: string
+}
+
 export interface PublicApiError {
   code: PublicErrorCode
   message: string

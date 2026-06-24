@@ -19,7 +19,7 @@
 - 响应式布局：桌面四栏；窄屏抽屉/底部面板；移动端单栏与固定输入。
 - 领域与测试基座：运行状态机、会话模型、语义版本、权限拒绝与安全场景测试。
 - 共享契约：`AnalysisIR v1`、`PublicRunView`、API 包络、澄清、取消、审计事件与错误对象。
-- 共享契约包：`@insightflow/contracts` workspace 包已拥有独立的 `api`、`domain`、`events` 契约源码，暴露版本、schema、错误码、公共 DTO 和 SSE helper，供前端、API 与未来 SDK 统一 import。
+- 共享契约包：`@insightflow/contracts` workspace 包已拥有独立的 `api`、`domain`、`events`、`openapi` 契约源码，暴露版本、schema、错误码、公共 DTO、SSE helper 和 OpenAPI 草案，供前端、API 与未来 SDK 统一 import。
 - 开发者接入契约：`/v1/developer` 支持服务账号、API Key、Webhook 和短期 embed token 的本地治理契约，覆盖 scope、配额、过期、撤销、签名、重放保护和不暴露明文密钥/数据库凭据。
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
@@ -81,9 +81,9 @@ pnpm build
 - [apps/api/src/app.ts](/Users/kissionz/Documents/data-agent/apps/api/src/app.ts)
 - [apps/api/src/config.ts](/Users/kissionz/Documents/data-agent/apps/api/src/config.ts)
 - [src/api/router.ts](/Users/kissionz/Documents/data-agent/src/api/router.ts)
-- [src/api/openapi.ts](/Users/kissionz/Documents/data-agent/src/api/openapi.ts)
 - [src/api/nodeServer.ts](/Users/kissionz/Documents/data-agent/src/api/nodeServer.ts)
 - [packages/contracts/src/index.ts](/Users/kissionz/Documents/data-agent/packages/contracts/src/index.ts)
+- [packages/contracts/src/openapi.ts](/Users/kissionz/Documents/data-agent/packages/contracts/src/openapi.ts)
 - [src/application/identityPolicy.ts](/Users/kissionz/Documents/data-agent/src/application/identityPolicy.ts)
 - [src/application/dataSources.ts](/Users/kissionz/Documents/data-agent/src/application/dataSources.ts)
 - [src/application/developerAccess.ts](/Users/kissionz/Documents/data-agent/src/application/developerAccess.ts)
@@ -138,7 +138,7 @@ pnpm build
 - `POST /v1/assets/{assetId}/subscription`
 - `GET /v1/assets/{assetId}/audit`
 
-本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
+本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和由 `@insightflow/contracts/openapi` 导出的 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
 
 ## 浏览器验收建议
 
@@ -175,7 +175,7 @@ pnpm build
 
 ## 建议下一阶段
 
-1. 将 `openApiDocument` 改为从 `@insightflow/contracts` schema 自动生成，并补 SDK 代码生成/发布流程。
+1. 将 `@insightflow/contracts/openapi` 从当前草案升级为 schema 生成产物，并补 SDK 代码生成/发布流程。
 2. 为 `src/persistence` 增加 SQLite/PostgreSQL adapter，并把审计事件单独落表；本地 JSON adapter 只作为开发替代。
 3. 增加 `apps/api`，用 Fastify/TypeBox 包装当前 deterministic service、router 和 SSE 契约。
 4. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。

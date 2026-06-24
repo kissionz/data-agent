@@ -4,12 +4,14 @@ import {
   CONTRACT_VERSION,
   PUBLIC_ERROR_CATALOG,
   analysisIrJsonSchema,
+  openApiDocument,
   serializeSseEvents,
   validationError,
 } from '@insightflow/contracts'
 import { CONTRACT_VERSION as API_CONTRACT_VERSION, validationError as apiValidationError } from '@insightflow/contracts/api'
 import { RUN_DISPLAY_STATUSES, type RunMode } from '@insightflow/contracts/domain'
 import { serializeSseEvents as serializeEventsFromSubpath } from '@insightflow/contracts/events'
+import { openApiDocument as openApiDocumentFromSubpath } from '@insightflow/contracts/openapi'
 
 describe('@insightflow/contracts package entry', () => {
   it('exposes the shared contract constants, schemas and helpers through the package boundary', () => {
@@ -26,6 +28,8 @@ describe('@insightflow/contracts package entry', () => {
     })
 
     expect(serializeSseEvents([{ id: 'evt_1', event: 'run.snapshot', data: { ok: true } }])).toContain('event: run.snapshot')
+    expect(openApiDocument.info.version).toBe(CONTRACT_VERSION)
+    expect(openApiDocument.components.schemas.AnalysisIR).toBe(analysisIrJsonSchema)
   })
 
   it('supports direct api, domain and events subpath imports without app-source imports', () => {
@@ -36,5 +40,7 @@ describe('@insightflow/contracts package entry', () => {
     expect(RUN_DISPLAY_STATUSES).toContain('needs_clarification')
     expect(mode).toBe('trusted')
     expect(serializeEventsFromSubpath([{ id: 'evt_2', event: 'run.failed', data: { ok: false } }])).toContain('event: run.failed')
+    expect(openApiDocumentFromSubpath.paths['/v1/questions']).toEqual(expect.any(Object))
+    expect(openApiDocumentFromSubpath.paths['/v1/operations/slo']).toEqual(expect.any(Object))
   })
 })

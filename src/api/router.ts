@@ -2,6 +2,7 @@ import {
   createChatBiApplicationService,
   createCollaborationAssetApplicationService,
   createDataSourceApplicationService,
+  createDeveloperAccessApplicationService,
   createEvaluationApplicationService,
   createIdentityPolicyApplicationService,
   createModelOpsApplicationService,
@@ -9,6 +10,7 @@ import {
   createSharingExportApplicationService,
   httpStatusForAssetEnvelope,
   httpStatusForDataSourceEnvelope,
+  httpStatusForDeveloperAccessEnvelope,
   httpStatusForEvaluationEnvelope,
   httpStatusForIdentityEnvelope,
   httpStatusForModelOpsEnvelope,
@@ -17,6 +19,7 @@ import {
   type ChatBiApplicationService,
   type CollaborationAssetApplicationService,
   type DataSourceApplicationService,
+  type DeveloperAccessApplicationService,
   type EvaluationApplicationService,
   type IdentityPolicyApplicationService,
   type ModelOpsApplicationService,
@@ -60,6 +63,7 @@ export interface ChatBiBffRouter {
   service: ChatBiApplicationService
   assets: CollaborationAssetApplicationService
   dataSources: DataSourceApplicationService
+  developer: DeveloperAccessApplicationService
   evaluation: EvaluationApplicationService
   identity: IdentityPolicyApplicationService
   modelOps: ModelOpsApplicationService
@@ -88,6 +92,7 @@ export function createChatBiBffRouter(
   service: ChatBiApplicationService = createChatBiApplicationService(),
   assets: CollaborationAssetApplicationService = createCollaborationAssetApplicationService(),
   dataSources: DataSourceApplicationService = createDataSourceApplicationService(),
+  developer: DeveloperAccessApplicationService = createDeveloperAccessApplicationService(),
   evaluation: EvaluationApplicationService = createEvaluationApplicationService(),
   identity: IdentityPolicyApplicationService = createIdentityPolicyApplicationService(),
   modelOps: ModelOpsApplicationService = createModelOpsApplicationService(),
@@ -198,6 +203,7 @@ export function createChatBiBffRouter(
     service,
     assets,
     dataSources,
+    developer,
     evaluation,
     identity,
     modelOps,
@@ -212,6 +218,69 @@ export function createChatBiBffRouter(
         return withCors(respond(200, { ok: true, service: 'chatbi-local-bff' }))
       }
       if (method === 'GET' && path === '/openapi.json') return withCors(respond(200, openApiDocument))
+
+      if (method === 'POST' && path === '/v1/developer/service-accounts') {
+        const body = bodyObject(request)
+        const envelope = developer.createServiceAccount({
+          actor: actorFrom(request),
+          name: String(body.name ?? ''),
+          scopes: Array.isArray(body.scopes) ? body.scopes as never : [],
+          expiresInDays: Number(body.expiresInDays ?? body.expires_in_days ?? 90),
+          dailyRequestLimit: Number(body.dailyRequestLimit ?? body.daily_request_limit ?? 10000),
+        })
+        return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/developer/api-keys') {
+        const body = bodyObject(request)
+        const envelope = developer.issueApiKey({
+          actor: actorFrom(request),
+          serviceAccountId: String(body.serviceAccountId ?? body.service_account_id ?? ''),
+          expiresInDays: Number(body.expiresInDays ?? body.expires_in_days ?? 30),
+        })
+        return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
+      }
+
+      const apiKeyRevokeMatch = path.match(/^\/v1\/developer\/api-keys\/([^/]+)\/revoke$/)
+      if (method === 'POST' && apiKeyRevokeMatch) {
+        const body = bodyObject(request)
+        const envelope = developer.revokeApiKey({
+          actor: actorFrom(request),
+          keyId: decodeURIComponent(apiKeyRevokeMatch[1]),
+          reason: String(body.reason ?? ''),
+        })
+        return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/developer/webhooks') {
+        const body = bodyObject(request)
+        const envelope = developer.registerWebhook({
+          actor: actorFrom(request),
+          url: String(body.url ?? ''),
+          events: Array.isArray(body.events) ? body.events as never : [],
+        })
+        return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
+      }
+
+      const webhookTestMatch = path.match(/^\/v1\/developer\/webhooks\/([^/]+)\/test$/)
+      if (method === 'POST' && webhookTestMatch) {
+        const envelope = developer.testWebhook({
+          actor: actorFrom(request),
+          webhookId: decodeURIComponent(webhookTestMatch[1]),
+        })
+        return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/developer/embed-tokens') {
+        const body = bodyObject(request)
+        const envelope = developer.issueEmbedToken({
+          actor: actorFrom(request),
+          hostOrigin: String(body.hostOrigin ?? body.host_origin ?? ''),
+          source: (body.source || { type: 'asset', assetId: '' }) as never,
+          expiresInMinutes: Number(body.expiresInMinutes ?? body.expires_in_minutes ?? 30),
+        })
+        return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
+      }
 
       if (method === 'GET' && path === '/v1/model-ops/routes') {
         const envelope = modelOps.listRoutes({

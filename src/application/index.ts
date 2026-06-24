@@ -1,6 +1,7 @@
 export * from './chatbiService'
 export * from './collaborationAssets'
 export * from './dataSources'
+export * from './developerAccess'
 export * from './evaluation'
 export * from './identityPolicy'
 export * from './modelOps'

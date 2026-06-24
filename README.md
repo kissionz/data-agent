@@ -20,6 +20,7 @@
 - 领域与测试基座：运行状态机、会话模型、语义版本、权限拒绝与安全场景测试。
 - 共享契约：`AnalysisIR v1`、`PublicRunView`、API 包络、澄清、取消、审计事件与错误对象。
 - 共享契约包入口：`@insightflow/contracts` workspace 包已暴露版本、schema、错误码和 SSE helper，供前端、API 与未来 SDK 统一 import。
+- 开发者接入契约：`/v1/developer` 支持服务账号、API Key、Webhook 和短期 embed token 的本地治理契约，覆盖 scope、配额、过期、撤销、签名、重放保护和不暴露明文密钥/数据库凭据。
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
 - API 应用壳：`apps/api` 提供运行时配置、`/readyz`、生产式 header actor 校验、memory/file persistence 模式和 Node adapter 组合入口。
@@ -84,6 +85,7 @@ pnpm build
 - [packages/contracts/src/index.ts](/Users/kissionz/Documents/data-agent/packages/contracts/src/index.ts)
 - [src/application/identityPolicy.ts](/Users/kissionz/Documents/data-agent/src/application/identityPolicy.ts)
 - [src/application/dataSources.ts](/Users/kissionz/Documents/data-agent/src/application/dataSources.ts)
+- [src/application/developerAccess.ts](/Users/kissionz/Documents/data-agent/src/application/developerAccess.ts)
 - [src/application/semanticGovernance.ts](/Users/kissionz/Documents/data-agent/src/application/semanticGovernance.ts)
 - [src/application/sharingExports.ts](/Users/kissionz/Documents/data-agent/src/application/sharingExports.ts)
 - [src/application/evaluation.ts](/Users/kissionz/Documents/data-agent/src/application/evaluation.ts)
@@ -100,6 +102,12 @@ pnpm build
 - `GET /v1/identity/context`
 - `POST /v1/identity/policies/evaluate`
 - `POST /v1/identity/policies/current`
+- `POST /v1/developer/service-accounts`
+- `POST /v1/developer/api-keys`
+- `POST /v1/developer/api-keys/{keyId}/revoke`
+- `POST /v1/developer/webhooks`
+- `POST /v1/developer/webhooks/{webhookId}/test`
+- `POST /v1/developer/embed-tokens`
 - `POST /v1/questions`
 - `GET /v1/runs/{runId}?conversation_id=...`
 - `GET /v1/runs/{runId}/events?conversation_id=...`
@@ -126,7 +134,7 @@ pnpm build
 - `POST /v1/assets/{assetId}/subscription`
 - `GET /v1/assets/{assetId}/audit`
 
-本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、协作资产门禁和 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
+本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、协作资产门禁和 OpenAPI 草案。持久化目前有内存 adapter 和本地 JSON 文件 adapter；文件 adapter 使用临时文件 + rename 做原子替换，适合本地开发和验收样例，不是生产数据库。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、PostgreSQL/Redis adapter 和网关部署。
 
 ## 浏览器验收建议
 
@@ -151,7 +159,7 @@ pnpm build
 
 已完成的是“可运行、可审查、可继续开发”的产品基座，不是完整生产系统。当前 `src/application` 是本地 deterministic service，不是网络 API。生产化仍至少需要：
 
-- Fastify/TypeBox API BFF 替换当前 Node adapter、生产 SSE 长连接、PostgreSQL/Redis 持久化、租户/组织/工作空间模型。
+- Fastify/TypeBox API BFF 替换当前 Node adapter、生产 SSE 长连接、PostgreSQL/Redis 持久化、租户/组织/工作空间模型、真实 API Key 验签和 Webhook 投递队列。
 - OIDC/SAML/SCIM、外部 Policy Engine、服务账号短期令牌、策略审批和审计落库。
 - 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化与 Join Graph 编辑审批。
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。

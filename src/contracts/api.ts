@@ -703,6 +703,142 @@ export interface RollbackModelRouteRequest {
   reason: string
 }
 
+export type DeveloperScope =
+  | 'questions:write'
+  | 'runs:read'
+  | 'semantic:read'
+  | 'assets:read'
+  | 'exports:create'
+  | 'webhooks:manage'
+  | 'embed:issue'
+
+export interface DeveloperAccessAuditEvent {
+  id: string
+  at: string
+  type:
+    | 'developer.service_account_created'
+    | 'developer.api_key_issued'
+    | 'developer.api_key_revoked'
+    | 'developer.webhook_registered'
+    | 'developer.webhook_tested'
+    | 'developer.embed_token_issued'
+    | 'developer.access_denied'
+  actorUserId: string
+  tenantId: string
+  workspaceId: string
+  targetId: string
+  summary: string
+}
+
+export interface ServiceAccountView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  name: string
+  status: 'active' | 'revoked'
+  workspaceId: string
+  businessDomainId: string
+  scopes: DeveloperScope[]
+  quota: {
+    dailyRequestLimit: number
+    dailyRequestUsed: number
+  }
+  createdBy: string
+  createdAt: string
+  expiresAt: string
+  audit: DeveloperAccessAuditEvent[]
+}
+
+export interface CreateServiceAccountRequest {
+  actor: ActorContext
+  name: string
+  scopes: DeveloperScope[]
+  expiresInDays: number
+  dailyRequestLimit: number
+}
+
+export interface ApiKeyView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  serviceAccountId: string
+  prefix: string
+  secretPreview: string
+  secretHash: string
+  status: 'active' | 'revoked'
+  scopes: DeveloperScope[]
+  expiresAt: string
+  rotationRequiredBefore: string
+  audit: DeveloperAccessAuditEvent[]
+}
+
+export interface IssueApiKeyRequest {
+  actor: ActorContext
+  serviceAccountId: string
+  expiresInDays: number
+}
+
+export interface RevokeApiKeyRequest {
+  actor: ActorContext
+  keyId: string
+  reason: string
+}
+
+export interface WebhookSubscriptionView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  url: string
+  events: Array<'run.completed' | 'run.failed' | 'asset.updated' | 'export.completed'>
+  status: 'active' | 'failed' | 'revoked'
+  secretPreview: string
+  signingAlgorithm: 'hmac-sha256'
+  replayProtectionSeconds: number
+  retryPolicy: {
+    maxAttempts: number
+    backoff: 'exponential'
+    deadLetterAfterAttempts: number
+  }
+  deliversOnlyAuthorizedData: true
+  lastTest?: {
+    status: 'accepted' | 'failed'
+    httpStatus: number
+    signatureVerified: boolean
+  }
+  audit: DeveloperAccessAuditEvent[]
+}
+
+export interface RegisterWebhookRequest {
+  actor: ActorContext
+  url: string
+  events: WebhookSubscriptionView['events']
+}
+
+export interface TestWebhookRequest {
+  actor: ActorContext
+  webhookId: string
+}
+
+export interface EmbedTokenView {
+  contractVersion: typeof CONTRACT_VERSION
+  tokenId: string
+  tokenPreview: string
+  hostOrigin: string
+  source:
+    | { type: 'run'; runId: string; conversationId: string }
+    | { type: 'asset'; assetId: string }
+  expiresAt: string
+  scopes: Extract<DeveloperScope, 'runs:read' | 'assets:read'>[]
+  policyVersion: string
+  permissionDigest: string
+  cannotAccessDatabaseCredentials: true
+  audit: DeveloperAccessAuditEvent[]
+}
+
+export interface IssueEmbedTokenRequest {
+  actor: ActorContext
+  hostOrigin: string
+  source: EmbedTokenView['source']
+  expiresInMinutes: number
+}
+
 export interface PublicApiError {
   code: PublicErrorCode
   message: string

@@ -28,16 +28,18 @@
 |---|---|---|---|
 | UI | `src/App.tsx`、`src/features/*` | 工作台、数据源中心、语义中心、协作资产中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
 | Contracts | `src/contracts/*`、`packages/contracts/*` | `AnalysisIR v1`、`PublicRunView`、API envelope、审计事件、错误对象、错误码目录、SSE 事件和 schema 草案；`@insightflow/contracts` workspace 包入口已可供应用/未来 SDK 按包名消费 | 将过渡 re-export 迁移为真正源码包，使用 TypeBox 生成 OpenAPI |
-| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；身份上下文与策略裁决；数据源列表/详情/连接测试；语义指标评审/认证；导出分享重新鉴权；评测门禁与失败回放；模型路由、配额、降级链、灰度回滚；协作资产列表、收藏、订阅门禁和审计；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter、真实 Model Gateway、外部身份/策略引擎、语义对象持久化、真实导出文件生成、评测流水线、数据源/协作资产持久化与通知调度 |
+| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；身份上下文与策略裁决；服务账号/API Key/Webhook/embed token 开发者接入治理；数据源列表/详情/连接测试；语义指标评审/认证；导出分享重新鉴权；评测门禁与失败回放；模型路由、配额、降级链、灰度回滚；协作资产列表、收藏、订阅门禁和审计；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter、真实 Model Gateway、外部身份/策略引擎、API Key 验签和 Webhook 投递队列、语义对象持久化、真实导出文件生成、评测流水线、数据源/协作资产持久化与通知调度 |
 | Semantic | `src/semantic/*` | 本地 Semantic Catalog、认证指标/草稿指标、维度、兼容维度和 Join Graph 风险门禁；治理服务暴露提交评审、认证发布、参考 SQL 对账门禁和 public audit | 持久化版本仓库、Join Graph 编辑审批、参考 SQL 自动对账、血缘和灰度发布 |
 | Query | `src/query/*` | Analysis IR 经 Semantic Catalog 校验后生成只读 SQL AST/SQL，注入权限守卫、SQL 指纹、缓存键和预算阻断 | 方言插件、EXPLAIN 成本模型、连接池、取消传播和真实结果分页 |
 | Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口、内存 adapter、本地 JSON 文件 adapter | SQLite/PostgreSQL/Redis adapter 与 migration |
 | API App | `apps/api/*` | API 运行时配置、`/readyz`、header actor guard、memory/file persistence mode、Node adapter 组合入口 | 替换为 Fastify/TypeBox、OIDC/API key 中间件、生产 SSE 长连接 |
-| BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、身份策略 API、数据源 API、语义治理 API、导出分享 API、评测回放 API、模型运营 API、协作资产 API、Node server adapter 源码、CORS/状态码映射测试 | 保持为框架无关 router 或拆入 `packages/contracts`/`apps/api` |
+| BFF Adapter | `src/api/*` | 本地 HTTP router、OpenAPI 草案、SSE events endpoint、身份策略 API、开发者接入 API、数据源 API、语义治理 API、导出分享 API、评测回放 API、模型运营 API、协作资产 API、Node server adapter 源码、CORS/状态码映射测试 | 保持为框架无关 router 或拆入 `packages/contracts`/`apps/api` |
 
-`apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`/v1/identity` 身份上下文/策略裁决、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/data-sources` 数据源列表/详情/连接测试、`/v1/semantic` 语义指标评审/认证、`/v1/sharing` 导出/分享治理、`/v1/evaluation` 黄金集门禁/失败回放、`/v1/model-ops` 模型路由/决策/回滚和 `/v1/assets` 协作资产列表/收藏/订阅/审计接口。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
+`apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`/v1/identity` 身份上下文/策略裁决、`/v1/developer` 服务账号/API Key/Webhook/embed token、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/data-sources` 数据源列表/详情/连接测试、`/v1/semantic` 语义指标评审/认证、`/v1/sharing` 导出/分享治理、`/v1/evaluation` 黄金集门禁/失败回放、`/v1/model-ops` 模型路由/决策/回滚和 `/v1/assets` 协作资产列表/收藏/订阅/审计接口。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
 
 共享契约包当前是 F11/API SDK 的过渡切片：`packages/contracts` 暴露 `@insightflow/contracts` 包名，使用 Vite/TS path alias 指向既有契约源，并通过包入口测试锁定版本、schema、错误码和 SSE helper。这样前端、API 和未来 SDK 可以先统一 import 边界；下一阶段再把契约源码完全迁入包内，解除对 `src/domain` 的历史依赖。
+
+开发者接入当前是 F11/F12 的服务治理切片：`DeveloperAccessApplicationService` 提供服务账号、API Key、Webhook 和短期 embed token 的本地契约。服务账号绑定当前工作区/业务域、scope、过期时间和日配额；API Key 只返回前缀、脱敏预览与 hash 指纹，可撤销但不暴露明文；Webhook 强制 HTTPS、HMAC-SHA256 签名、300 秒重放保护、指数退避和死信策略，并声明不投递越权数据；embed token 由 Host 以自身权限换取，5–120 分钟有效，组件不能接触数据库凭据。它尚未实现真实 API Key 验签、SDK 代码生成、Webhook 异步投递或 embed SDK 包。
 
 身份策略当前是 F01 的服务治理切片：`IdentityPolicyApplicationService` 提供当前身份上下文、可见工作空间、角色、策略版本、权限摘要、策略裁决和策略更新。策略更新会提升 `policyVersion`，并让 `cacheKeyScope` 与 `permissionDigest` 变化，表达“5 分钟内生效、旧缓存不可绕过”的验收语义。它尚未接入真实 OIDC/SAML/SCIM、服务账号短期令牌、外部 Policy Engine 或生产审计表。
 
@@ -233,6 +235,12 @@ IR 使用严格 JSON Schema（`additionalProperties: false`），服务端维护
 | `GET` | `/v1/results/{id}` | 游标分页结果，服务端复核权限 |
 | `POST` | `/v1/feedback` | 点赞/点踩与原因 |
 | `GET` | `/v1/semantic/metrics/{id}` | 当前用户可见的指标口径与版本 |
+| `POST` | `/v1/developer/service-accounts` | 创建绑定工作区、scope、配额和过期时间的服务账号 |
+| `POST` | `/v1/developer/api-keys` | 为服务账号签发短期 API Key，只返回脱敏预览和 hash 指纹 |
+| `POST` | `/v1/developer/api-keys/{id}/revoke` | 撤销 API Key |
+| `POST` | `/v1/developer/webhooks` | 注册带签名、重放保护、退避和死信策略的 Webhook |
+| `POST` | `/v1/developer/webhooks/{id}/test` | 发送 Webhook 测试事件 |
+| `POST` | `/v1/developer/embed-tokens` | Host 换取短期嵌入 token，组件不能接触数据库凭据 |
 | `GET` | `/v1/model-ops/routes` | 模型路由、版本、配额、超时、温度和降级链 |
 | `POST` | `/v1/model-ops/route` | 按能力、配额、供应商可用性和门禁执行一次模型路由决策 |
 | `POST` | `/v1/model-ops/routes/{id}/rollback` | 运维/安全管理员回滚候选版本灰度流量 |

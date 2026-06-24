@@ -47,6 +47,8 @@ describe('ChatBI local BFF router', () => {
       openapi: '3.1.0',
       paths: {
         '/v1/questions': expect.any(Object),
+        '/v1/developer/service-accounts': expect.any(Object),
+        '/v1/developer/embed-tokens': expect.any(Object),
         '/v1/model-ops/routes': expect.any(Object),
         '/v1/model-ops/route': expect.any(Object),
         '/v1/runs/{runId}/clarify': expect.any(Object),

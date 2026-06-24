@@ -101,6 +101,67 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/developer/service-accounts': {
+      post: {
+        summary: '创建服务账号',
+        description: '仅 platform_ops/security_admin 可调用；服务账号绑定当前工作区、业务域、scope、过期时间和日请求配额。',
+        responses: {
+          200: { description: '服务账号已创建' },
+          400: { description: 'scope、配额或过期时间无效' },
+          403: { description: '角色无权管理开发者接入' },
+        },
+      },
+    },
+    '/v1/developer/api-keys': {
+      post: {
+        summary: '签发 API Key',
+        description: '为服务账号签发短期 API Key；只返回前缀、脱敏预览和 hash 指纹，不返回可复用明文密钥。',
+        responses: {
+          200: { description: 'API Key 已签发' },
+          404: { description: '服务账号不存在或已撤销' },
+        },
+      },
+    },
+    '/v1/developer/api-keys/{keyId}/revoke': {
+      post: {
+        summary: '撤销 API Key',
+        parameters: [{ name: 'keyId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: 'API Key 已撤销' },
+          404: { description: 'API Key 不存在' },
+        },
+      },
+    },
+    '/v1/developer/webhooks': {
+      post: {
+        summary: '注册 Webhook',
+        description: 'Webhook 必须使用 HTTPS，启用 HMAC-SHA256 签名、300 秒重放保护、指数退避和死信策略；事件载荷不得超出订阅者权限。',
+        responses: {
+          200: { description: 'Webhook 已注册' },
+          400: { description: 'URL 或事件列表无效' },
+        },
+      },
+    },
+    '/v1/developer/webhooks/{webhookId}/test': {
+      post: {
+        summary: '发送 Webhook 测试事件',
+        parameters: [{ name: 'webhookId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: 'Webhook 测试事件已接受' },
+          404: { description: 'Webhook 不存在' },
+        },
+      },
+    },
+    '/v1/developer/embed-tokens': {
+      post: {
+        summary: '签发短期嵌入 token',
+        description: 'Host 使用自身权限换取 5–120 分钟短期 embed token；组件不能接触数据库凭据，只能读授权 run 或 asset。',
+        responses: {
+          200: { description: '嵌入 token 已签发' },
+          400: { description: 'Host Origin 或 TTL 无效' },
+        },
+      },
+    },
     '/v1/sharing/exports': {
       post: {
         summary: '请求导出结果或资产',

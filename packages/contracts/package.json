@@ -23,6 +23,10 @@
     "./openapi": {
       "types": "./src/openapi.ts",
       "default": "./src/openapi.ts"
+    },
+    "./sdk": {
+      "types": "./src/sdk.ts",
+      "default": "./src/sdk.ts"
     }
   }
 }

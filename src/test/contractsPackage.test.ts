@@ -12,6 +12,12 @@ import { CONTRACT_VERSION as API_CONTRACT_VERSION, validationError as apiValidat
 import { RUN_DISPLAY_STATUSES, type RunMode } from '@insightflow/contracts/domain'
 import { serializeSseEvents as serializeEventsFromSubpath } from '@insightflow/contracts/events'
 import { openApiDocument as openApiDocumentFromSubpath } from '@insightflow/contracts/openapi'
+import {
+  createDeveloperSdkRequest,
+  createEmbedFrameConfig,
+  createEmbedIframeSnippet,
+  requiredScopesForEndpoint,
+} from '@insightflow/contracts/sdk'
 
 describe('@insightflow/contracts package entry', () => {
   it('exposes the shared contract constants, schemas and helpers through the package boundary', () => {
@@ -32,7 +38,7 @@ describe('@insightflow/contracts package entry', () => {
     expect(openApiDocument.components.schemas.AnalysisIR).toBe(analysisIrJsonSchema)
   })
 
-  it('supports direct api, domain and events subpath imports without app-source imports', () => {
+  it('supports direct api, domain, events, openapi and sdk subpath imports without app-source imports', () => {
     const mode: RunMode = 'trusted'
 
     expect(API_CONTRACT_VERSION).toBe(CONTRACT_VERSION)
@@ -50,5 +56,73 @@ describe('@insightflow/contracts package entry', () => {
     expect(openApiDocumentFromSubpath.components.schemas.WebhookDeliveryPlanView).toMatchObject({
       additionalProperties: false,
     })
+    expect(requiredScopesForEndpoint('embed.issue')).toEqual(['embed:issue'])
+  })
+
+  it('builds safe developer SDK requests and embed snippets without database credentials', () => {
+    const request = createDeveloperSdkRequest({
+      baseUrl: 'https://api.example.com/',
+      method: 'POST',
+      path: '/v1/questions',
+      apiKey: 'ifk_live_redacted',
+      idempotencyKey: 'tenant_demo:question:001',
+      headers: {
+        authorization: 'Bearer attacker_override',
+      },
+      body: {
+        conversation_id: 'conversation_sdk',
+        question: '过去 12 个月净收入趋势',
+        mode: 'trusted',
+      },
+    })
+
+    expect(request).toEqual({
+      url: 'https://api.example.com/v1/questions',
+      method: 'POST',
+      headers: expect.objectContaining({
+        accept: 'application/json',
+        authorization: 'Bearer ifk_live_redacted',
+        'content-type': 'application/json',
+        'idempotency-key': 'tenant_demo:question:001',
+      }),
+      body: expect.stringContaining('过去 12 个月净收入趋势'),
+    })
+
+    const frame = createEmbedFrameConfig({
+      embedOrigin: 'https://embed.example.com',
+      embedToken: 'embed_1234567890',
+      source: { type: 'asset', assetId: 'asset_revenue_trend' },
+      theme: 'light',
+      height: 640,
+      title: 'Revenue trend',
+    })
+    const iframe = createEmbedIframeSnippet(frame)
+
+    expect(frame).toMatchObject({
+      src: expect.stringContaining('/embed/assets/asset_revenue_trend?'),
+      referrerPolicy: 'no-referrer',
+      databaseCredentialsAccessible: false,
+      style: { height: '640px' },
+    })
+    expect(frame.src).toContain('#embed_token=embed_1234567890')
+    expect(iframe).toContain('<iframe')
+    expect(iframe).toContain('sandbox=')
+
+    expect(() => createDeveloperSdkRequest({
+      baseUrl: 'https://api.example.com',
+      method: 'POST',
+      path: '/v1/developer/embed-tokens',
+      apiKey: 'ifk_live_redacted',
+      body: {
+        source: { type: 'asset', assetId: 'asset_revenue_trend' },
+        database_password: 'should-not-pass',
+      },
+    })).toThrow(/database credentials/)
+
+    expect(() => createEmbedFrameConfig({
+      embedOrigin: 'http://embed.example.com',
+      embedToken: 'embed_1234567890',
+      source: { type: 'asset', assetId: 'asset_revenue_trend' },
+    })).toThrow(/HTTPS/)
   })
 })

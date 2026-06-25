@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { createChatBiApplicationService } from '../application'
 import { createFileChatBiPersistence } from '../persistence/file'
 import { createInMemoryChatBiPersistence } from '../persistence/memory'
+import {
+  CHATBI_SQL_MIGRATION,
+  createSqlChatBiPersistence,
+  migrateChatBiSqlPersistence,
+  type SqlPersistenceClient,
+} from '../persistence/sql'
 import type { ActorContext } from '../contracts'
 
 const actor: ActorContext = {
@@ -175,4 +181,124 @@ describe('ChatBI persistence ports', () => {
     const freshAdapter = createFileChatBiPersistence(filePath)
     expect(freshAdapter.getRun(created.data.runId)?.run.result?.rows[0].values.net_revenue).toBe(1184000)
   })
+
+  it('defines a production-shaped SQL migration for conversations, runs, idempotency and audit tables', () => {
+    const client = new FakeSqlClient()
+    migrateChatBiSqlPersistence(client)
+
+    expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_conversations')
+    expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_runs')
+    expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_idempotency')
+    expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_audit_events')
+    expect(CHATBI_SQL_MIGRATION.length).toBeGreaterThanOrEqual(6)
+  })
+
+  it('persists runs through the SQL adapter and stores audit events in their own table', () => {
+    const client = new FakeSqlClient()
+    migrateChatBiSqlPersistence(client)
+    const firstPersistence = createSqlChatBiPersistence(client)
+    const firstService = createChatBiApplicationService({
+      now: () => '2026-06-23T09:00:00+08:00',
+      persistence: firstPersistence,
+    })
+    const created = firstService.submitQuestion({
+      idempotencyKey: 'sql_persisted_run',
+      conversationId: 'conversation_sql_persisted',
+      question: '过去 12 个月净收入趋势',
+      mode: 'trusted',
+      actor,
+    })
+    if (!created.ok) throw new Error('expected sql persisted run')
+
+    const secondPersistence = createSqlChatBiPersistence(client)
+    const secondService = createChatBiApplicationService({
+      now: () => '2026-06-23T09:05:00+08:00',
+      persistence: secondPersistence,
+    })
+    const loaded = secondService.getRun({
+      runId: created.data.runId,
+      conversationId: created.data.conversationId,
+      actor,
+    })
+
+    expect(loaded.ok).toBe(true)
+    if (!loaded.ok) throw new Error('expected loaded sql run')
+    expect(loaded.data.runId).toBe(created.data.runId)
+    expect(secondPersistence.getRunIdByIdempotencyKey('sql_persisted_run')).toBe(created.data.runId)
+    expect(client.auditEvents.get(created.data.runId)).toHaveLength(6)
+    expect(secondPersistence.listAuditEvents(created.data.runId).map((event) => event.type)).toEqual([
+      'question.accepted',
+      'planner.ir_created',
+      'compiler.plan_created',
+      'query.started',
+      'query.completed',
+      'result.ready',
+    ])
+  })
+
+  it('returns cloned SQL records so caller mutations do not leak back into stored JSON payloads', () => {
+    const client = new FakeSqlClient()
+    const persistence = createSqlChatBiPersistence(client)
+    const service = createChatBiApplicationService({
+      now: () => '2026-06-23T09:00:00+08:00',
+      persistence,
+    })
+    const created = service.submitQuestion({
+      idempotencyKey: 'sql_clone_guard',
+      conversationId: 'conversation_sql_clone_guard',
+      question: '过去 12 个月净收入趋势',
+      mode: 'trusted',
+      actor,
+    })
+    if (!created.ok) throw new Error('expected sql run')
+    const record = persistence.getRun(created.data.runId)
+    if (!record?.run.result) throw new Error('expected result')
+    record.run.result.rows[0].values.net_revenue = 0
+
+    expect(persistence.getRun(created.data.runId)?.run.result?.rows[0].values.net_revenue).toBe(1184000)
+  })
 })
+
+class FakeSqlClient implements SqlPersistenceClient {
+  executedStatements: string[] = []
+  conversations = new Map<string, Record<string, unknown>>()
+  runs = new Map<string, Record<string, unknown>>()
+  idempotency = new Map<string, Record<string, unknown>>()
+  auditEvents = new Map<string, Array<Record<string, unknown>>>()
+
+  execute(statement: string, params: Record<string, unknown> = {}): void {
+    this.executedStatements.push(statement)
+    if (statement.startsWith('insert into chatbi_conversations')) {
+      this.conversations.set(String(params.id), { ...params })
+      return
+    }
+    if (statement.startsWith('insert into chatbi_runs')) {
+      this.runs.set(String(params.id), { ...params })
+      return
+    }
+    if (statement.startsWith('insert into chatbi_idempotency')) {
+      this.idempotency.set(String(params.idempotency_key), { ...params })
+      return
+    }
+    if (statement.startsWith('delete from chatbi_audit_events')) {
+      this.auditEvents.set(String(params.run_id), [])
+      return
+    }
+    if (statement.startsWith('insert into chatbi_audit_events')) {
+      const runId = String(params.run_id)
+      this.auditEvents.set(runId, [...(this.auditEvents.get(runId) ?? []), { ...params }])
+    }
+  }
+
+  queryOne<T>(statement: string, params: Record<string, unknown> = {}): T | undefined {
+    if (statement.includes('from chatbi_conversations')) return this.conversations.get(String(params.id)) as T | undefined
+    if (statement.includes('from chatbi_runs')) return this.runs.get(String(params.id)) as T | undefined
+    if (statement.includes('from chatbi_idempotency')) return this.idempotency.get(String(params.idempotency_key)) as T | undefined
+    return undefined
+  }
+
+  queryMany<T>(statement: string, params: Record<string, unknown> = {}): T[] {
+    if (statement.includes('from chatbi_audit_events')) return [...(this.auditEvents.get(String(params.run_id)) ?? [])] as T[]
+    return []
+  }
+}

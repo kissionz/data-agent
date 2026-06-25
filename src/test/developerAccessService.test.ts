@@ -119,6 +119,153 @@ describe('Developer access service', () => {
     ]))
   })
 
+  it('verifies API keys into scoped service-account actors and increments quota', () => {
+    const now = '2026-06-24T16:01:00+08:00'
+    const service = createDeveloperAccessApplicationService({ now: () => now })
+    const account = service.createServiceAccount({
+      actor: opsActor,
+      name: 'Operations SDK',
+      scopes: ['questions:write', 'runs:read'],
+      expiresInDays: 120,
+      dailyRequestLimit: 2,
+    })
+    expect(account.ok).toBe(true)
+    if (!account.ok) return
+    const issued = service.issueApiKey({
+      actor: opsActor,
+      serviceAccountId: account.data.id,
+      expiresInDays: 30,
+    })
+    expect(issued.ok).toBe(true)
+    if (!issued.ok) return
+
+    const verified = service.verifyApiKey({
+      presentedSecret: mockIssuedSecret('ifk_live', issued.data.id, 5, now),
+      requiredScopes: ['questions:write'],
+      workspaceId: 'workspace_sales',
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    })
+    expect(verified.ok).toBe(true)
+    if (!verified.ok) return
+    expect(verified.data).toMatchObject({
+      authenticated: true,
+      keyId: issued.data.id,
+      serviceAccountId: account.data.id,
+      actor: {
+        userId: account.data.id,
+        roles: ['service_account'],
+        workspaceId: 'workspace_sales',
+        businessDomainId: 'sales',
+      },
+      quota: {
+        dailyRequestLimit: 2,
+        dailyRequestUsed: 1,
+      },
+      cannotAccessDatabaseCredentials: true,
+    })
+    expect(verified.data.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'developer.api_key_verified' }),
+    ]))
+    expect(JSON.stringify(verified.data)).not.toMatch(/database_password|credential_secret|presentedSecret/i)
+  })
+
+  it('rejects API keys with missing scopes, revoked status, quota exhaustion or boundary mismatch', () => {
+    const now = '2026-06-24T16:01:00+08:00'
+    const service = createDeveloperAccessApplicationService({ now: () => now })
+    const account = service.createServiceAccount({
+      actor: opsActor,
+      name: 'Read Only SDK',
+      scopes: ['runs:read'],
+      expiresInDays: 120,
+      dailyRequestLimit: 1,
+    })
+    expect(account.ok).toBe(true)
+    if (!account.ok) return
+    const issued = service.issueApiKey({
+      actor: opsActor,
+      serviceAccountId: account.data.id,
+      expiresInDays: 30,
+    })
+    expect(issued.ok).toBe(true)
+    if (!issued.ok) return
+    const secret = mockIssuedSecret('ifk_live', issued.data.id, 5, now)
+
+    const missingScope = service.verifyApiKey({
+      presentedSecret: secret,
+      requiredScopes: ['questions:write'],
+      workspaceId: 'workspace_sales',
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    })
+    expect(missingScope.ok).toBe(false)
+    if (!missingScope.ok) expect(missingScope.error.code).toBe('PERMISSION_DENIED')
+
+    const boundary = service.verifyApiKey({
+      presentedSecret: secret,
+      requiredScopes: ['runs:read'],
+      workspaceId: 'workspace_growth',
+      businessDomainId: 'growth',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    })
+    expect(boundary.ok).toBe(false)
+    if (!boundary.ok) expect(boundary.error.code).toBe('PERMISSION_DENIED')
+
+    const firstAllowed = service.verifyApiKey({
+      presentedSecret: secret,
+      requiredScopes: ['runs:read'],
+      workspaceId: 'workspace_sales',
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    })
+    expect(firstAllowed.ok).toBe(true)
+    const exhausted = service.verifyApiKey({
+      presentedSecret: secret,
+      requiredScopes: ['runs:read'],
+      workspaceId: 'workspace_sales',
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    })
+    expect(exhausted.ok).toBe(false)
+    if (!exhausted.ok) expect(exhausted.error.code).toBe('QUERY_TOO_EXPENSIVE')
+
+    const revokedService = createDeveloperAccessApplicationService({ now: () => now })
+    const revokedAccount = revokedService.createServiceAccount({
+      actor: opsActor,
+      name: 'Revoked SDK',
+      scopes: ['runs:read'],
+      expiresInDays: 120,
+      dailyRequestLimit: 5,
+    })
+    expect(revokedAccount.ok).toBe(true)
+    if (!revokedAccount.ok) return
+    const revokedIssued = revokedService.issueApiKey({ actor: opsActor, serviceAccountId: revokedAccount.data.id, expiresInDays: 30 })
+    expect(revokedIssued.ok).toBe(true)
+    if (!revokedIssued.ok) return
+    revokedService.revokeApiKey({ actor: opsActor, keyId: revokedIssued.data.id, reason: 'rotation' })
+    const revoked = revokedService.verifyApiKey({
+      presentedSecret: mockIssuedSecret('ifk_live', revokedIssued.data.id, 5, now),
+      requiredScopes: ['runs:read'],
+      workspaceId: 'workspace_sales',
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    })
+    expect(revoked.ok).toBe(false)
+    if (!revoked.ok) expect(revoked.error.code).toBe('PERMISSION_DENIED')
+  })
+
   it('registers HTTPS webhooks with signing, replay protection, retry and dead-letter policy', () => {
     const service = createDeveloperAccessApplicationService({ now: () => '2026-06-24T16:02:00+08:00' })
     const insecure = service.registerWebhook({
@@ -277,3 +424,7 @@ describe('Developer access service', () => {
     })
   })
 })
+
+function mockIssuedSecret(prefix: string, id: string, sequence: number, now: string) {
+  return `${prefix}_${id}_${sequence}_${now}`
+}

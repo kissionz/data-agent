@@ -807,6 +807,7 @@ export interface DeveloperAccessAuditEvent {
     | 'developer.service_account_created'
     | 'developer.api_key_issued'
     | 'developer.api_key_revoked'
+    | 'developer.api_key_verified'
     | 'developer.webhook_registered'
     | 'developer.webhook_tested'
     | 'developer.embed_token_issued'
@@ -868,6 +869,29 @@ export interface RevokeApiKeyRequest {
   actor: ActorContext
   keyId: string
   reason: string
+}
+
+export interface VerifyApiKeyRequest {
+  presentedSecret: string
+  requiredScopes: DeveloperScope[]
+  workspaceId: string
+  businessDomainId: string
+  semanticVersion: string
+  locale: 'zh-CN'
+  timezone: string
+}
+
+export interface ApiKeyVerificationView {
+  contractVersion: typeof CONTRACT_VERSION
+  authenticated: true
+  keyId: string
+  serviceAccountId: string
+  actor: ActorContext
+  scopes: DeveloperScope[]
+  quota: ServiceAccountView['quota']
+  permissionDigest: string
+  cannotAccessDatabaseCredentials: true
+  audit: DeveloperAccessAuditEvent[]
 }
 
 export interface WebhookSubscriptionView {

@@ -2,7 +2,9 @@ import {
   CONTRACT_VERSION,
   httpStatusForError,
   validateActor,
+  type ActorContext,
   type ApiEnvelope,
+  type ApiKeyVerificationView,
   type ApiKeyView,
   type CreateServiceAccountRequest,
   type DeveloperAccessAuditEvent,
@@ -15,12 +17,14 @@ import {
   type RevokeApiKeyRequest,
   type ServiceAccountView,
   type TestWebhookRequest,
+  type VerifyApiKeyRequest,
   type WebhookSubscriptionView,
 } from '../contracts'
 
 export interface DeveloperAccessApplicationService {
   createServiceAccount(request: CreateServiceAccountRequest): ApiEnvelope<ServiceAccountView>
   issueApiKey(request: IssueApiKeyRequest): ApiEnvelope<ApiKeyView>
+  verifyApiKey(request: VerifyApiKeyRequest): ApiEnvelope<ApiKeyVerificationView>
   revokeApiKey(request: RevokeApiKeyRequest): ApiEnvelope<ApiKeyView>
   registerWebhook(request: RegisterWebhookRequest): ApiEnvelope<WebhookSubscriptionView>
   testWebhook(request: TestWebhookRequest): ApiEnvelope<WebhookSubscriptionView>
@@ -136,13 +140,16 @@ export function createDeveloperAccessApplicationService(
     return null
   }
 
+  function hashSecret(raw: string) {
+    return `sha256:${Array.from(raw).reduce((acc, char) => acc + char.charCodeAt(0), 0).toString(16).padStart(12, '0')}`
+  }
+
   function secretMaterial(prefix: string, id: string) {
     const raw = `${prefix}_${id}_${sequence}_${now()}`
-    const hash = `sha256:${Array.from(raw).reduce((acc, char) => acc + char.charCodeAt(0), 0).toString(16).padStart(12, '0')}`
     return {
       prefix: `${prefix}_${id.slice(-4)}`,
       secretPreview: `${prefix}_${id.slice(-4)}...redacted`,
-      secretHash: hash,
+      secretHash: hashSecret(raw),
     }
   }
 
@@ -152,6 +159,15 @@ export function createDeveloperAccessApplicationService(
 
   function keyAudit(id: string, serviceAccountId: string) {
     return auditEvents.filter((event) => event.targetId === id || event.targetId === serviceAccountId)
+  }
+
+  function apiKeyVerificationDenied(message: string, debugReference: string): ApiEnvelope<never> {
+    return failure({
+      code: 'PERMISSION_DENIED',
+      message,
+      retryable: false,
+      debugReference,
+    })
   }
 
   function webhookAudit(id: string) {
@@ -240,6 +256,83 @@ export function createDeveloperAccessApplicationService(
       }
       apiKeys.set(id, key)
       return success(key)
+    },
+
+    verifyApiKey(request) {
+      const requestedScopes = [...new Set(request.requiredScopes)]
+      const scopeError = validateScopes(requestedScopes)
+      if (scopeError) return failure({
+        code: 'VALIDATION_FAILED',
+        message: scopeError,
+        retryable: true,
+        debugReference: 'api_key_required_scopes',
+      })
+      if (!request.presentedSecret.trim()) {
+        return apiKeyVerificationDenied('API Key 无效或已失效', 'api_key_missing')
+      }
+      const presentedHash = hashSecret(request.presentedSecret)
+      const key = [...apiKeys.values()].find((candidate) => candidate.secretHash === presentedHash)
+      if (!key || key.status !== 'active') {
+        return apiKeyVerificationDenied('API Key 无效或已失效', 'api_key_invalid')
+      }
+      const account = serviceAccounts.get(key.serviceAccountId)
+      if (!account || account.status !== 'active') {
+        return apiKeyVerificationDenied('服务账号不可用', `service_account_${key.serviceAccountId}`)
+      }
+      const currentTime = new Date(now()).getTime()
+      if (new Date(key.expiresAt).getTime() <= currentTime || new Date(account.expiresAt).getTime() <= currentTime) {
+        return apiKeyVerificationDenied('API Key 已过期', `api_key_${key.id}`)
+      }
+      const missingScopes = requestedScopes.filter((scope) => !key.scopes.includes(scope))
+      if (missingScopes.length > 0) {
+        return apiKeyVerificationDenied(`API Key 缺少 scope：${missingScopes.join(', ')}`, `api_key_scope_${key.id}`)
+      }
+      if (account.workspaceId !== request.workspaceId || account.businessDomainId !== request.businessDomainId) {
+        return apiKeyVerificationDenied('API Key 不能跨工作区或业务域使用', `api_key_boundary_${key.id}`)
+      }
+      if (account.quota.dailyRequestUsed >= account.quota.dailyRequestLimit) {
+        return failure({
+          code: 'QUERY_TOO_EXPENSIVE',
+          message: '服务账号日请求配额已用尽',
+          retryable: true,
+          debugReference: `api_key_quota_${key.id}`,
+        })
+      }
+      account.quota.dailyRequestUsed += 1
+      serviceAccounts.set(account.id, account)
+      const actor: ActorContext = {
+        tenantId: 'tenant_demo',
+        workspaceId: account.workspaceId,
+        userId: account.id,
+        roles: ['service_account'],
+        businessDomainId: account.businessDomainId,
+        semanticVersion: request.semanticVersion,
+        policyVersion: policyVersion({
+          tenantId: 'tenant_demo',
+          workspaceId: account.workspaceId,
+          userId: account.id,
+          roles: ['service_account'],
+          businessDomainId: account.businessDomainId,
+          semanticVersion: request.semanticVersion,
+          locale: request.locale,
+          timezone: request.timezone,
+        }),
+        locale: request.locale,
+        timezone: request.timezone,
+      }
+      audit('developer.api_key_verified', { actor }, key.id, 'API Key 验签通过，已生成服务端可信 actor 并递增配额。')
+      return success({
+        contractVersion: CONTRACT_VERSION,
+        authenticated: true,
+        keyId: key.id,
+        serviceAccountId: account.id,
+        actor,
+        scopes: key.scopes,
+        quota: { ...account.quota },
+        permissionDigest: permissionDigest(actor),
+        cannotAccessDatabaseCredentials: true,
+        audit: keyAudit(key.id, account.id),
+      })
     },
 
     revokeApiKey(request) {

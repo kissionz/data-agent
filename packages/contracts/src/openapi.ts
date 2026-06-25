@@ -156,6 +156,33 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/developer/api-keys/{keyId}/rotate': {
+      post: {
+        summary: '轮换 API Key',
+        description: '签发新的短期 API Key，并让旧 key 进入 rotating 状态；旧 key 仅在 grace window 内继续可验签，过期后自动拒绝。',
+        parameters: [{ name: 'keyId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  expires_in_days: { type: 'integer', minimum: 1, maximum: 90, default: 30 },
+                  grace_minutes: { type: 'integer', minimum: 5, maximum: 1440, default: 60 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'API Key 已轮换；响应只包含脱敏预览和 hash 指纹' },
+          400: { description: '有效期或宽限期无效' },
+          404: { description: 'API Key 不存在或不可轮换' },
+        },
+      },
+    },
     '/v1/developer/webhooks': {
       post: {
         summary: '注册 Webhook',

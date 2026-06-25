@@ -259,6 +259,18 @@ export function createChatBiBffRouter(
         return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
       }
 
+      const apiKeyRotateMatch = path.match(/^\/v1\/developer\/api-keys\/([^/]+)\/rotate$/)
+      if (method === 'POST' && apiKeyRotateMatch) {
+        const body = bodyObject(request)
+        const envelope = developer.rotateApiKey({
+          actor: actorFrom(request),
+          keyId: decodeURIComponent(apiKeyRotateMatch[1]),
+          expiresInDays: Number(body.expiresInDays ?? body.expires_in_days ?? 30),
+          graceMinutes: Number(body.graceMinutes ?? body.grace_minutes ?? 60),
+        })
+        return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
+      }
+
       if (method === 'POST' && path === '/v1/developer/webhooks') {
         const body = bodyObject(request)
         const envelope = developer.registerWebhook({

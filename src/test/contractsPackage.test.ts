@@ -48,6 +48,7 @@ describe('@insightflow/contracts package entry', () => {
     expect(serializeEventsFromSubpath([{ id: 'evt_2', event: 'run.failed', data: { ok: false } }])).toContain('event: run.failed')
     expect(openApiDocumentFromSubpath.paths['/v1/questions']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/operations/slo']).toEqual(expect.any(Object))
+    expect(openApiDocumentFromSubpath.paths['/v1/developer/api-keys/{keyId}/rotate']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/developer/webhooks/{webhookId}/deliveries']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.components.securitySchemes.bearerAuth).toMatchObject({
       type: 'http',

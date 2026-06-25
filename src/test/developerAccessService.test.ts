@@ -176,6 +176,92 @@ describe('Developer access service', () => {
     expect(JSON.stringify(verified.data)).not.toMatch(/database_password|credential_secret|presentedSecret/i)
   })
 
+  it('rotates API keys with a grace window and rejects the old key after grace ends', () => {
+    let currentTime = '2026-06-24T16:02:00+08:00'
+    const service = createDeveloperAccessApplicationService({ now: () => currentTime })
+    const account = service.createServiceAccount({
+      actor: opsActor,
+      name: 'Rotating SDK',
+      scopes: ['questions:write', 'runs:read'],
+      expiresInDays: 120,
+      dailyRequestLimit: 10,
+    })
+    expect(account.ok).toBe(true)
+    if (!account.ok) return
+    const issued = service.issueApiKey({
+      actor: opsActor,
+      serviceAccountId: account.data.id,
+      expiresInDays: 30,
+    })
+    expect(issued.ok).toBe(true)
+    if (!issued.ok) return
+
+    const rotated = service.rotateApiKey({
+      actor: opsActor,
+      keyId: issued.data.id,
+      expiresInDays: 45,
+      graceMinutes: 30,
+    })
+    expect(rotated.ok).toBe(true)
+    if (!rotated.ok) return
+    expect(rotated.data).toMatchObject({
+      serviceAccountId: account.data.id,
+      graceEndsAt: '2026-06-24T08:32:00.000Z',
+      oldKeyAcceptedDuringGrace: true,
+      plaintextSecretReturnedOnlyOnce: false,
+      oldKey: {
+        id: issued.data.id,
+        status: 'rotating',
+        rotatedToKeyId: rotated.data.newKey.id,
+      },
+      newKey: {
+        status: 'active',
+        rotatedFromKeyId: issued.data.id,
+        secretPreview: expect.stringContaining('redacted'),
+      },
+    })
+    expect(JSON.stringify(rotated.data)).not.toMatch(/password|token_secret|presentedSecret|ifk_live_key/i)
+
+    const oldDuringGrace = service.verifyApiKey({
+      presentedSecret: mockIssuedSecret('ifk_live', issued.data.id, 5),
+      requiredScopes: ['questions:write'],
+      workspaceId: 'workspace_sales',
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    })
+    expect(oldDuringGrace.ok).toBe(true)
+    if (!oldDuringGrace.ok) return
+    expect(oldDuringGrace.data.keyId).toBe(issued.data.id)
+
+    const newKey = service.verifyApiKey({
+      presentedSecret: mockIssuedSecret('ifk_live', rotated.data.newKey.id, 9),
+      requiredScopes: ['runs:read'],
+      workspaceId: 'workspace_sales',
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    })
+    expect(newKey.ok).toBe(true)
+    if (!newKey.ok) return
+    expect(newKey.data.keyId).toBe(rotated.data.newKey.id)
+
+    currentTime = '2026-06-24T16:33:00+08:00'
+    const oldAfterGrace = service.verifyApiKey({
+      presentedSecret: mockIssuedSecret('ifk_live', issued.data.id, 5),
+      requiredScopes: ['questions:write'],
+      workspaceId: 'workspace_sales',
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    })
+    expect(oldAfterGrace.ok).toBe(false)
+    if (!oldAfterGrace.ok) expect(oldAfterGrace.error.message).toContain('宽限期已结束')
+  })
+
   it('rejects API keys with missing scopes, revoked status, quota exhaustion or boundary mismatch', () => {
     const now = '2026-06-24T16:01:00+08:00'
     const service = createDeveloperAccessApplicationService({ now: () => now })
@@ -527,6 +613,33 @@ describe('Developer access service', () => {
       data: {
         serviceAccountId: accountData.id,
         secretPreview: expect.stringContaining('redacted'),
+      },
+    })
+    const keyData = (key.body as { data: { id: string } }).data
+
+    const rotated = router.handle({
+      method: 'POST',
+      path: `/v1/developer/api-keys/${keyData.id}/rotate`,
+      headers: opsHeaders,
+      body: {
+        expires_in_days: 45,
+        grace_minutes: 30,
+      },
+    })
+    expect(rotated.status).toBe(200)
+    expect(rotated.body).toMatchObject({
+      ok: true,
+      data: {
+        oldKey: {
+          id: keyData.id,
+          status: 'rotating',
+        },
+        newKey: {
+          status: 'active',
+          secretPreview: expect.stringContaining('redacted'),
+        },
+        oldKeyAcceptedDuringGrace: true,
+        plaintextSecretReturnedOnlyOnce: false,
       },
     })
 

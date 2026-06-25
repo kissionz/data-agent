@@ -806,6 +806,7 @@ export interface DeveloperAccessAuditEvent {
   type:
     | 'developer.service_account_created'
     | 'developer.api_key_issued'
+    | 'developer.api_key_rotated'
     | 'developer.api_key_revoked'
     | 'developer.api_key_verified'
     | 'developer.webhook_registered'
@@ -853,10 +854,13 @@ export interface ApiKeyView {
   prefix: string
   secretPreview: string
   secretHash: string
-  status: 'active' | 'revoked'
+  status: 'active' | 'rotating' | 'revoked'
   scopes: DeveloperScope[]
   expiresAt: string
   rotationRequiredBefore: string
+  rotationGraceEndsAt?: string
+  rotatedFromKeyId?: string
+  rotatedToKeyId?: string
   audit: DeveloperAccessAuditEvent[]
 }
 
@@ -870,6 +874,24 @@ export interface RevokeApiKeyRequest {
   actor: ActorContext
   keyId: string
   reason: string
+}
+
+export interface RotateApiKeyRequest {
+  actor: ActorContext
+  keyId: string
+  expiresInDays: number
+  graceMinutes: number
+}
+
+export interface ApiKeyRotationView {
+  contractVersion: typeof CONTRACT_VERSION
+  serviceAccountId: string
+  oldKey: ApiKeyView
+  newKey: ApiKeyView
+  graceEndsAt: string
+  oldKeyAcceptedDuringGrace: true
+  plaintextSecretReturnedOnlyOnce: false
+  audit: DeveloperAccessAuditEvent[]
 }
 
 export interface VerifyApiKeyRequest {

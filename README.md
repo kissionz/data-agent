@@ -20,7 +20,7 @@
 - 领域与测试基座：运行状态机、会话模型、语义版本、权限拒绝与安全场景测试。
 - 共享契约：`AnalysisIR v1`、`PublicRunView`、API 包络、澄清、取消、审计事件与错误对象。
 - 共享契约包：`@insightflow/contracts` workspace 包已拥有独立的 `api`、`domain`、`events`、`openapi`、`sdk` 契约源码，暴露版本、schema、错误码、公共 DTO、SSE helper、OpenAPI 草案、开发者请求 helper 和嵌入式 iframe 配置 helper。
-- 开发者接入契约：`/v1/developer` 支持服务账号、API Key、Webhook 和短期 embed token 的本地治理契约，覆盖 scope、配额、过期、撤销、API Key 验签为服务端可信 actor、Webhook 签名/重放保护/退避重试/死信计划和不暴露明文密钥/数据库凭据。
+- 开发者接入契约：`/v1/developer` 支持服务账号、API Key、Webhook 和短期 embed token 的本地治理契约，覆盖 scope、配额、过期、撤销、轮换宽限期、API Key 验签为服务端可信 actor、Webhook 签名/重放保护/退避重试/死信计划和不暴露明文密钥/数据库凭据。
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
 - API 应用壳：`apps/api` 提供运行时配置、`/readyz`、生产式 header actor 校验、memory/file persistence 模式和 Node adapter 组合入口。
@@ -109,6 +109,7 @@ pnpm build
 - `POST /v1/developer/service-accounts`
 - `POST /v1/developer/api-keys`
 - `POST /v1/developer/api-keys/{keyId}/revoke`
+- `POST /v1/developer/api-keys/{keyId}/rotate`
 - `POST /v1/developer/webhooks`
 - `POST /v1/developer/webhooks/{webhookId}/test`
 - `POST /v1/developer/webhooks/{webhookId}/deliveries`

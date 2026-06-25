@@ -4,6 +4,7 @@ import {
   validateActor,
   type ActorContext,
   type ApiEnvelope,
+  type ApiKeyRotationView,
   type ApiKeyVerificationView,
   type ApiKeyView,
   type CreateServiceAccountRequest,
@@ -16,6 +17,7 @@ import {
   type PublicApiError,
   type RegisterWebhookRequest,
   type RevokeApiKeyRequest,
+  type RotateApiKeyRequest,
   type ServiceAccountView,
   type TestWebhookRequest,
   type VerifyApiKeyRequest,
@@ -27,6 +29,7 @@ export interface DeveloperAccessApplicationService {
   createServiceAccount(request: CreateServiceAccountRequest): ApiEnvelope<ServiceAccountView>
   issueApiKey(request: IssueApiKeyRequest): ApiEnvelope<ApiKeyView>
   verifyApiKey(request: VerifyApiKeyRequest): ApiEnvelope<ApiKeyVerificationView>
+  rotateApiKey(request: RotateApiKeyRequest): ApiEnvelope<ApiKeyRotationView>
   revokeApiKey(request: RevokeApiKeyRequest): ApiEnvelope<ApiKeyView>
   registerWebhook(request: RegisterWebhookRequest): ApiEnvelope<WebhookSubscriptionView>
   testWebhook(request: TestWebhookRequest): ApiEnvelope<WebhookSubscriptionView>
@@ -287,7 +290,7 @@ export function createDeveloperAccessApplicationService(
       }
       const presentedHash = hashSecret(request.presentedSecret)
       const key = [...apiKeys.values()].find((candidate) => candidate.secretHash === presentedHash)
-      if (!key || key.status !== 'active') {
+      if (!key || key.status === 'revoked') {
         return apiKeyVerificationDenied('API Key 无效或已失效', 'api_key_invalid')
       }
       const account = serviceAccounts.get(key.serviceAccountId)
@@ -295,6 +298,9 @@ export function createDeveloperAccessApplicationService(
         return apiKeyVerificationDenied('服务账号不可用', `service_account_${key.serviceAccountId}`)
       }
       const currentTime = new Date(now()).getTime()
+      if (key.status === 'rotating' && (!key.rotationGraceEndsAt || new Date(key.rotationGraceEndsAt).getTime() <= currentTime)) {
+        return apiKeyVerificationDenied('API Key 轮换宽限期已结束', `api_key_rotation_${key.id}`)
+      }
       if (new Date(key.expiresAt).getTime() <= currentTime || new Date(account.expiresAt).getTime() <= currentTime) {
         return apiKeyVerificationDenied('API Key 已过期', `api_key_${key.id}`)
       }
@@ -347,6 +353,73 @@ export function createDeveloperAccessApplicationService(
         permissionDigest: permissionDigest(actor),
         cannotAccessDatabaseCredentials: true,
         audit: keyAudit(key.id, account.id),
+      })
+    },
+
+    rotateApiKey(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      if (!canManageDeveloperAccess(request)) return developerDenied(request)
+      const oldKey = apiKeys.get(request.keyId)
+      if (!oldKey || oldKey.status !== 'active') return failure({
+        code: 'SEMANTIC_NOT_FOUND',
+        message: '没有找到可轮换的 API Key',
+        retryable: false,
+        debugReference: `api_key_${request.keyId}`,
+      })
+      const account = serviceAccounts.get(oldKey.serviceAccountId)
+      if (!account || account.status !== 'active') return failure({
+        code: 'SEMANTIC_NOT_FOUND',
+        message: '服务账号不可用',
+        retryable: false,
+        debugReference: `service_account_${oldKey.serviceAccountId}`,
+      })
+      if (request.expiresInDays < 1 || request.expiresInDays > 90) return failure({
+        code: 'VALIDATION_FAILED',
+        message: 'API Key 有效期必须在 1 到 90 天之间',
+        retryable: true,
+        debugReference: 'api_key_rotation_expiry',
+      })
+      if (request.graceMinutes < 5 || request.graceMinutes > 1440) return failure({
+        code: 'VALIDATION_FAILED',
+        message: 'API Key 轮换宽限期必须在 5 到 1440 分钟之间',
+        retryable: true,
+        debugReference: 'api_key_rotation_grace',
+      })
+
+      const newId = nextId('key')
+      const secret = secretMaterial('ifk_live', newId)
+      const graceEndsAt = addTimeIso(request.graceMinutes, 'minutes')
+      oldKey.status = 'rotating'
+      oldKey.rotationGraceEndsAt = graceEndsAt
+      oldKey.rotatedToKeyId = newId
+      const newKey: ApiKeyView = {
+        contractVersion: CONTRACT_VERSION,
+        id: newId,
+        serviceAccountId: account.id,
+        prefix: secret.prefix,
+        secretPreview: secret.secretPreview,
+        secretHash: secret.secretHash,
+        status: 'active',
+        scopes: oldKey.scopes,
+        expiresAt: addTimeIso(request.expiresInDays, 'days'),
+        rotationRequiredBefore: addTimeIso(Math.max(1, request.expiresInDays - 7), 'days'),
+        rotatedFromKeyId: oldKey.id,
+        audit: keyAudit(newId, account.id),
+      }
+      apiKeys.set(oldKey.id, oldKey)
+      apiKeys.set(newKey.id, newKey)
+      audit('developer.api_key_rotated', request, oldKey.id, `API Key 已轮换；旧 key 在 ${graceEndsAt} 前仍处于宽限期。`)
+      audit('developer.api_key_issued', request, newKey.id, '轮换后的 API Key 已签发；只返回脱敏预览和 hash 指纹，不返回明文。')
+      return success({
+        contractVersion: CONTRACT_VERSION,
+        serviceAccountId: account.id,
+        oldKey: { ...oldKey, audit: keyAudit(oldKey.id, account.id) },
+        newKey: { ...newKey, audit: keyAudit(newKey.id, account.id) },
+        graceEndsAt,
+        oldKeyAcceptedDuringGrace: true,
+        plaintextSecretReturnedOnlyOnce: false,
+        audit: keyAudit(oldKey.id, account.id).concat(keyAudit(newKey.id, account.id)),
       })
     },
 

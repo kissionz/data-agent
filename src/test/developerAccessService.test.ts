@@ -472,6 +472,37 @@ describe('Developer access service', () => {
       data: { lastTest: { signatureVerified: true } },
     })
 
+    const delivery = router.handle({
+      method: 'POST',
+      path: `/v1/developer/webhooks/${webhookData.id}/deliveries`,
+      headers: opsHeaders,
+      body: {
+        event: 'run.completed',
+        payload: {
+          runId: 'run_demo',
+          resultUrl: 'https://app.example.com/runs/run_demo',
+          secret_note: 'must not be echoed',
+        },
+        simulated_http_statuses: [503, 202],
+      },
+    })
+    expect(delivery.status).toBe(200)
+    expect(delivery.body).toMatchObject({
+      ok: true,
+      data: {
+        webhookId: webhookData.id,
+        finalState: 'accepted',
+        signingAlgorithm: 'hmac-sha256',
+        payloadRedacted: true,
+        deliversOnlyAuthorizedData: true,
+        attempts: [
+          expect.objectContaining({ httpStatus: 503, result: 'retry_scheduled' }),
+          expect.objectContaining({ httpStatus: 202, result: 'accepted' }),
+        ],
+      },
+    })
+    expect(JSON.stringify(delivery.body)).not.toContain('must not be echoed')
+
     const embed = router.handle({
       method: 'POST',
       path: '/v1/developer/embed-tokens',

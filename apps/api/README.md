@@ -7,7 +7,7 @@
 ## 当前能力
 
 - `GET /readyz`：应用层 readiness，返回 persistence、router 和 auth mode。
-- `GET /healthz`、`GET /openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`：复用 `src/api` router。
+- `GET /healthz`、`GET /openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/developer/*` 服务账号、API Key、Webhook delivery 和 embed token 路由：复用 `src/api` router。
 - `required_header_actor`：生产/测试环境默认要求 `x-tenant-id`、`x-workspace-id`、`x-user-id`、`x-business-domain-id`、`x-semantic-version`。
 - `Authorization: Bearer <api-key>`：生产/测试环境可用 API Key 验签生成 `service_account` actor，并按端点校验 scope。
 - `disabled_demo_actor`：本地环境默认演示 actor，便于前端和样例验收。

@@ -7,6 +7,7 @@ export const openApiDocument = {
     version: CONTRACT_VERSION,
     description: '本地 deterministic BFF 契约草案。生产实现可替换为 Fastify/TypeBox，但路径、包络和安全语义保持兼容。',
   },
+  security: [{ bearerAuth: [] }],
   paths: {
     '/healthz': {
       get: {
@@ -172,6 +173,35 @@ export const openApiDocument = {
         responses: {
           200: { description: 'Webhook 测试事件已接受' },
           404: { description: 'Webhook 不存在' },
+        },
+      },
+    },
+    '/v1/developer/webhooks/{webhookId}/deliveries': {
+      post: {
+        summary: '规划一次 Webhook 签名投递',
+        description: '生成 HMAC-SHA256 签名 headers、300 秒重放保护窗口、指数退避重试计划和死信结果；当前为 deterministic contract，生产由异步队列与 HTTP client 执行。',
+        parameters: [{ name: 'webhookId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['event', 'payload'],
+                properties: {
+                  event: { enum: ['run.completed', 'run.failed', 'asset.updated'] },
+                  payload: { type: 'object', additionalProperties: true, description: '投递载荷；响应中只返回 payloadRedacted=true，不回显敏感内容。' },
+                  simulated_http_statuses: { type: 'array', items: { type: 'integer', minimum: 100, maximum: 599 } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'Webhook 投递计划，可能 queued、accepted 或 dead_lettered' },
+          400: { description: '事件未订阅或请求契约无效' },
+          404: { description: 'Webhook 不存在或未激活' },
         },
       },
     },
@@ -433,8 +463,87 @@ export const openApiDocument = {
     },
   },
   components: {
+    securitySchemes: {
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'API Key',
+        description: 'Authorization: Bearer <api-key>；apps/api 会验签、校验 scope/配额/边界，并注入 service-account actor。',
+      },
+    },
     schemas: {
       AnalysisIR: analysisIrJsonSchema,
+      WebhookDeliveryPlanView: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'contractVersion',
+          'id',
+          'webhookId',
+          'event',
+          'url',
+          'finalState',
+          'signingAlgorithm',
+          'headers',
+          'replayProtectionExpiresAt',
+          'attempts',
+          'payloadRedacted',
+          'deliversOnlyAuthorizedData',
+          'audit',
+        ],
+        properties: {
+          contractVersion: { const: CONTRACT_VERSION },
+          id: { type: 'string' },
+          webhookId: { type: 'string' },
+          event: { enum: ['run.completed', 'run.failed', 'asset.updated'] },
+          url: { type: 'string', format: 'uri' },
+          finalState: { enum: ['queued', 'accepted', 'dead_lettered'] },
+          signingAlgorithm: { const: 'hmac-sha256' },
+          headers: {
+            type: 'object',
+            additionalProperties: false,
+            required: [
+              'x-insightflow-event',
+              'x-insightflow-delivery',
+              'x-insightflow-timestamp',
+              'x-insightflow-signature',
+            ],
+            properties: {
+              'x-insightflow-event': { type: 'string' },
+              'x-insightflow-delivery': { type: 'string' },
+              'x-insightflow-timestamp': { type: 'string' },
+              'x-insightflow-signature': { type: 'string' },
+            },
+          },
+          replayProtectionExpiresAt: { type: 'string', format: 'date-time' },
+          attempts: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['attempt', 'scheduledAt', 'result'],
+              properties: {
+                attempt: { type: 'integer', minimum: 1 },
+                scheduledAt: { type: 'string', format: 'date-time' },
+                httpStatus: { type: 'integer', minimum: 100, maximum: 599 },
+                result: { enum: ['pending', 'accepted', 'retry_scheduled', 'dead_lettered'] },
+              },
+            },
+          },
+          deadLetter: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['reason', 'afterAttempts'],
+            properties: {
+              reason: { type: 'string' },
+              afterAttempts: { type: 'integer', minimum: 1 },
+            },
+          },
+          payloadRedacted: { const: true },
+          deliversOnlyAuthorizedData: { const: true },
+          audit: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        },
+      },
       QueryExecutionSummary: {
         type: 'object',
         additionalProperties: false,

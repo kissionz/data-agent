@@ -278,6 +278,24 @@ export function createChatBiBffRouter(
         return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
       }
 
+      const webhookDeliveryMatch = path.match(/^\/v1\/developer\/webhooks\/([^/]+)\/deliveries$/)
+      if (method === 'POST' && webhookDeliveryMatch) {
+        const body = bodyObject(request)
+        const simulatedHttpStatuses = body.simulatedHttpStatuses ?? body.simulated_http_statuses
+        const envelope = developer.planWebhookDelivery({
+          actor: actorFrom(request),
+          webhookId: decodeURIComponent(webhookDeliveryMatch[1]),
+          event: String(body.event ?? '') as never,
+          payload: body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
+            ? body.payload as Record<string, unknown>
+            : {},
+          simulatedHttpStatuses: Array.isArray(simulatedHttpStatuses)
+            ? simulatedHttpStatuses.map((status) => Number(status))
+            : undefined,
+        })
+        return withCors(respond(httpStatusForDeveloperAccessEnvelope(envelope), envelope))
+      }
+
       if (method === 'POST' && path === '/v1/developer/embed-tokens') {
         const body = bodyObject(request)
         const envelope = developer.issueEmbedToken({

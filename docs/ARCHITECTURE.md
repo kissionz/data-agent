@@ -244,6 +244,7 @@ IR 使用严格 JSON Schema（`additionalProperties: false`），服务端维护
 | Runtime | `Authorization: Bearer <api-key>` | `apps/api` 将 API Key 验签为服务端可信 actor，校验 scope、配额、过期和工作区边界，再注入 BFF router |
 | `POST` | `/v1/developer/webhooks` | 注册带签名、重放保护、退避和死信策略的 Webhook |
 | `POST` | `/v1/developer/webhooks/{id}/test` | 发送 Webhook 测试事件 |
+| `POST` | `/v1/developer/webhooks/{id}/deliveries` | 规划签名投递、重放保护、退避重试和死信结果；生产由异步队列与 HTTP client 执行 |
 | `POST` | `/v1/developer/embed-tokens` | Host 换取短期嵌入 token，组件不能接触数据库凭据 |
 | `GET` | `/v1/model-ops/routes` | 模型路由、版本、配额、超时、温度和降级链 |
 | `POST` | `/v1/model-ops/route` | 按能力、配额、供应商可用性和门禁执行一次模型路由决策 |

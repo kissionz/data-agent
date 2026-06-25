@@ -49,6 +49,7 @@ describe('ChatBI local BFF router', () => {
         '/v1/questions': expect.any(Object),
         '/v1/developer/service-accounts': expect.any(Object),
         '/v1/developer/embed-tokens': expect.any(Object),
+        '/v1/developer/webhooks/{webhookId}/deliveries': expect.any(Object),
         '/v1/model-ops/routes': expect.any(Object),
         '/v1/model-ops/route': expect.any(Object),
         '/v1/operations/slo': expect.any(Object),
@@ -57,8 +58,17 @@ describe('ChatBI local BFF router', () => {
         '/v1/runs/{runId}/events': expect.any(Object),
       },
       components: {
+        securitySchemes: {
+          bearerAuth: expect.objectContaining({
+            type: 'http',
+            scheme: 'bearer',
+          }),
+        },
         schemas: {
           QueryExecutionSummary: expect.objectContaining({
+            additionalProperties: false,
+          }),
+          WebhookDeliveryPlanView: expect.objectContaining({
             additionalProperties: false,
           }),
         },

@@ -110,6 +110,7 @@ pnpm build
 - `POST /v1/developer/api-keys/{keyId}/revoke`
 - `POST /v1/developer/webhooks`
 - `POST /v1/developer/webhooks/{webhookId}/test`
+- `POST /v1/developer/webhooks/{webhookId}/deliveries`
 - `POST /v1/developer/embed-tokens`
 - `POST /v1/questions`
 - `GET /v1/runs/{runId}?conversation_id=...`

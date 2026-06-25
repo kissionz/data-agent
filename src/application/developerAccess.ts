@@ -469,10 +469,7 @@ export function createDeveloperAccessApplicationService(
           finalState = 'accepted'
           break
         }
-        if (httpStatus === undefined) {
-          finalState = 'queued'
-          break
-        }
+        if (httpStatus === undefined) finalState = 'queued'
       }
       const deadLetter = finalState === 'dead_lettered'
         ? { reason: '连续投递失败，进入死信队列。', afterAttempts: webhook.retryPolicy.deadLetterAfterAttempts }

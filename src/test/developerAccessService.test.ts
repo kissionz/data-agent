@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { createChatBiBffRouter } from '../api'
-import { createDeveloperAccessApplicationService } from '../application'
+import {
+  createDeterministicWebhookHttpClient,
+  createDeveloperAccessApplicationService,
+  createWebhookDeliveryDispatcher,
+} from '../application'
 import type { ActorContext } from '../contracts'
 
 const opsActor: ActorContext = {
@@ -372,6 +376,82 @@ describe('Developer access service', () => {
     })
     expect(notSubscribed.ok).toBe(false)
     if (!notSubscribed.ok) expect(notSubscribed.error.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('queues webhook delivery plans through a replaceable dispatcher without exposing payload secrets', () => {
+    const service = createDeveloperAccessApplicationService({ now: () => '2026-06-24T16:05:00+08:00' })
+    const registered = service.registerWebhook({
+      actor: opsActor,
+      url: 'https://example.com/chatbi/webhook',
+      events: ['run.completed'],
+    })
+    expect(registered.ok).toBe(true)
+    if (!registered.ok) return
+
+    const planned = service.planWebhookDelivery({
+      actor: opsActor,
+      webhookId: registered.data.id,
+      event: 'run.completed',
+      payload: { runId: 'run_queued', secret: 'must-not-leak' },
+    })
+    expect(planned.ok).toBe(true)
+    if (!planned.ok) return
+    expect(planned.data).toMatchObject({
+      finalState: 'queued',
+      payloadRedacted: true,
+      deliversOnlyAuthorizedData: true,
+    })
+    expect(planned.data.attempts).toHaveLength(5)
+    expect(planned.data.attempts.every((attempt) => attempt.result === 'pending')).toBe(true)
+
+    const dispatcher = createWebhookDeliveryDispatcher({
+      httpClient: createDeterministicWebhookHttpClient([500, 202]),
+      now: () => '2026-06-24T16:05:30+08:00',
+    })
+    const queued = dispatcher.enqueue(planned.data, { runId: 'run_queued', secret: 'must-not-leak' })
+    expect(queued).toMatchObject({
+      status: 'queued',
+      payloadRedacted: true,
+      headers: {
+        'x-insightflow-signature': expect.stringMatching(/^sha256:/),
+      },
+    })
+    expect(JSON.stringify(queued)).not.toContain('must-not-leak')
+
+    const drained = dispatcher.drain()
+    expect(drained).toHaveLength(1)
+    expect(drained[0]).toMatchObject({
+      status: 'delivered',
+      payloadRedacted: true,
+    })
+    expect(drained[0].attempts[0]).toMatchObject({ httpStatus: 500, result: 'retry_scheduled' })
+    expect(drained[0].attempts[1]).toMatchObject({ httpStatus: 202, result: 'accepted' })
+    expect(drained[0].attempts.slice(2).every((attempt) => attempt.result === 'pending')).toBe(true)
+    expect(JSON.stringify(drained[0])).not.toContain('must-not-leak')
+    expect(dispatcher.listQueued()).toEqual([])
+    expect(dispatcher.listDeadLetters()).toEqual([])
+
+    const failedPlan = service.planWebhookDelivery({
+      actor: opsActor,
+      webhookId: registered.data.id,
+      event: 'run.completed',
+      payload: { runId: 'run_dead_letter', secret: 'dead-letter-secret' },
+    })
+    expect(failedPlan.ok).toBe(true)
+    if (!failedPlan.ok) return
+    const failingDispatcher = createWebhookDeliveryDispatcher({
+      httpClient: createDeterministicWebhookHttpClient([500, 502, 503, 504, 500]),
+      now: () => '2026-06-24T16:06:00+08:00',
+    })
+    failingDispatcher.enqueue(failedPlan.data, { runId: 'run_dead_letter', secret: 'dead-letter-secret' })
+    const failed = failingDispatcher.drain()[0]
+    expect(failed).toMatchObject({
+      status: 'dead_lettered',
+      payloadRedacted: true,
+    })
+    expect(failed.attempts.at(-1)).toMatchObject({ httpStatus: 500, result: 'dead_lettered' })
+    expect(failingDispatcher.listDeadLetters()).toHaveLength(1)
+    expect(JSON.stringify(failingDispatcher.listDeadLetters())).not.toContain('dead-letter-secret')
   })
 
   it('issues short-lived embed tokens without database credential access', () => {

@@ -3,6 +3,11 @@ import { createChatBiApplicationService } from '../application'
 import { createFileChatBiPersistence } from '../persistence/file'
 import { createInMemoryChatBiPersistence } from '../persistence/memory'
 import {
+  DEFAULT_RETENTION_DAYS,
+  createRetentionCleanupPlan,
+  createRetentionPolicy,
+} from '../persistence/retention'
+import {
   CHATBI_SQL_MIGRATION,
   createSqlChatBiPersistence,
   migrateChatBiSqlPersistence,
@@ -190,7 +195,9 @@ describe('ChatBI persistence ports', () => {
     expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_runs')
     expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_idempotency')
     expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_audit_events')
-    expect(CHATBI_SQL_MIGRATION.length).toBeGreaterThanOrEqual(6)
+    expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_result_blobs')
+    expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_data_samples')
+    expect(CHATBI_SQL_MIGRATION.length).toBeGreaterThanOrEqual(10)
   })
 
   it('persists runs through the SQL adapter and stores audit events in their own table', () => {
@@ -256,6 +263,69 @@ describe('ChatBI persistence ports', () => {
     record.run.result.rows[0].values.net_revenue = 0
 
     expect(persistence.getRun(created.data.runId)?.run.result?.rows[0].values.net_revenue).toBe(1184000)
+  })
+
+  it('builds a tenant-scoped retention cleanup plan with shorter sensitive data and longer audit retention', () => {
+    const plan = createRetentionCleanupPlan({
+      tenantId: 'tenant_demo',
+      workspaceId: 'workspace_sales',
+      now: '2026-06-25T12:00:00+08:00',
+    })
+
+    expect(plan.policy.days).toEqual(DEFAULT_RETENTION_DAYS)
+    expect(plan.policy).toMatchObject({
+      sensitiveDataShorterThanRawResult: true,
+      auditLongerThanQuestion: true,
+    })
+    expect(plan.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        dataClass: 'question',
+        retentionDays: 180,
+        deleteBefore: '2025-12-27T04:00:00.000Z',
+        table: 'chatbi_runs',
+      }),
+      expect.objectContaining({
+        dataClass: 'raw_result',
+        retentionDays: 7,
+        deleteBefore: '2026-06-18T04:00:00.000Z',
+        table: 'chatbi_result_blobs',
+      }),
+      expect.objectContaining({
+        dataClass: 'sensitive_sample',
+        retentionDays: 3,
+        deleteBefore: '2026-06-22T04:00:00.000Z',
+        table: 'chatbi_data_samples',
+      }),
+      expect.objectContaining({
+        dataClass: 'audit_event',
+        retentionDays: 365,
+        deleteBefore: '2025-06-25T04:00:00.000Z',
+        table: 'chatbi_audit_events',
+      }),
+    ]))
+    expect(plan.sqlStatements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        statement: expect.stringContaining('tenant_id = :tenant_id and workspace_id = :workspace_id'),
+        params: expect.objectContaining({
+          tenant_id: 'tenant_demo',
+          workspace_id: 'workspace_sales',
+        }),
+      }),
+    ]))
+  })
+
+  it('rejects invalid retention overrides that would keep sensitive samples too long or audit too short', () => {
+    expect(() => createRetentionPolicy({
+      tenantId: 'tenant_demo',
+      workspaceId: 'workspace_sales',
+      overrides: { sensitive_sample: 7 },
+    })).toThrow(/sensitive_sample/)
+
+    expect(() => createRetentionPolicy({
+      tenantId: 'tenant_demo',
+      workspaceId: 'workspace_sales',
+      overrides: { audit_event: 30 },
+    })).toThrow(/audit_event/)
   })
 })
 

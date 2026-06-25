@@ -69,6 +69,26 @@ export const CHATBI_SQL_MIGRATION = [
   payload_json text not null
 )`,
   `create index if not exists chatbi_audit_events_run_idx on chatbi_audit_events (run_id, at)`,
+  `create table if not exists chatbi_result_blobs (
+  id text primary key,
+  run_id text not null,
+  tenant_id text not null,
+  workspace_id text not null,
+  classification text not null,
+  payload_ref text not null,
+  created_at text not null
+)`,
+  `create index if not exists chatbi_result_blobs_retention_idx on chatbi_result_blobs (tenant_id, workspace_id, created_at)`,
+  `create table if not exists chatbi_data_samples (
+  id text primary key,
+  data_source_id text not null,
+  tenant_id text not null,
+  workspace_id text not null,
+  classification text not null,
+  payload_ref text not null,
+  created_at text not null
+)`,
+  `create index if not exists chatbi_data_samples_retention_idx on chatbi_data_samples (tenant_id, workspace_id, created_at)`,
 ] as const
 
 export function migrateChatBiSqlPersistence(client: SqlPersistenceClient): void {

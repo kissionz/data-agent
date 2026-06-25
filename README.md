@@ -35,7 +35,7 @@
 - 协作资产服务：`/v1/assets` 支持资产列表、收藏、订阅和审计链路，服务层覆盖可见范围过滤、审核中不可订阅、接收者重新鉴权摘要和 public audit event。
 - 本地编译执行边界：Analysis IR 经语义 Catalog / Join Graph 校验后生成只读 SQL 计划，注入租户/工作区/业务域守卫，并产出 SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。
-- 持久化端口：conversation、run、idempotency 和 audit events 已抽象为 repository interface，并提供内存 adapter、本地 JSON 文件 adapter、SQL migration 与可替换 SQL adapter；审计事件在 SQL adapter 中单独落表。
+- 持久化端口：conversation、run、idempotency 和 audit events 已抽象为 repository interface，并提供内存 adapter、本地 JSON 文件 adapter、SQL migration、可替换 SQL adapter 与 retention cleanup planner；审计事件在 SQL adapter 中单独落表，默认留存策略覆盖问题/IR/SQL 指纹 180 天、结果摘要 30 天、原始结果 7 天、敏感样本 3 天、审计 365 天。
 
 ## 技术栈
 
@@ -98,6 +98,7 @@ pnpm build
 - [src/persistence/ports.ts](/Users/kissionz/Documents/data-agent/src/persistence/ports.ts)
 - [src/persistence/memory.ts](/Users/kissionz/Documents/data-agent/src/persistence/memory.ts)
 - [src/persistence/file.ts](/Users/kissionz/Documents/data-agent/src/persistence/file.ts)
+- [src/persistence/retention.ts](/Users/kissionz/Documents/data-agent/src/persistence/retention.ts)
 
 已覆盖的本地 HTTP 契约：
 

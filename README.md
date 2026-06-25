@@ -69,10 +69,11 @@ pnpm dev -- --host 127.0.0.1 --port 4173
 
 ```bash
 pnpm test
+pnpm test:e2e
 pnpm build
 ```
 
-构建脚本会先执行 TypeScript 项目检查，再执行 Vite 生产构建。
+构建脚本会先执行 TypeScript 项目检查，再执行 Vite 生产构建。`test:e2e` 使用 Playwright 启动本地 Vite 服务，并通过本机 Google Chrome 跑桌面和移动关键路径验收。
 
 ## 本地 API 契约
 
@@ -142,13 +143,12 @@ pnpm build
 
 ## 浏览器验收建议
 
-当前阶段已经做过桌面与移动主流程核验；后续进入 API 阶段前，建议把这些场景固化为 Playwright：
+当前阶段已经用 Playwright 固化了桌面与移动关键路径，见 [tests/e2e](/Users/kissionz/Documents/data-agent/tests/e2e)：
 
-- 桌面 1440px：四栏布局、结果 tab、澄清选择、权限拒绝、语义中心、运营中心。
-- 平板 1280px / 1024px：会话列表和上下文面板抽屉。
-- 移动 390px：单栏工作台、底部输入、上下文底部面板。
+- 桌面：标准查询结果、结果 tab、表格替代、口径证据、澄清选择、权限拒绝、运营回放详情。
+- 移动：会话列表抽屉和分析上下文面板可达。
 - 可访问性：全键盘 Tab 顺序、Esc 关闭浮层、焦点归还、`prefers-reduced-motion`、图表数据表替代。
-- 浏览器：Chrome 与 Safari 至少各跑一次人工验收。
+- 后续仍建议补 Safari/WebKit、语义编辑、数据源治理、协作分享和导出水印等浏览器路径。
 
 ## 文档索引
 
@@ -169,7 +169,7 @@ pnpm build
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。
 - 真实协作资产持久化、通知发送、真实导出文件生成、水印写入、分享链接服务、缓存权限失效。
 - 真实 Model Gateway、成本采集、模型调用审计、真实黄金集回归调度、线上灰度发布控制面、真实监控告警与自动回滚。
-- Playwright E2E、真实压测/SLO 证明、安全与多租户隔离测试。
+- 真实压测/SLO 证明、安全与多租户隔离测试；Playwright 仍需扩展到更多生产路径和 WebKit/Safari。
 
 语义中心和运营中心的筛选、刷新、审批、回放等交互当前均为 fixture/mock 交互，不代表已连接真实审批流、监控平台或评测流水线。
 
@@ -179,4 +179,4 @@ pnpm build
 2. 为 `src/persistence` 增加 SQLite/PostgreSQL adapter，并把审计事件单独落表；本地 JSON adapter 只作为开发替代。
 3. 增加 `apps/api`，用 Fastify/TypeBox 包装当前 deterministic service、router 和 SSE 契约。
 4. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。
-5. 补齐 Playwright E2E：标准查询、澄清、越权拒绝、部分结果、语义编辑、协作分享、运营回放。
+5. 扩展 Playwright E2E：部分结果、语义编辑、数据源质量门禁、协作分享、导出水印和 WebKit/Safari 验收。

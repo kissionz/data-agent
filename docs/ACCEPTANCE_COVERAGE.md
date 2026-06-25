@@ -55,8 +55,8 @@
 | 持久化端口测试 | 已覆盖，`src/test/persistence.test.ts` 验证跨 service 实例读取、幂等键、clone 防引用污染、audit list 和本地 JSON 文件恢复。 |
 | 组件级 UI 测试 | 已覆盖主要 P0/P1 页面，`src/test/workbench.test.tsx` 覆盖工作台默认结果、约束可见、表格替代、澄清和权限安全失败；`src/test/semanticGovernance.test.tsx` 覆盖语义中心指标定义、筛选、编辑和审批；`src/test/operationsCenter.test.tsx` 覆盖运营中心 SLO、发布门禁、模型版本、失败分布、回放详情和刷新反馈；`src/test/dataSources.test.tsx` 覆盖数据源中心关键状态；`src/test/collaboration.test.tsx` 覆盖协作资产关键状态。 |
 | 浏览器人工验收 | 部分覆盖，当前阶段已人工核验主工作台、澄清、权限拒绝、语义中心、运营中心和移动布局。 |
-| 浏览器自动 E2E | 未覆盖，建议下一阶段使用 Playwright 固化关键路径。 |
-| 可访问性 E2E | 部分覆盖，`src/test/accessibility.test.tsx` 在 jsdom 中覆盖键盘提交、焦点、ARIA 角色、命名 dialog、tablist、图表替代表格和状态文本；仍需 Playwright + 屏幕阅读器级真实浏览器 E2E。 |
+| 浏览器自动 E2E | 部分覆盖，`tests/e2e/prd-acceptance.desktop.spec.ts` 和 `tests/e2e/prd-acceptance.mobile.spec.ts` 使用 Playwright + 本机 Chrome 覆盖标准查询结果、表格替代、口径证据、澄清、权限拒绝、运营回放详情和移动端会话/上下文面板；仍需扩展语义编辑、数据源治理、协作分享、导出水印、部分结果和 WebKit/Safari。 |
+| 可访问性 E2E | 部分覆盖，`src/test/accessibility.test.tsx` 在 jsdom 中覆盖键盘提交、焦点、ARIA 角色、命名 dialog、tablist、图表替代表格和状态文本；Playwright 已覆盖命名按钮/对话框/移动面板可达，仍需屏幕阅读器级真实浏览器 E2E。 |
 | 性能与 SLO | 部分覆盖，`SloApplicationService` 与 `/v1/operations/slo*` 已覆盖本地 SLO 报告、P95 延迟、单次成本、取消传播、扫描量预算、告警 runbook 和预算决策测试；仍需真实 API 流量、数据源执行指标、监控事件、压测和告警投递证明。 |
 
 ## 下一阶段验收门槛建议
@@ -64,5 +64,5 @@
 1. 将 `@insightflow/contracts/openapi` 从当前草案升级为 schema 生成产物，并补 SDK 代码生成/发布流程。
 2. 将本地 JSON persistence adapter 替换为 SQLite/PostgreSQL adapter，并补 migration 与审计事件表。
 3. 将当前 `apps/api` Node adapter 替换为 Fastify/TypeBox，补 OIDC/API key 中间件、生产 SSE 长连接和错误码表落地文档。
-4. 每个 PRD P0 流程至少有一个可重复测试：标准查询、澄清、权限拒绝、取消、部分结果、语义发布、回放门禁。
+4. 继续扩展可重复浏览器测试：取消、部分结果、语义发布、数据源治理、协作分享和导出水印。
 5. 任何真实模型接入前，答案必须保留“只能引用结果集或授权知识”的测试护栏。

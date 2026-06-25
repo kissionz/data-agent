@@ -34,6 +34,7 @@
 | Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口、内存 adapter、本地 JSON 文件 adapter | SQLite/PostgreSQL/Redis adapter 与 migration |
 | API App | `apps/api/*` | API 运行时配置、`/readyz`、header actor guard、memory/file persistence mode、Node adapter 组合入口 | 替换为 Fastify/TypeBox、OIDC/API key 中间件、生产 SSE 长连接 |
 | BFF Adapter | `src/api/*` | 本地 HTTP router、contracts 包 OpenAPI 草案、SSE events endpoint、身份策略 API、开发者接入 API、数据源 API、语义治理 API、导出分享 API、评测回放 API、模型运营 API、SLO/性能预算 API、协作资产 API、Node server adapter 源码、CORS/状态码映射测试 | 保持为框架无关 router 或拆入 `apps/api` |
+| E2E | `tests/e2e/*` | Playwright + 本机 Chrome 覆盖标准查询、表格替代、口径证据、澄清、权限拒绝、运营回放和移动端面板可达 | 扩展 WebKit/Safari、语义编辑、数据源治理、协作分享、导出和部分结果 |
 
 `apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`/v1/identity` 身份上下文/策略裁决、`/v1/developer` 服务账号/API Key/Webhook/embed token、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/data-sources` 数据源列表/详情/连接测试、`/v1/semantic` 语义指标评审/认证、`/v1/sharing` 导出/分享治理、`/v1/evaluation` 黄金集门禁/失败回放、`/v1/model-ops` 模型路由/决策/回滚、`/v1/operations/slo` SLO 报告/性能预算评估和 `/v1/assets` 协作资产列表/收藏/订阅/审计接口。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
 

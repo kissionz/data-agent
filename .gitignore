@@ -6,6 +6,8 @@ vite.config.js
 vite.config.d.ts
 .DS_Store
 coverage/
+playwright-report/
+test-results/
 .impeccable/
 .data/
 chatbi-local-store.json

@@ -146,10 +146,11 @@ pnpm build
 当前阶段已经用 Playwright 固化了桌面与移动关键路径，见 [tests/e2e](/Users/kissionz/Documents/data-agent/tests/e2e)：
 
 - 桌面：标准查询结果、结果 tab、表格替代、口径证据、澄清选择、权限拒绝、运营回放详情。
+- 工作台运行闭环：运行中停止、部分结果显式提示、刷新后恢复上次分析结果。
 - 治理：语义指标评审/认证、数据源降级质量门禁、受限字段样本策略、协作资产重新鉴权、水印策略和审核中不可订阅。
 - 移动：会话列表抽屉和分析上下文面板可达。
 - 可访问性：全键盘 Tab 顺序、Esc 关闭浮层、焦点归还、`prefers-reduced-motion`、图表数据表替代。
-- 后续仍建议补 Safari/WebKit、取消、部分结果、真实导出文件和跨刷新恢复等浏览器路径。
+- 后续仍建议补 Safari/WebKit 和真实导出文件等浏览器路径。
 
 ## 文档索引
 
@@ -170,7 +171,7 @@ pnpm build
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。
 - 真实协作资产持久化、通知发送、真实导出文件生成、水印写入、分享链接服务、缓存权限失效。
 - 真实 Model Gateway、成本采集、模型调用审计、真实黄金集回归调度、线上灰度发布控制面、真实监控告警与自动回滚。
-- 真实压测/SLO 证明、安全与多租户隔离测试；Playwright 仍需扩展到取消、部分结果、真实导出文件、跨刷新恢复和 WebKit/Safari。
+- 真实压测/SLO 证明、安全与多租户隔离测试；Playwright 仍需扩展到真实导出文件和 WebKit/Safari。
 
 语义中心和运营中心的筛选、刷新、审批、回放等交互当前均为 fixture/mock 交互，不代表已连接真实审批流、监控平台或评测流水线。
 
@@ -180,4 +181,4 @@ pnpm build
 2. 为 `src/persistence` 增加 SQLite/PostgreSQL adapter，并把审计事件单独落表；本地 JSON adapter 只作为开发替代。
 3. 增加 `apps/api`，用 Fastify/TypeBox 包装当前 deterministic service、router 和 SSE 契约。
 4. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。
-5. 扩展 Playwright E2E：取消、部分结果、真实导出文件、跨刷新恢复和 WebKit/Safari 验收。
+5. 扩展 Playwright E2E：真实导出文件和 WebKit/Safari 验收。

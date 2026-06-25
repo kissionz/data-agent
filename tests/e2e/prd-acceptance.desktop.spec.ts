@@ -47,6 +47,35 @@ test('permission denial is safe and does not leak forbidden values in the failur
   await expect(failure).not.toContainText('其他事业部')
 })
 
+test('running analysis can be cancelled without later result overwrite', async ({ page }) => {
+  await page.getByLabel('输入分析问题').fill('按城市分析过去一年净收入')
+  await page.getByRole('button', { name: '开始分析' }).click()
+  await expect(page.getByRole('button', { name: '停止' })).toBeVisible()
+
+  await page.getByRole('button', { name: '停止' }).click()
+  await expect(page.getByRole('status').filter({ hasText: '已取消本次分析' })).toBeVisible()
+  await expect(page.locator('.run-stage')).not.toBeVisible()
+  await expect(page.getByRole('heading', { name: '净收入连续三个月增长' })).not.toBeVisible()
+
+  await page.waitForTimeout(1300)
+  await expect(page.getByRole('heading', { name: '净收入连续三个月增长' })).not.toBeVisible()
+})
+
+test('partial result is explicit and survives browser refresh', async ({ page }) => {
+  await page.getByLabel('输入分析问题').fill('区域贡献超时的净收入趋势')
+  await page.getByRole('button', { name: '开始分析' }).click()
+
+  await expect(page.getByRole('heading', { name: '净收入趋势已就绪，区域贡献未完成' })).toBeVisible()
+  await expect(page.getByLabel('部分结果说明')).toContainText('部分结果可用')
+  await expect(page.getByText('区域贡献步骤超时，趋势结果仍可用。')).toBeVisible()
+  await expect(page.getByText('未完成步骤：regional_contribution')).toBeVisible()
+
+  await page.reload()
+  await expect(page.getByRole('status').filter({ hasText: '已从本机恢复上次分析结果' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '净收入趋势已就绪，区域贡献未完成' })).toBeVisible()
+  await expect(page.getByLabel('部分结果说明')).toContainText('部分结果可用')
+})
+
 test('operations center supports replay filtering and detail review', async ({ page }) => {
   await page.getByRole('button', { name: '运营中心' }).click()
   await expect(page.getByRole('heading', { name: '生产质量总览' })).toBeVisible()

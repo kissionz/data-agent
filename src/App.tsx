@@ -47,6 +47,14 @@ type Page = 'workbench' | 'semantic' | 'dataSources' | 'collaboration' | 'operat
 type RunStatus = 'waiting_input' | 'understanding' | 'querying' | 'completed' | 'needs_clarification' | 'failed'
 type ResultView = 'chart' | 'table' | 'evidence'
 
+const WORKBENCH_SNAPSHOT_KEY = 'insightflow.workbench.snapshot.v1'
+
+interface WorkbenchSnapshot {
+  submittedQuestion: string
+  status: RunStatus
+  runView: PublicRunView | null
+}
+
 const revenueData = [
   { month: '1月', revenue: 826 },
   { month: '2月', revenue: 792 },
@@ -196,6 +204,7 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
   const [runView, setRunView] = useState<PublicRunView | null>(null)
   const [resultView, setResultView] = useState<ResultView>('chart')
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null)
+  const [runNotice, setRunNotice] = useState('')
   const timerRef = useRef<number[]>([])
   const previousResetKeyRef = useRef(resetKey)
 
@@ -206,6 +215,25 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
 
   useEffect(() => () => clearTimers(), [])
   useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(WORKBENCH_SNAPSHOT_KEY)
+      if (!raw) return
+      const snapshot = JSON.parse(raw) as WorkbenchSnapshot
+      if (snapshot.status !== 'completed' || !snapshot.submittedQuestion || !snapshot.runView) return
+      setSubmittedQuestion(snapshot.submittedQuestion)
+      setRunView(snapshot.runView)
+      setStatus('completed')
+      setRunNotice('已从本机恢复上次分析结果，刷新不会丢失口径、证据和部分结果状态。')
+    } catch {
+      window.localStorage.removeItem(WORKBENCH_SNAPSHOT_KEY)
+    }
+  }, [])
+  useEffect(() => {
+    if (status !== 'completed' || !submittedQuestion || !runView) return
+    const snapshot: WorkbenchSnapshot = { submittedQuestion, status, runView }
+    window.localStorage.setItem(WORKBENCH_SNAPSHOT_KEY, JSON.stringify(snapshot))
+  }, [runView, status, submittedQuestion])
+  useEffect(() => {
     if (previousResetKeyRef.current === resetKey) return
     previousResetKeyRef.current = resetKey
     clearTimers()
@@ -213,6 +241,8 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
     setSubmittedQuestion('')
     setStatus('waiting_input')
     setRunView(null)
+    setRunNotice('')
+    window.localStorage.removeItem(WORKBENCH_SNAPSHOT_KEY)
   }, [resetKey])
 
   const runQuestion = (value = question) => {
@@ -223,6 +253,7 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
     setSubmittedQuestion(clean)
     setFeedback(null)
     setRunView(null)
+    setRunNotice('')
     setStatus('understanding')
     timerRef.current.push(window.setTimeout(() => {
       const response = serviceRef.current.submitQuestion({
@@ -246,6 +277,9 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
       timerRef.current.push(window.setTimeout(() => {
         setRunView(response.data)
         setStatus(response.data.displayStatus)
+        if (response.data.result?.completeness === 'partial') {
+          setRunNotice('已返回可用结果；未完成步骤不会被伪装为完整答案。')
+        }
       }, 720))
     }, 460))
   }
@@ -260,6 +294,8 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
       })
       if (response.ok) setRunView(response.data)
     }
+    setRunView(null)
+    setRunNotice('已取消本次分析，下游查询不会继续写入结果。')
     setStatus('waiting_input')
   }
 
@@ -324,6 +360,7 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
               <div className="question-avatar">你</div>
               <p>{submittedQuestion}</p>
             </div>
+            {runNotice && <RunNotice>{runNotice}</RunNotice>}
             {status !== 'waiting_input' && <RunStage status={status} />}
             {status === 'needs_clarification' && <Clarification clarification={runView?.clarification} onChoose={chooseClarification} />}
             {status === 'failed' && <PermissionFailure requestId={runView?.requestId} onRetry={() => setQuestion('仅查看我有权限的业务域汇总')} />}
@@ -350,6 +387,15 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
         onCancel={cancelRun}
       />
     </main>
+  )
+}
+
+function RunNotice({ children }: { children: string }) {
+  return (
+    <div className="run-notice" role="status">
+      <IconCheck size={17} />
+      <span>{children}</span>
+    </div>
   )
 }
 
@@ -435,6 +481,7 @@ function AnswerResult({ runView, view, onView, onExport, feedback, onFeedback, o
   const summary = runView?.result?.answer.summary ?? '过去 12 个完整自然月净收入合计 1.35 亿元。12 月达到 1,486 万元，较 1 月增长 79.9%。'
   const freshness = runView?.result?.freshnessAt ?? '2026-06-22 08:12'
   const semanticVersion = runView?.semanticVersion ?? 'sales@2026.06.3'
+  const partial = runView?.result?.completeness === 'partial'
   return (
     <article className="answer-card">
       <div className="answer-header">
@@ -445,6 +492,17 @@ function AnswerResult({ runView, view, onView, onExport, feedback, onFeedback, o
         </div>
         <button className="secondary-button export-button" onClick={onExport}><IconDownload size={17} /> 导出 CSV</button>
       </div>
+
+      {partial && (
+        <div className="partial-result-strip" role="status" aria-label="部分结果说明">
+          <IconHelp size={18} />
+          <div>
+            <strong>部分结果可用</strong>
+            <span>{runView?.result?.warnings.join('；') || '部分分析步骤未完成，已保留可核验结果。'}</span>
+            <small>未完成步骤：{runView?.result?.incompleteSteps.join('、') || '未记录'}</small>
+          </div>
+        </div>
+      )}
 
       <div className="assumption-strip">
         <IconShieldCheck size={18} />
@@ -464,7 +522,7 @@ function AnswerResult({ runView, view, onView, onExport, feedback, onFeedback, o
       </div>
 
       {view === 'chart' && <RevenueChart />}
-      {view === 'table' && <RevenueTable />}
+      {view === 'table' && <RevenueTable runView={runView} />}
       {view === 'evidence' && <EvidencePanel />}
 
       <div className="followups">
@@ -504,7 +562,25 @@ function RevenueChart() {
   )
 }
 
-function RevenueTable() {
+function RevenueTable({ runView }: { runView: PublicRunView | null }) {
+  const result = runView?.result
+  if (result && result.rows.length) {
+    return (
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead><tr>{result.columns.map((column) => <th key={column.id}>{column.label}</th>)}<th>结果引用</th></tr></thead>
+          <tbody>
+            {result.rows.map((row, rowIndex) => (
+              <tr key={row.key}>
+                {result.columns.map((column) => <td key={column.id}>{String(row.values[column.id] ?? '-')}</td>)}
+                <td><code>{result.id}.row[{rowIndex}]</code></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
   return (
     <div className="table-scroll">
       <table className="data-table">

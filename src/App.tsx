@@ -40,7 +40,7 @@ import type { SemanticDimension as UiDimension, SemanticMetric as UiMetric } fro
 import { OperationsCenter } from './features/operations'
 import { DataSourceCenter } from './features/data-sources'
 import { CollaborationHub } from './features/collaboration'
-import { createChatBiApplicationService } from './application'
+import { createChatBiApplicationService, createSharingExportApplicationService } from './application'
 import type { ActorContext, PublicRunView } from './contracts'
 
 type Page = 'workbench' | 'semantic' | 'dataSources' | 'collaboration' | 'operations'
@@ -198,6 +198,7 @@ function SessionRow({ title, meta, active }: { title: string; meta: string; acti
 
 function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions: () => void; onOpenContext: () => void; resetKey: number }) {
   const serviceRef = useRef(createChatBiApplicationService(() => '2026-06-23T09:00:00+08:00'))
+  const sharingRef = useRef(createSharingExportApplicationService({ now: () => '2026-06-23T09:00:00+08:00' }))
   const [question, setQuestion] = useState('')
   const [submittedQuestion, setSubmittedQuestion] = useState('过去 12 个完整自然月净收入趋势')
   const [status, setStatus] = useState<RunStatus>('completed')
@@ -326,15 +327,48 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
 
   const exportCsv = () => {
     const rows = runView?.result?.rows
-    const content = rows?.length
-      ? ['月份,净收入', ...rows.map((row) => `${row.values.month ?? row.key},${row.values.net_revenue ?? ''}`)].join('\n')
-      : ['月份,净收入（万元）', ...revenueData.map((row) => `${row.month},${row.revenue}`)].join('\n')
+    const response = sharingRef.current.requestExport({
+      actor: demoActor,
+      source: runView
+        ? { type: 'run', runId: runView.runId, conversationId: runView.conversationId }
+        : { type: 'asset', assetId: 'asset_revenue_trend' },
+      format: 'csv',
+      estimatedRows: rows?.length ?? revenueData.length,
+      estimatedBytes: 24 * 1024,
+      classification: 'internal',
+    })
+    if (!response.ok || response.data.status !== 'completed') {
+      const reason = response.ok ? response.data.blockingReasons.join('；') : response.error.message
+      setRunNotice(`导出已阻断：${reason}`)
+      return
+    }
+
+    const metadata = [
+      ['导出状态', response.data.status],
+      ['来源', response.data.source.type === 'run' ? response.data.source.runId : response.data.source.assetId],
+      ['格式', response.data.format],
+      ['策略版本', response.data.policyVersion],
+      ['权限摘要', response.data.permissionDigest],
+      ['水印', response.data.watermark.text],
+      ['脱敏规则', response.data.desensitization.rules.join('|') || 'none'],
+      ['短期下载', response.data.download.available ? `expires_at=${response.data.download.expiresAt}` : 'unavailable'],
+      ['审计事件', response.data.audit.map((event) => event.type).join('|')],
+    ]
+    const dataRows = rows?.length
+      ? [['月份', '净收入'], ...rows.map((row) => [String(row.values.month ?? row.key), String(row.values.net_revenue ?? '')])]
+      : [['月份', '净收入（万元）'], ...revenueData.map((row) => [row.month, String(row.revenue)])]
+    const content = [
+      ...metadata.map((row) => row.map(csvCell).join(',')),
+      '',
+      ...dataRows.map((row) => row.map(csvCell).join(',')),
+    ].join('\n')
     const url = URL.createObjectURL(new Blob([`\ufeff${content}`], { type: 'text/csv;charset=utf-8' }))
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = '净收入趋势_2025.csv'
+    anchor.download = `净收入趋势_${response.data.id}.csv`
     anchor.click()
-    URL.revokeObjectURL(url)
+    setRunNotice('导出已重新鉴权，CSV 文件已写入水印、策略版本和审计事件。')
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
   }
 
   const active = status === 'understanding' || status === 'querying'
@@ -388,6 +422,10 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
       />
     </main>
   )
+}
+
+function csvCell(value: string) {
+  return `"${value.replaceAll('"', '""')}"`
 }
 
 function RunNotice({ children }: { children: string }) {

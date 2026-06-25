@@ -19,7 +19,7 @@
 | F05 澄清与多轮会话 | 部分覆盖 | 澄清 UI 与候选选择流程；本地 application service 和 BFF router 绑定原 run、candidate id 和 candidate version；会话 active run 阻断已测试；SSE 事件流契约和 Last-Event-ID 续传已测试。 | 生产 SSE 长连接、候选失效刷新、真实多轮状态持久化。 |
 | F06 编译、查询与安全执行 | 部分覆盖 | 本地确定性 Compiler 先通过 Semantic Catalog / Join Graph 校验 metric/dimension ID、版本、认证状态、粒度、兼容维度和 Join 风险，再将 Analysis IR 编译为只读 SQL AST/SQL；Query Gateway 注入租户、工作区、业务域守卫，校验只读、多语句、危险 token、预算、SQL 指纹、权限摘要和缓存键；应用服务返回 public-safe 执行摘要并写入 `compiler.plan_created` 审计事件；测试覆盖参数化、SQL 注入、只读拒绝、预算阻断和不暴露原始 SQL。 | 真实数据源执行、方言插件矩阵、EXPLAIN 成本模型、取消传播、连接池隔离、结果分页/大结果处理和生产缓存失效。 |
 | F07 答案、图表与证据 | 部分覆盖 | 结论、KPI、趋势图、表格、证据、默认条件、口径、来源、新鲜度、语义版本。 | 真实结果引用映射、图表误导性校验、分页、大结果处理、答案 groundedness 自动检查。 |
-| F08 导出、分享与嵌入 | 部分覆盖 | UI 上预留导出/分享动作和上下文约束展示；协作资产中心展示分享范围、导出水印/脱敏审计策略和重新鉴权提示；新增 `SharingExportApplicationService` 与 `/v1/sharing/*` API，覆盖导出前重新鉴权、100k 行/50MB 在线限制、受限分类阻断、水印计划、脱敏规则、短期下载链接预览、分享只保存引用不复制结果、接收者重新鉴权和 public audit event。 | 真实 CSV/XLSX/PDF/PNG 文件生成、真实水印写入、异步大文件导出、嵌入式 SDK、短期 embed token 和通知。 |
+| F08 导出、分享与嵌入 | 部分覆盖 | UI 上预留导出/分享动作和上下文约束展示；工作台 CSV 下载接入本地导出治理服务，文件写入水印、策略版本、权限摘要、脱敏规则和审计事件；协作资产中心展示分享范围、导出水印/脱敏审计策略和重新鉴权提示；新增 `SharingExportApplicationService` 与 `/v1/sharing/*` API，覆盖导出前重新鉴权、100k 行/50MB 在线限制、受限分类阻断、水印计划、脱敏规则、短期下载链接预览、分享只保存引用不复制结果、接收者重新鉴权和 public audit event。 | XLSX/PDF/PNG 文件生成、生产水印写入、异步大文件导出、嵌入式 SDK、短期 embed token 和通知。 |
 | F09 运营、模型与监控 | 部分覆盖 | 运营中心页面；SLO、门禁、失败分布、回放队列、模型版本、延迟趋势；`EvaluationApplicationService` 暴露当前候选版本黄金集门禁和失败回放列表，支持按状态/业务域/关键词过滤；新增 `ModelOpsApplicationService` 与 `/v1/model-ops/*` API，覆盖模型能力路由、active/candidate 版本、超时、温度、租户覆盖、配额检查、供应商不可用/配额不足/策略阻断降级链、灰度候选选择、发布门禁阻断和运维/安全管理员回滚；新增 `SloApplicationService` 与 `/v1/operations/slo*` API，覆盖 SLO 报告、P95 延迟、成本、取消传播、扫描量预算、错误预算、告警 runbook、public audit 和 allow/warn/block 性能预算决策。 | 真实监控事件、真实 Model Gateway 调用、成本采集、调用审计落库、自动回滚阈值执行、告警投递、真实压测证明与按租户/业务域/模型版本的线上指标下钻。 |
 | F10 评测、审计与回放 | 部分覆盖 | 领域测试覆盖状态、安全、语义版本；PublicRunView 携带审计事件；审计事件可通过 persistence 端口列出，并可由本地 JSON 文件 adapter 落盘；新增评测服务与 `/v1/evaluation/*` API，覆盖黄金集 P0 门禁阻断、失败回放详情、阻断样本角色可见性、脱敏重放计划和“不使用生产凭据”规则。 | 黄金集管理、批量回归调度、生产审计存储、真实失败链路回放执行、灰度发布联动和发布阻断落库。 |
 | F11 开放 API / SDK | 部分覆盖 | `apps/api` 提供 API app 壳、运行时配置、`/readyz`、header actor guard、memory/file persistence mode；`@insightflow/contracts` workspace 包已拥有独立 `api`、`domain`、`events`、`openapi` 源码与子路径导出，应用可通过包名消费共享契约和 OpenAPI 草案，`src/contracts`/`src/api/openapi.ts` 仅保留兼容层；新增 `DeveloperAccessApplicationService` 与 `/v1/developer/*` API，覆盖服务账号、API Key 签发/撤销、scope、配额、过期、密钥 hash/脱敏预览、Webhook HTTPS/HMAC 签名/重放保护/退避重试/死信策略、短期 embed token 和“组件不能接触数据库凭据”；本地 BFF router 覆盖 `/healthz`、`/openapi.json`、身份上下文/策略裁决、开发者接入治理、问题提交、Run 查询、SSE 事件、澄清、取消、数据源列表/详情/连接测试、语义指标列表/评审/认证、导出/分享治理、评测门禁/回放、模型运营路由/决策/回滚、SLO 报告/性能预算评估、协作资产列表/收藏/订阅/审计；错误码目录已覆盖全部 public code。 | 真实 API Key 验签中间件、服务账号令牌轮换任务、Fastify/TypeBox 生产 OpenAPI 生成、SDK 代码生成、真实 Webhook 投递队列、调用审计落库；OpenAPI 仍需从 schema 生成产物升级为生产级规范。 |
@@ -55,7 +55,7 @@
 | 持久化端口测试 | 已覆盖，`src/test/persistence.test.ts` 验证跨 service 实例读取、幂等键、clone 防引用污染、audit list 和本地 JSON 文件恢复。 |
 | 组件级 UI 测试 | 已覆盖主要 P0/P1 页面，`src/test/workbench.test.tsx` 覆盖工作台默认结果、约束可见、表格替代、澄清和权限安全失败；`src/test/semanticGovernance.test.tsx` 覆盖语义中心指标定义、筛选、编辑和审批；`src/test/operationsCenter.test.tsx` 覆盖运营中心 SLO、发布门禁、模型版本、失败分布、回放详情和刷新反馈；`src/test/dataSources.test.tsx` 覆盖数据源中心关键状态；`src/test/collaboration.test.tsx` 覆盖协作资产关键状态。 |
 | 浏览器人工验收 | 部分覆盖，当前阶段已人工核验主工作台、澄清、权限拒绝、语义中心、运营中心和移动布局。 |
-| 浏览器自动 E2E | 部分覆盖，`tests/e2e/prd-acceptance.desktop.spec.ts` 和 `tests/e2e/prd-acceptance.mobile.spec.ts` 使用 Playwright + 本机 Chrome 覆盖标准查询结果、表格替代、口径证据、澄清、权限拒绝、运行中取消、部分结果显式提示、刷新后恢复上次分析结果、语义指标评审/认证、数据源降级质量门禁、受限字段样本策略、协作资产重新鉴权/水印/订阅阻断、运营回放详情和移动端会话/上下文面板；仍需扩展真实导出文件和 WebKit/Safari。 |
+| 浏览器自动 E2E | 部分覆盖，`tests/e2e/prd-acceptance.desktop.spec.ts` 和 `tests/e2e/prd-acceptance.mobile.spec.ts` 使用 Playwright + 本机 Chrome 覆盖标准查询结果、表格替代、口径证据、CSV 文件下载与水印/策略/审计元数据、澄清、权限拒绝、运行中取消、部分结果显式提示、刷新后恢复上次分析结果、语义指标评审/认证、数据源降级质量门禁、受限字段样本策略、协作资产重新鉴权/水印/订阅阻断、运营回放详情和移动端会话/上下文面板；仍需扩展 WebKit/Safari、XLSX/PDF/PNG 和异步大文件导出。 |
 | 可访问性 E2E | 部分覆盖，`src/test/accessibility.test.tsx` 在 jsdom 中覆盖键盘提交、焦点、ARIA 角色、命名 dialog、tablist、图表替代表格和状态文本；Playwright 已覆盖命名按钮/对话框/移动面板可达，仍需屏幕阅读器级真实浏览器 E2E。 |
 | 性能与 SLO | 部分覆盖，`SloApplicationService` 与 `/v1/operations/slo*` 已覆盖本地 SLO 报告、P95 延迟、单次成本、取消传播、扫描量预算、告警 runbook 和预算决策测试；仍需真实 API 流量、数据源执行指标、监控事件、压测和告警投递证明。 |
 
@@ -64,5 +64,5 @@
 1. 将 `@insightflow/contracts/openapi` 从当前草案升级为 schema 生成产物，并补 SDK 代码生成/发布流程。
 2. 将本地 JSON persistence adapter 替换为 SQLite/PostgreSQL adapter，并补 migration 与审计事件表。
 3. 将当前 `apps/api` Node adapter 替换为 Fastify/TypeBox，补 OIDC/API key 中间件、生产 SSE 长连接和错误码表落地文档。
-4. 继续扩展可重复浏览器测试：真实导出文件和 WebKit/Safari。
+4. 继续扩展可重复浏览器测试：WebKit/Safari、XLSX/PDF/PNG 和异步大文件导出。
 5. 任何真实模型接入前，答案必须保留“只能引用结果集或授权知识”的测试护栏。

@@ -34,7 +34,7 @@
 | Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口、内存 adapter、本地 JSON 文件 adapter | SQLite/PostgreSQL/Redis adapter 与 migration |
 | API App | `apps/api/*` | API 运行时配置、`/readyz`、header actor guard、memory/file persistence mode、Node adapter 组合入口 | 替换为 Fastify/TypeBox、OIDC/API key 中间件、生产 SSE 长连接 |
 | BFF Adapter | `src/api/*` | 本地 HTTP router、contracts 包 OpenAPI 草案、SSE events endpoint、身份策略 API、开发者接入 API、数据源 API、语义治理 API、导出分享 API、评测回放 API、模型运营 API、SLO/性能预算 API、协作资产 API、Node server adapter 源码、CORS/状态码映射测试 | 保持为框架无关 router 或拆入 `apps/api` |
-| E2E | `tests/e2e/*` | Playwright + 本机 Chrome 覆盖标准查询、表格替代、口径证据、澄清、权限拒绝、运行中取消、部分结果显式提示、刷新后恢复、语义指标评审/认证、数据源降级质量门禁、受限字段样本策略、协作资产重新鉴权/水印/订阅阻断、运营回放和移动端面板可达 | 扩展 WebKit/Safari 和真实导出文件 |
+| E2E | `tests/e2e/*` | Playwright + 本机 Chrome 覆盖标准查询、表格替代、口径证据、CSV 下载文件水印/策略/审计元数据、澄清、权限拒绝、运行中取消、部分结果显式提示、刷新后恢复、语义指标评审/认证、数据源降级质量门禁、受限字段样本策略、协作资产重新鉴权/水印/订阅阻断、运营回放和移动端面板可达 | 扩展 WebKit/Safari、XLSX/PDF/PNG 和异步大文件导出 |
 
 `apps/api` 当前提供 API 应用壳：`/readyz`、运行时配置、生产式 header actor 校验、memory/file persistence mode，以及 Node adapter 组合入口。`src/api` router 支持 `/healthz`、`/openapi.json`、`/v1/identity` 身份上下文/策略裁决、`/v1/developer` 服务账号/API Key/Webhook/embed token、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`，以及 `/v1/data-sources` 数据源列表/详情/连接测试、`/v1/semantic` 语义指标评审/认证、`/v1/sharing` 导出/分享治理、`/v1/evaluation` 黄金集门禁/失败回放、`/v1/model-ops` 模型路由/决策/回滚、`/v1/operations/slo` SLO 报告/性能预算评估和 `/v1/assets` 协作资产列表/收藏/订阅/审计接口。它是生产 API 的契约基线，不是最终运行时；本地 JSON 文件 adapter 用于开发态跨进程/重启验收，生产环境仍需 OIDC/API key 认证、数据库/缓存持久化、长连接生命周期管理、审计落库和网关部署。
 
@@ -48,7 +48,7 @@
 
 协作资产中心当前是 F12 的前端 + 服务治理切片：用 fixture 表达会话资产、验证案例、问题模板和订阅，展示收藏、归档、分享范围、订阅频率、审核人、版本快照和审计事件，并通过组件测试锁定搜索、状态筛选、收藏反馈和审核中不可订阅规则。`CollaborationAssetApplicationService` 进一步把列表过滤、收藏更新、审核中/归档不可订阅、接收者重新鉴权摘要和 public audit event 接入 `/v1/assets` API。它尚未接入真实资产持久化、分享链接、通知发送、订阅调度或导出文件生成；这些能力应在后续 `CollaborationAssetService`、`ShareAuthorization` 与 `NotificationScheduler` adapter 中落地。
 
-导出分享当前是 F08 的服务治理切片：`SharingExportApplicationService` 在导出前调用身份策略裁决，检查 100k 行/50MB 在线预算、受限分类阻断、脱敏规则、水印文本和短期下载链接预览；分享只保存 run/asset 引用，不保存高权限结果快照，接收者打开时按自身身份重新鉴权。它尚未生成真实 CSV/XLSX/PDF/PNG 文件、真实水印、异步大文件任务或 embed token。
+导出分享当前是 F08 的服务治理切片：`SharingExportApplicationService` 在导出前调用身份策略裁决，检查 100k 行/50MB 在线预算、受限分类阻断、脱敏规则、水印文本和短期下载链接预览；工作台 CSV 下载会调用该服务并把水印、策略版本、权限摘要、脱敏规则和审计事件写入文件；分享只保存 run/asset 引用，不保存高权限结果快照，接收者打开时按自身身份重新鉴权。它尚未生成 XLSX/PDF/PNG 文件、生产水印、异步大文件任务或 embed token。
 
 本地 Semantic Catalog 当前是 F03/F06 的交界切片：它按 tenant/workspace/domain/semanticVersion 解析认证指标、草稿指标、维度、兼容维度和 Join Edge；可信模式只允许 certified metric，高风险或未批准 Join Graph 路径会在 SQL 生成前拒绝。
 

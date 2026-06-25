@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/')
@@ -19,6 +20,25 @@ test('standard query result exposes constraints, table alternative and evidence'
   await expect(page.getByText('指标口径')).toBeVisible()
   await expect(page.getByText('销售经营主题域')).toBeVisible()
   await expect(page.getByText(/trace_id/)).toBeVisible()
+})
+
+test('csv export downloads a governed file with watermark and audit metadata', async ({ page }) => {
+  await expect(page.getByRole('heading', { name: '过去 12 个完整自然月净收入趋势' })).toBeVisible()
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出 CSV' }).click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toMatch(/^净收入趋势_export_\d{4}\.csv$/)
+
+  const filePath = await download.path()
+  expect(filePath).toBeTruthy()
+  const content = await readFile(filePath!, 'utf8')
+  expect(content).toContain('策略版本')
+  expect(content).toContain('tenant_demo/workspace_sales/user_lin/policy-2026.06.7')
+  expect(content).toContain('export.requested|export.completed')
+  expect(content).toContain('净收入（万元）')
+  expect(content).toContain('12月')
+  await expect(page.getByRole('status').filter({ hasText: '导出已重新鉴权' })).toBeVisible()
 })
 
 test('ambiguous question requires clarification before executing a query', async ({ page }) => {

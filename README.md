@@ -166,7 +166,7 @@ pnpm build
 
 已完成的是“可运行、可审查、可继续开发”的产品基座，不是完整生产系统。当前 `src/application` 是本地 deterministic service，不是网络 API。生产化仍至少需要：
 
-- Fastify/TypeBox API BFF 替换当前 Node adapter、生产 SSE 长连接、具体 PostgreSQL/Redis driver、租户/组织/工作空间模型、API Key HTTP middleware 接入和 Webhook 投递队列。
+- Fastify/TypeBox API BFF 替换当前 Node adapter、生产 SSE 长连接、具体 PostgreSQL/Redis driver、租户/组织/工作空间模型、OIDC/SAML 与 API Key 轮换/存储加固、Webhook 投递队列。
 - OIDC/SAML/SCIM、外部 Policy Engine、服务账号短期令牌、策略审批和审计落库。
 - 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化与 Join Graph 编辑审批。
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。

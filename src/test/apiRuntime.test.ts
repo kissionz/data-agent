@@ -108,5 +108,106 @@ describe('apps/api runtime boundary', () => {
     expect(snapshot.status).toBe(200)
     expect(snapshot.body).toMatchObject({ ok: true, data: { runId: data.runId } })
   })
+
+  it('accepts API Key bearer auth by verifying it into a service-account actor', () => {
+    const runtime = createApiRuntime({ environment: 'production' })
+    const issued = issueRuntimeApiKey(runtime, ['questions:write', 'runs:read'], 10)
+
+    const created = runtime.handle({
+      method: 'POST',
+      path: '/v1/questions',
+      headers: {
+        authorization: `Bearer ${issued.secret}`,
+        'idempotency-key': 'runtime_api_key',
+      },
+      body: {
+        conversation_id: 'conversation_runtime_api_key',
+        question: '过去 12 个月净收入趋势',
+        mode: 'trusted',
+      },
+    })
+
+    expect(created.status).toBe(200)
+    expect(created.body).toMatchObject({
+      ok: true,
+      data: {
+        displayStatus: 'completed',
+        audit: expect.arrayContaining([
+          expect.objectContaining({ actorUserId: issued.serviceAccountId }),
+        ]),
+      },
+    })
+  })
+
+  it('rejects API Key bearer auth when the endpoint scope is missing', () => {
+    const runtime = createApiRuntime({ environment: 'production' })
+    const issued = issueRuntimeApiKey(runtime, ['runs:read'], 10)
+
+    const response = runtime.handle({
+      method: 'POST',
+      path: '/v1/questions',
+      headers: {
+        authorization: `Bearer ${issued.secret}`,
+        'idempotency-key': 'runtime_api_key_missing_scope',
+      },
+      body: {
+        conversation_id: 'conversation_runtime_api_key_missing_scope',
+        question: '过去 12 个月净收入趋势',
+        mode: 'trusted',
+      },
+    })
+
+    expect(response.status).toBe(403)
+    expect(response.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'PERMISSION_DENIED',
+      },
+    })
+  })
 })
 
+function issueRuntimeApiKey(runtime: ReturnType<typeof createApiRuntime>, scopes: string[], dailyRequestLimit: number) {
+  const account = runtime.router.developer.createServiceAccount({
+    actor: {
+      tenantId: 'tenant_demo',
+      workspaceId: 'workspace_sales',
+      userId: 'user_ops',
+      roles: ['platform_ops'],
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      policyVersion: 'policy-2026.06.7',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    },
+    name: 'Runtime API Key',
+    scopes: scopes as never,
+    expiresInDays: 30,
+    dailyRequestLimit,
+  })
+  if (!account.ok) throw new Error('expected service account')
+  const key = runtime.router.developer.issueApiKey({
+    actor: {
+      tenantId: 'tenant_demo',
+      workspaceId: 'workspace_sales',
+      userId: 'user_ops',
+      roles: ['platform_ops'],
+      businessDomainId: 'sales',
+      semanticVersion: 'sales-semantic-2026.06.1',
+      policyVersion: 'policy-2026.06.7',
+      locale: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    },
+    serviceAccountId: account.data.id,
+    expiresInDays: 30,
+  })
+  if (!key.ok) throw new Error('expected api key')
+  return {
+    serviceAccountId: account.data.id,
+    secret: mockIssuedSecret('ifk_live', key.data.id, 5),
+  }
+}
+
+function mockIssuedSecret(prefix: string, id: string, sequence: number) {
+  return `${prefix}_${id}_${sequence}`
+}

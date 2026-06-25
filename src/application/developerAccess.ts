@@ -145,7 +145,7 @@ export function createDeveloperAccessApplicationService(
   }
 
   function secretMaterial(prefix: string, id: string) {
-    const raw = `${prefix}_${id}_${sequence}_${now()}`
+    const raw = `${prefix}_${id}_${sequence}`
     return {
       prefix: `${prefix}_${id.slice(-4)}`,
       secretPreview: `${prefix}_${id.slice(-4)}...redacted`,

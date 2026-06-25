@@ -191,7 +191,7 @@ export function createChatBiBffRouter(
       headers: {
         'access-control-allow-origin': '*',
         'access-control-allow-methods': 'GET,POST,OPTIONS',
-        'access-control-allow-headers': 'content-type,idempotency-key,x-tenant-id,x-workspace-id,x-user-roles,x-business-domain-id,x-semantic-version,x-policy-version',
+        'access-control-allow-headers': 'authorization,content-type,idempotency-key,x-tenant-id,x-workspace-id,x-user-roles,x-business-domain-id,x-semantic-version,x-policy-version,x-timezone',
         'access-control-max-age': '600',
       },
       body: '',

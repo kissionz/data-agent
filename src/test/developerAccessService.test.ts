@@ -140,7 +140,7 @@ describe('Developer access service', () => {
     if (!issued.ok) return
 
     const verified = service.verifyApiKey({
-      presentedSecret: mockIssuedSecret('ifk_live', issued.data.id, 5, now),
+      presentedSecret: mockIssuedSecret('ifk_live', issued.data.id, 5),
       requiredScopes: ['questions:write'],
       workspaceId: 'workspace_sales',
       businessDomainId: 'sales',
@@ -191,7 +191,7 @@ describe('Developer access service', () => {
     })
     expect(issued.ok).toBe(true)
     if (!issued.ok) return
-    const secret = mockIssuedSecret('ifk_live', issued.data.id, 5, now)
+    const secret = mockIssuedSecret('ifk_live', issued.data.id, 5)
 
     const missingScope = service.verifyApiKey({
       presentedSecret: secret,
@@ -254,7 +254,7 @@ describe('Developer access service', () => {
     if (!revokedIssued.ok) return
     revokedService.revokeApiKey({ actor: opsActor, keyId: revokedIssued.data.id, reason: 'rotation' })
     const revoked = revokedService.verifyApiKey({
-      presentedSecret: mockIssuedSecret('ifk_live', revokedIssued.data.id, 5, now),
+      presentedSecret: mockIssuedSecret('ifk_live', revokedIssued.data.id, 5),
       requiredScopes: ['runs:read'],
       workspaceId: 'workspace_sales',
       businessDomainId: 'sales',
@@ -425,6 +425,6 @@ describe('Developer access service', () => {
   })
 })
 
-function mockIssuedSecret(prefix: string, id: string, sequence: number, now: string) {
-  return `${prefix}_${id}_${sequence}_${now}`
+function mockIssuedSecret(prefix: string, id: string, sequence: number) {
+  return `${prefix}_${id}_${sequence}`
 }

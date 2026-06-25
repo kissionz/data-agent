@@ -28,7 +28,7 @@
 |---|---|---|---|
 | UI | `src/App.tsx`、`src/features/*` | 工作台、数据源中心、语义中心、协作资产中心、运营中心；工作台通过本地 application service 驱动 | 切换为 API adapter，补组件测试与 E2E |
 | Contracts | `packages/contracts/*`、`src/contracts/*` | `@insightflow/contracts` 已拥有独立 `api`、`domain`、`events`、`openapi` 源码，覆盖 `AnalysisIR v1`、`PublicRunView`、API envelope、公共 DTO、审计事件、错误对象、错误码目录、SSE 事件、schema 和 OpenAPI 草案；`src/contracts`/`src/api/openapi.ts` 仅作为旧相对 import 的兼容层 | 使用 TypeBox/JSON Schema 生成生产 OpenAPI 和 SDK，逐步让应用直接从包名 import |
-| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；身份上下文与策略裁决；服务账号/API Key 签发/撤销/验签、Webhook/embed token 开发者接入治理；数据源列表/详情/连接测试；语义指标评审/认证；导出分享重新鉴权；评测门禁与失败回放；模型路由、配额、降级链、灰度回滚；SLO 报告与性能预算评估；协作资产列表、收藏、订阅门禁和审计；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter、真实 Model Gateway、外部身份/策略引擎、API Key HTTP middleware、Webhook 投递队列、语义对象持久化、真实导出文件生成、评测流水线、真实监控告警、数据源/协作资产持久化与通知调度 |
+| Application | `src/application/*` | deterministic `submitQuestion`、澄清、取消、Run 查询、幂等和边界检查；身份上下文与策略裁决；服务账号/API Key 签发/撤销/验签、Webhook/embed token 开发者接入治理；数据源列表/详情/连接测试；语义指标评审/认证；导出分享重新鉴权；评测门禁与失败回放；模型路由、配额、降级链、灰度回滚；SLO 报告与性能预算评估；协作资产列表、收藏、订阅门禁和审计；依赖 persistence 与本地 Query Gateway 端口 | 接检索、Planner、生产 Query Gateway adapter、真实 Model Gateway、外部身份/策略引擎、API Key 轮换/存储加固、Webhook 投递队列、语义对象持久化、真实导出文件生成、评测流水线、真实监控告警、数据源/协作资产持久化与通知调度 |
 | Semantic | `src/semantic/*` | 本地 Semantic Catalog、认证指标/草稿指标、维度、兼容维度和 Join Graph 风险门禁；治理服务暴露提交评审、认证发布、参考 SQL 对账门禁和 public audit | 持久化版本仓库、Join Graph 编辑审批、参考 SQL 自动对账、血缘和灰度发布 |
 | Query | `src/query/*` | Analysis IR 经 Semantic Catalog 校验后生成只读 SQL AST/SQL，注入权限守卫、SQL 指纹、缓存键和预算阻断 | 方言插件、EXPLAIN 成本模型、连接池、取消传播和真实结果分页 |
 | Persistence | `src/persistence/*` | conversation、run、idempotency、audit events 端口、内存 adapter、本地 JSON 文件 adapter、SQL migration、可替换 SQL adapter，SQL 审计事件单独落表 | 接具体 SQLite/PostgreSQL/Redis driver、migration runner、连接池与生产审计查询 |
@@ -40,7 +40,7 @@
 
 共享契约包当前是 F11/API SDK 的源码切片：`packages/contracts` 暴露 `@insightflow/contracts` 包名和 `api`、`domain`、`events`、`openapi` 子路径，包内持有公共契约源码和 OpenAPI 草案，不再从 `src/contracts` 或 `src/domain` 反向 re-export。`src/contracts` 与 `src/api/openapi.ts` 只保留兼容层，服务旧的相对 import；包级测试锁定版本、schema、错误码、公共状态词表、SSE helper 和 OpenAPI 路径。下一阶段应把 OpenAPI 从草案升级为 schema 生成产物，并补 SDK 代码生成和包发布流程。
 
-开发者接入当前是 F11/F12 的服务治理切片：`DeveloperAccessApplicationService` 提供服务账号、API Key、Webhook 和短期 embed token 的本地契约。服务账号绑定当前工作区/业务域、scope、过期时间和日配额；API Key 只返回前缀、脱敏预览与 hash 指纹，可撤销，可在服务层验签为 `service_account` actor，并校验 scope、过期时间、配额和 workspace/domain 边界；Webhook 强制 HTTPS、HMAC-SHA256 签名、300 秒重放保护、指数退避和死信策略，并声明不投递越权数据；embed token 由 Host 以自身权限换取，5–120 分钟有效，组件不能接触数据库凭据。它尚未把 API Key 验签接入 HTTP middleware，也尚未实现 SDK 代码生成、Webhook 异步投递或 embed SDK 包。
+开发者接入当前是 F11/F12 的服务治理切片：`DeveloperAccessApplicationService` 提供服务账号、API Key、Webhook 和短期 embed token 的本地契约。服务账号绑定当前工作区/业务域、scope、过期时间和日配额；API Key 只返回前缀、脱敏预览与 hash 指纹，可撤销，可验签为 `service_account` actor，并校验 scope、过期时间、配额和 workspace/domain 边界；`apps/api` runtime 支持 `Authorization: Bearer ...`，验签通过后把 service-account actor 注入既有 BFF router；Webhook 强制 HTTPS、HMAC-SHA256 签名、300 秒重放保护、指数退避和死信策略，并声明不投递越权数据；embed token 由 Host 以自身权限换取，5–120 分钟有效，组件不能接触数据库凭据。它尚未实现 SDK 代码生成、Webhook 异步投递或 embed SDK 包。
 
 身份策略当前是 F01 的服务治理切片：`IdentityPolicyApplicationService` 提供当前身份上下文、可见工作空间、角色、策略版本、权限摘要、策略裁决和策略更新。策略更新会提升 `policyVersion`，并让 `cacheKeyScope` 与 `permissionDigest` 变化，表达“5 分钟内生效、旧缓存不可绕过”的验收语义。它尚未接入真实 OIDC/SAML/SCIM、服务账号短期令牌、外部 Policy Engine 或生产审计表。
 
@@ -241,7 +241,7 @@ IR 使用严格 JSON Schema（`additionalProperties: false`），服务端维护
 | `POST` | `/v1/developer/service-accounts` | 创建绑定工作区、scope、配额和过期时间的服务账号 |
 | `POST` | `/v1/developer/api-keys` | 为服务账号签发短期 API Key，只返回脱敏预览和 hash 指纹 |
 | `POST` | `/v1/developer/api-keys/{id}/revoke` | 撤销 API Key |
-| 服务层 | `DeveloperAccessApplicationService.verifyApiKey` | 将 API Key 验签为服务端可信 actor，校验 scope、配额、过期和工作区边界；尚未暴露为 HTTP middleware |
+| Runtime | `Authorization: Bearer <api-key>` | `apps/api` 将 API Key 验签为服务端可信 actor，校验 scope、配额、过期和工作区边界，再注入 BFF router |
 | `POST` | `/v1/developer/webhooks` | 注册带签名、重放保护、退避和死信策略的 Webhook |
 | `POST` | `/v1/developer/webhooks/{id}/test` | 发送 Webhook 测试事件 |
 | `POST` | `/v1/developer/embed-tokens` | Host 换取短期嵌入 token，组件不能接触数据库凭据 |

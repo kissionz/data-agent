@@ -9,6 +9,7 @@
 - `GET /readyz`：应用层 readiness，返回 persistence、router 和 auth mode。
 - `GET /healthz`、`GET /openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/runs/{id}/events`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel`：复用 `src/api` router。
 - `required_header_actor`：生产/测试环境默认要求 `x-tenant-id`、`x-workspace-id`、`x-user-id`、`x-business-domain-id`、`x-semantic-version`。
+- `Authorization: Bearer <api-key>`：生产/测试环境可用 API Key 验签生成 `service_account` actor，并按端点校验 scope。
 - `disabled_demo_actor`：本地环境默认演示 actor，便于前端和样例验收。
 - `memory` / `file` persistence mode：本地内存或 JSON 文件持久化。
 
@@ -27,7 +28,6 @@
 ## 后续生产化
 
 - 用 Fastify/TypeBox 替换当前 Node adapter。
-- 将 header actor 替换为 OIDC/SAML/API key 中间件生成的服务端可信 actor。
+- 将 header actor 继续收敛到 OIDC/SAML；API Key Bearer 路径已具备本地验签和 service-account actor 注入，后续补轮换、持久化和审计落库。
 - 将 JSON file persistence 替换为 PostgreSQL/Redis adapter。
 - 将当前一次性 SSE 序列升级为生产长连接事件流和事件保留窗口。
-

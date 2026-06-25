@@ -20,7 +20,7 @@
 - 领域与测试基座：运行状态机、会话模型、语义版本、权限拒绝与安全场景测试。
 - 共享契约：`AnalysisIR v1`、`PublicRunView`、API 包络、澄清、取消、审计事件与错误对象。
 - 共享契约包：`@insightflow/contracts` workspace 包已拥有独立的 `api`、`domain`、`events`、`openapi` 契约源码，暴露版本、schema、错误码、公共 DTO、SSE helper 和 OpenAPI 草案，供前端、API 与未来 SDK 统一 import。
-- 开发者接入契约：`/v1/developer` 支持服务账号、API Key、Webhook 和短期 embed token 的本地治理契约，覆盖 scope、配额、过期、撤销、API Key 验签为服务端可信 actor、签名、重放保护和不暴露明文密钥/数据库凭据。
+- 开发者接入契约：`/v1/developer` 支持服务账号、API Key、Webhook 和短期 embed token 的本地治理契约，覆盖 scope、配额、过期、撤销、API Key 验签为服务端可信 actor、Webhook 签名/重放保护/退避重试/死信计划和不暴露明文密钥/数据库凭据。
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
 - API 应用壳：`apps/api` 提供运行时配置、`/readyz`、生产式 header actor 校验、memory/file persistence 模式和 Node adapter 组合入口。
@@ -166,7 +166,7 @@ pnpm build
 
 已完成的是“可运行、可审查、可继续开发”的产品基座，不是完整生产系统。当前 `src/application` 是本地 deterministic service，不是网络 API。生产化仍至少需要：
 
-- Fastify/TypeBox API BFF 替换当前 Node adapter、生产 SSE 长连接、具体 PostgreSQL/Redis driver、租户/组织/工作空间模型、OIDC/SAML 与 API Key 轮换/存储加固、Webhook 投递队列。
+- Fastify/TypeBox API BFF 替换当前 Node adapter、生产 SSE 长连接、具体 PostgreSQL/Redis driver、租户/组织/工作空间模型、OIDC/SAML 与 API Key 轮换/存储加固、真实 Webhook 异步队列和 HTTP client。
 - OIDC/SAML/SCIM、外部 Policy Engine、服务账号短期令牌、策略审批和审计落库。
 - 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化与 Join Graph 编辑审批。
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。

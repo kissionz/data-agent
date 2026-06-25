@@ -12,12 +12,14 @@ import {
   type EmbedTokenView,
   type IssueApiKeyRequest,
   type IssueEmbedTokenRequest,
+  type PlanWebhookDeliveryRequest,
   type PublicApiError,
   type RegisterWebhookRequest,
   type RevokeApiKeyRequest,
   type ServiceAccountView,
   type TestWebhookRequest,
   type VerifyApiKeyRequest,
+  type WebhookDeliveryPlanView,
   type WebhookSubscriptionView,
 } from '../contracts'
 
@@ -28,6 +30,7 @@ export interface DeveloperAccessApplicationService {
   revokeApiKey(request: RevokeApiKeyRequest): ApiEnvelope<ApiKeyView>
   registerWebhook(request: RegisterWebhookRequest): ApiEnvelope<WebhookSubscriptionView>
   testWebhook(request: TestWebhookRequest): ApiEnvelope<WebhookSubscriptionView>
+  planWebhookDelivery(request: PlanWebhookDeliveryRequest): ApiEnvelope<WebhookDeliveryPlanView>
   issueEmbedToken(request: IssueEmbedTokenRequest): ApiEnvelope<EmbedTokenView>
 }
 
@@ -53,6 +56,7 @@ export function createDeveloperAccessApplicationService(
   const serviceAccounts = new Map<string, ServiceAccountView>()
   const apiKeys = new Map<string, ApiKeyView>()
   const webhooks = new Map<string, WebhookSubscriptionView>()
+  const webhookSecretHashes = new Map<string, string>()
   const auditEvents: DeveloperAccessAuditEvent[] = []
 
   function nextId(prefix: string) {
@@ -172,6 +176,17 @@ export function createDeveloperAccessApplicationService(
 
   function webhookAudit(id: string) {
     return auditEvents.filter((event) => event.targetId === id)
+  }
+
+  function signature(deliveryId: string, webhookId: string, event: string, payload: Record<string, unknown>) {
+    const secretHash = webhookSecretHashes.get(webhookId) ?? 'sha256:missing'
+    return hashSecret(`${secretHash}.${deliveryId}.${event}.${JSON.stringify(payload)}`)
+  }
+
+  function addMinutesIso(minutes: number) {
+    const base = new Date(now())
+    base.setUTCMinutes(base.getUTCMinutes() + minutes)
+    return base.toISOString()
   }
 
   return {
@@ -370,6 +385,7 @@ export function createDeveloperAccessApplicationService(
       })
       const id = nextId('webhook')
       const secret = secretMaterial('whsec', id)
+      webhookSecretHashes.set(id, secret.secretHash)
       audit('developer.webhook_registered', request, id, 'Webhook 已注册，启用 HMAC 签名、重放保护和死信策略。')
       const webhook: WebhookSubscriptionView = {
         contractVersion: CONTRACT_VERSION,
@@ -415,6 +431,78 @@ export function createDeveloperAccessApplicationService(
       }
       webhooks.set(webhook.id, tested)
       return success(tested)
+    },
+
+    planWebhookDelivery(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      if (!canManageDeveloperAccess(request)) return developerDenied(request)
+      const webhook = webhooks.get(request.webhookId)
+      if (!webhook || webhook.status !== 'active') return failure({
+        code: 'SEMANTIC_NOT_FOUND',
+        message: '没有找到可投递的 Webhook',
+        retryable: false,
+        debugReference: `webhook_${request.webhookId}`,
+      })
+      if (!webhook.events.includes(request.event)) return failure({
+        code: 'VALIDATION_FAILED',
+        message: 'Webhook 未订阅该事件',
+        retryable: true,
+        debugReference: `webhook_event_${request.event}`,
+      })
+      const deliveryId = nextId('webhook_delivery')
+      const simulated = request.simulatedHttpStatuses ?? []
+      const attempts: WebhookDeliveryPlanView['attempts'] = []
+      let finalState: WebhookDeliveryPlanView['finalState'] = simulated.length ? 'dead_lettered' : 'queued'
+      for (let index = 0; index < webhook.retryPolicy.maxAttempts; index += 1) {
+        const attempt = index + 1
+        const httpStatus = simulated[index]
+        const accepted = httpStatus !== undefined && httpStatus >= 200 && httpStatus < 300
+        const finalAttempt = attempt === webhook.retryPolicy.maxAttempts
+        attempts.push({
+          attempt,
+          scheduledAt: addMinutesIso(index === 0 ? 0 : 2 ** (index - 1)),
+          ...(httpStatus === undefined ? {} : { httpStatus }),
+          result: accepted ? 'accepted' : httpStatus === undefined ? 'pending' : finalAttempt ? 'dead_lettered' : 'retry_scheduled',
+        })
+        if (accepted) {
+          finalState = 'accepted'
+          break
+        }
+        if (httpStatus === undefined) {
+          finalState = 'queued'
+          break
+        }
+      }
+      const deadLetter = finalState === 'dead_lettered'
+        ? { reason: '连续投递失败，进入死信队列。', afterAttempts: webhook.retryPolicy.deadLetterAfterAttempts }
+        : undefined
+      audit('developer.webhook_delivery_planned', request, webhook.id, finalState === 'accepted'
+        ? 'Webhook 投递计划已生成并模拟成功。'
+        : finalState === 'dead_lettered'
+          ? 'Webhook 投递计划已生成，超过重试上限后进入死信队列。'
+          : 'Webhook 投递计划已生成，等待异步队列执行。')
+      return success({
+        contractVersion: CONTRACT_VERSION,
+        id: deliveryId,
+        webhookId: webhook.id,
+        event: request.event,
+        url: webhook.url,
+        finalState,
+        signingAlgorithm: webhook.signingAlgorithm,
+        headers: {
+          'x-insightflow-event': request.event,
+          'x-insightflow-delivery': deliveryId,
+          'x-insightflow-timestamp': now(),
+          'x-insightflow-signature': signature(deliveryId, webhook.id, request.event, request.payload),
+        },
+        replayProtectionExpiresAt: addMinutesIso(Math.ceil(webhook.replayProtectionSeconds / 60)),
+        attempts,
+        ...(deadLetter ? { deadLetter } : {}),
+        payloadRedacted: true,
+        deliversOnlyAuthorizedData: true,
+        audit: webhookAudit(webhook.id),
+      })
     },
 
     issueEmbedToken(request) {

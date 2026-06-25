@@ -306,6 +306,74 @@ describe('Developer access service', () => {
     })
   })
 
+  it('plans signed webhook deliveries with retry and dead-letter semantics', () => {
+    const service = createDeveloperAccessApplicationService({ now: () => '2026-06-24T16:04:00+08:00' })
+    const registered = service.registerWebhook({
+      actor: opsActor,
+      url: 'https://example.com/chatbi/webhook',
+      events: ['run.completed', 'export.completed'],
+    })
+    expect(registered.ok).toBe(true)
+    if (!registered.ok) return
+
+    const accepted = service.planWebhookDelivery({
+      actor: opsActor,
+      webhookId: registered.data.id,
+      event: 'run.completed',
+      payload: { runId: 'run_001', status: 'completed', secret: 'must-not-leak' },
+      simulatedHttpStatuses: [500, 202],
+    })
+    expect(accepted.ok).toBe(true)
+    if (!accepted.ok) return
+    expect(accepted.data).toMatchObject({
+      finalState: 'accepted',
+      signingAlgorithm: 'hmac-sha256',
+      headers: {
+        'x-insightflow-event': 'run.completed',
+        'x-insightflow-signature': expect.stringMatching(/^sha256:/),
+      },
+      replayProtectionExpiresAt: '2026-06-24T08:09:00.000Z',
+      payloadRedacted: true,
+      deliversOnlyAuthorizedData: true,
+      attempts: [
+        expect.objectContaining({ attempt: 1, httpStatus: 500, result: 'retry_scheduled' }),
+        expect.objectContaining({ attempt: 2, httpStatus: 202, result: 'accepted' }),
+      ],
+    })
+    expect(JSON.stringify(accepted.data)).not.toContain('must-not-leak')
+
+    const deadLettered = service.planWebhookDelivery({
+      actor: opsActor,
+      webhookId: registered.data.id,
+      event: 'export.completed',
+      payload: { exportId: 'export_001' },
+      simulatedHttpStatuses: [500, 502, 503, 504, 500],
+    })
+    expect(deadLettered.ok).toBe(true)
+    if (!deadLettered.ok) return
+    expect(deadLettered.data).toMatchObject({
+      finalState: 'dead_lettered',
+      deadLetter: {
+        reason: '连续投递失败，进入死信队列。',
+        afterAttempts: 5,
+      },
+    })
+    expect(deadLettered.data.attempts).toHaveLength(5)
+    expect(deadLettered.data.attempts.at(-1)).toMatchObject({ result: 'dead_lettered' })
+    expect(deadLettered.data.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'developer.webhook_delivery_planned' }),
+    ]))
+
+    const notSubscribed = service.planWebhookDelivery({
+      actor: opsActor,
+      webhookId: registered.data.id,
+      event: 'asset.updated',
+      payload: { assetId: 'asset_001' },
+    })
+    expect(notSubscribed.ok).toBe(false)
+    if (!notSubscribed.ok) expect(notSubscribed.error.code).toBe('VALIDATION_FAILED')
+  })
+
   it('issues short-lived embed tokens without database credential access', () => {
     const service = createDeveloperAccessApplicationService({ now: () => '2026-06-24T16:03:00+08:00' })
     const invalid = service.issueEmbedToken({

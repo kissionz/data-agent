@@ -810,6 +810,7 @@ export interface DeveloperAccessAuditEvent {
     | 'developer.api_key_verified'
     | 'developer.webhook_registered'
     | 'developer.webhook_tested'
+    | 'developer.webhook_delivery_planned'
     | 'developer.embed_token_issued'
     | 'developer.access_denied'
   actorUserId: string
@@ -926,6 +927,46 @@ export interface RegisterWebhookRequest {
 export interface TestWebhookRequest {
   actor: ActorContext
   webhookId: string
+}
+
+export interface PlanWebhookDeliveryRequest {
+  actor: ActorContext
+  webhookId: string
+  event: WebhookSubscriptionView['events'][number]
+  payload: Record<string, unknown>
+  simulatedHttpStatuses?: number[]
+}
+
+export interface WebhookDeliveryAttemptView {
+  attempt: number
+  scheduledAt: string
+  httpStatus?: number
+  result: 'pending' | 'accepted' | 'retry_scheduled' | 'dead_lettered'
+}
+
+export interface WebhookDeliveryPlanView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  webhookId: string
+  event: WebhookSubscriptionView['events'][number]
+  url: string
+  finalState: 'queued' | 'accepted' | 'dead_lettered'
+  signingAlgorithm: 'hmac-sha256'
+  headers: {
+    'x-insightflow-event': string
+    'x-insightflow-delivery': string
+    'x-insightflow-timestamp': string
+    'x-insightflow-signature': string
+  }
+  replayProtectionExpiresAt: string
+  attempts: WebhookDeliveryAttemptView[]
+  deadLetter?: {
+    reason: string
+    afterAttempts: number
+  }
+  payloadRedacted: true
+  deliversOnlyAuthorizedData: true
+  audit: DeveloperAccessAuditEvent[]
 }
 
 export interface EmbedTokenView {

@@ -126,6 +126,42 @@ export interface PublicRunView {
   updatedAt: string
 }
 
+export interface ResultPageRequest {
+  runId: string
+  conversationId: string
+  actor: ActorContext
+  cursor?: string
+  limit?: number
+}
+
+export interface ResultPageView {
+  contractVersion: typeof CONTRACT_VERSION
+  requestId: string
+  traceId: string
+  runId: string
+  conversationId: string
+  resultId: string
+  semanticVersion: string
+  columns: RunResult['columns']
+  rows: RunResult['rows']
+  page: {
+    limit: number
+    cursor?: string
+    nextCursor?: string
+    hasMore: boolean
+    totalRows: number
+  }
+  completeness: RunResult['completeness']
+  warnings: string[]
+  freshnessAt: string
+  queryExecution?: QueryExecutionSummary
+  permissionDigest: string
+  policyVersion: string
+  rawSqlExposed: false
+  rawDatabaseCredentialsExposed: false
+  audit: AuditEvent[]
+}
+
 export type AssetType = 'conversation' | 'verified_case' | 'template' | 'subscription'
 export type AssetStatus = 'active' | 'review' | 'archived'
 export type ShareScope = 'private' | 'workspace' | 'domain_leads' | 'external_blocked'

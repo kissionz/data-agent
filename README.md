@@ -18,11 +18,11 @@
 - 运营中心：SLO/KPI、发布门禁、失败分布、回放队列、模型版本、延迟趋势。
 - 响应式布局：桌面四栏；窄屏抽屉/底部面板；移动端单栏与固定输入。
 - 领域与测试基座：运行状态机、会话模型、语义版本、权限拒绝与安全场景测试。
-- 共享契约：`AnalysisIR v1`、`PublicRunView`、API 包络、澄清、取消、审计事件与错误对象。
+- 共享契约：`AnalysisIR v1`、`PublicRunView`、`ResultPageView`、API 包络、澄清、取消、审计事件与错误对象。
 - 共享契约包：`@insightflow/contracts` workspace 包已拥有独立的 `api`、`domain`、`events`、`openapi`、`sdk` 契约源码，暴露版本、schema、错误码、公共 DTO、SSE helper、OpenAPI 草案、开发者请求 helper 和嵌入式 iframe 配置 helper。
 - 开发者接入契约：`/v1/developer` 支持服务账号、API Key、Webhook 和短期 embed token 的本地治理契约，覆盖 scope、配额、过期、撤销、轮换宽限期、API Key 验签为服务端可信 actor、Webhook 签名/重放保护/退避重试/死信计划和不暴露明文密钥/数据库凭据。
-- 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun`，前端工作台已通过该服务驱动 mock 流程。
-- 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
+- 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun` / `getResultPage`，前端工作台已通过该服务驱动 mock 流程。
+- 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/results/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
 - API 应用壳：`apps/api` 提供运行时配置、`/readyz`、生产式 header actor 校验、memory/file persistence 模式和 Node adapter 组合入口。
 - 身份策略服务：`/v1/identity` 支持身份上下文、可见工作空间、策略裁决和策略版本更新，服务层覆盖 RBAC/ABAC、受限导出拒绝、权限摘要、缓存 scope 和策略变更 300 秒内生效语义。
 - 运行事件流：`GET /v1/runs/{id}/events` 的 SSE 契约、事件序列化、`Last-Event-ID` 续传和工作空间边界检查。
@@ -117,6 +117,7 @@ pnpm build
 - `POST /v1/developer/embed-tokens`
 - `POST /v1/questions`
 - `GET /v1/runs/{runId}?conversation_id=...`
+- `GET /v1/results/{runId}?conversation_id=...&limit=...&cursor=...`
 - `GET /v1/runs/{runId}/events?conversation_id=...`
 - `POST /v1/runs/{runId}/clarify`
 - `POST /v1/runs/{runId}/cancel`
@@ -143,7 +144,7 @@ pnpm build
 - `POST /v1/assets/{assetId}/subscription`
 - `GET /v1/assets/{assetId}/audit`
 
-本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和由 `@insightflow/contracts/openapi` 导出的 OpenAPI 草案。持久化目前有内存 adapter、本地 JSON 文件 adapter、SQL migration 与可替换 SQL adapter；文件 adapter 使用临时文件 + rename 做原子替换，SQL adapter 将 conversation、run、idempotency 和 audit events 拆表，适合作为 SQLite/PostgreSQL driver 接入点。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、具体 PostgreSQL/Redis driver 和网关部署。
+本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、结果 cursor 分页、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和由 `@insightflow/contracts/openapi` 导出的 OpenAPI 草案。持久化目前有内存 adapter、本地 JSON 文件 adapter、SQL migration 与可替换 SQL adapter；文件 adapter 使用临时文件 + rename 做原子替换，SQL adapter 将 conversation、run、idempotency 和 audit events 拆表，适合作为 SQLite/PostgreSQL driver 接入点。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、具体 PostgreSQL/Redis driver 和网关部署。
 
 ## 浏览器验收建议
 

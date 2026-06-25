@@ -26,7 +26,10 @@ import {
   type CancelRunRequest,
   type ClarifyRunRequest,
   type GetRunRequest,
+  type PublicErrorCode,
   type PublicRunView,
+  type ResultPageRequest,
+  type ResultPageView,
   type SubmitQuestionRequest,
 } from '../contracts'
 
@@ -35,6 +38,7 @@ export interface ChatBiApplicationService {
   clarifyRun(request: ClarifyRunRequest): ApiEnvelope<PublicRunView>
   cancelRun(request: CancelRunRequest): ApiEnvelope<PublicRunView>
   getRun(request: GetRunRequest): ApiEnvelope<PublicRunView>
+  getResultPage(request: ResultPageRequest): ApiEnvelope<ResultPageView>
 }
 
 export interface ChatBiApplicationOptions {
@@ -102,6 +106,27 @@ export function createChatBiApplicationService(
         message: '无权访问该内容',
         retryable: false,
         debugReference: `sec_${actor.workspaceId}`,
+      },
+    }
+  }
+
+  function errorEnvelope<T>(
+    requestId: string,
+    traceId: string,
+    code: PublicErrorCode,
+    message: string,
+    debugReference: string,
+    retryable = false,
+  ): ApiEnvelope<T> {
+    return {
+      ok: false,
+      requestId,
+      traceId,
+      error: {
+        code,
+        message,
+        retryable,
+        debugReference,
       },
     }
   }
@@ -211,6 +236,19 @@ export function createChatBiApplicationService(
         updatedAt: stored.run.updatedAt,
       },
     }
+  }
+
+  function parseResultCursor(cursor?: string): number | null {
+    if (!cursor) return 0
+    const match = cursor.match(/^offset:(\d+)$/)
+    if (!match) return null
+    return Number(match[1])
+  }
+
+  function normalizeResultLimit(limit?: number): number | null {
+    if (limit === undefined) return 50
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) return null
+    return limit
   }
 
   return {
@@ -457,6 +495,76 @@ export function createChatBiApplicationService(
       const found = getStored(request.runId, request.conversationId, request.actor)
       if (found.envelope) return found.envelope
       return view(found.stored!)
+    },
+
+    getResultPage(request) {
+      const found = getStored(request.runId, request.conversationId, request.actor)
+      if (found.envelope) return found.envelope as ApiEnvelope<ResultPageView>
+      const requestId = found.requestId!
+      const traceId = found.traceId!
+      const stored = found.stored!
+      const result = stored.run.result
+      if (!result) {
+        return errorEnvelope<ResultPageView>(
+          requestId,
+          traceId,
+          'SEMANTIC_NOT_FOUND',
+          '该运行尚无可分页结果',
+          `result_${request.runId}`,
+        )
+      }
+
+      const offset = parseResultCursor(request.cursor)
+      const limit = normalizeResultLimit(request.limit)
+      if (offset === null || limit === null) {
+        return errorEnvelope<ResultPageView>(
+          requestId,
+          traceId,
+          'VALIDATION_FAILED',
+          '结果分页参数无效，cursor 必须形如 offset:0，limit 必须为 1-500 的整数。',
+          `result_page_${request.runId}`,
+          true,
+        )
+      }
+
+      const rows = result.rows.slice(offset, offset + limit)
+      const nextOffset = offset + rows.length
+      const hasMore = nextOffset < result.rows.length
+      const permissionDigest = stored.queryExecution?.permissionDigest
+        ?? `perm_${stored.run.tenantId}_${stored.run.workspaceId}_${stored.run.semanticVersion}`
+      const policyVersion = request.actor.policyVersion ?? 'policy_current'
+      return {
+        ok: true,
+        requestId,
+        traceId,
+        data: {
+          contractVersion: CONTRACT_VERSION,
+          requestId,
+          traceId,
+          runId: stored.run.id,
+          conversationId: stored.run.conversationId,
+          resultId: result.id,
+          semanticVersion: stored.run.semanticVersion,
+          columns: result.columns,
+          rows,
+          page: {
+            limit,
+            cursor: request.cursor,
+            nextCursor: hasMore ? `offset:${nextOffset}` : undefined,
+            hasMore,
+            totalRows: result.rows.length,
+          },
+          completeness: result.completeness,
+          warnings: result.warnings,
+          freshnessAt: result.freshnessAt,
+          queryExecution: stored.queryExecution,
+          permissionDigest,
+          policyVersion,
+          rawSqlExposed: false,
+          rawDatabaseCredentialsExposed: false,
+          audit: stored.audit,
+        },
+      }
     },
   }
 }

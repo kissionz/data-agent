@@ -42,6 +42,8 @@ import {
   type GetRunRequest,
   type ModelCapability,
   type PublicRunView,
+  type ResultPageRequest,
+  type ResultPageView,
   type SloWindow,
   type SubscriptionCadence,
   type SubmitQuestionRequest,
@@ -113,7 +115,7 @@ export function createChatBiBffRouter(
     }
   }
 
-  function envelopeStatus(envelope: ApiEnvelope<PublicRunView>, successStatus = 200): number {
+  function envelopeStatus(envelope: ApiEnvelope<PublicRunView | ResultPageView>, successStatus = 200): number {
     if (envelope.ok) return successStatus
     return httpStatusForError(envelope.error.code)
   }
@@ -157,6 +159,17 @@ export function createChatBiBffRouter(
     return {
       runId,
       conversationId: request.query?.conversation_id || request.query?.conversationId || '',
+      actor: actorFrom(request),
+    }
+  }
+
+  function resultPageRequest(request: HttpRequestLike, runId: string): ResultPageRequest {
+    const rawLimit = request.query?.limit
+    return {
+      runId,
+      conversationId: request.query?.conversation_id || request.query?.conversationId || '',
+      cursor: request.query?.cursor,
+      limit: rawLimit === undefined ? undefined : Number(rawLimit),
       actor: actorFrom(request),
     }
   }
@@ -379,6 +392,12 @@ export function createChatBiBffRouter(
 
       if (method === 'POST' && path === '/v1/questions') {
         const envelope = service.submitQuestion(questionRequest(request))
+        return withCors(respond(envelopeStatus(envelope), envelope))
+      }
+
+      const resultMatch = path.match(/^\/v1\/results\/([^/]+)$/)
+      if (method === 'GET' && resultMatch) {
+        const envelope = service.getResultPage(resultPageRequest(request, decodeURIComponent(resultMatch[1])))
         return withCors(respond(envelopeStatus(envelope), envelope))
       }
 

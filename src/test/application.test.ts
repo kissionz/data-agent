@@ -72,6 +72,45 @@ describe('ChatBI application service', () => {
     expect(second.requestId).toBe(first.requestId)
   })
 
+  it('paginates completed result rows without exposing raw SQL or credentials', () => {
+    const service = createChatBiApplicationService(() => '2026-06-23T09:00:00+08:00')
+    const created = service.submitQuestion(request('过去 12 个月净收入趋势', { conversationId: 'conversation_result_pages' }))
+    expect(created.ok).toBe(true)
+    if (!created.ok) throw new Error('expected run')
+
+    const firstPage = service.getResultPage({
+      runId: created.data.runId,
+      conversationId: created.data.conversationId,
+      actor,
+      limit: 1,
+    })
+    expect(firstPage.ok).toBe(true)
+    if (!firstPage.ok) throw new Error('expected first result page')
+    expect(firstPage.data.rows).toHaveLength(1)
+    expect(firstPage.data.page).toMatchObject({
+      limit: 1,
+      nextCursor: 'offset:1',
+      hasMore: true,
+      totalRows: 3,
+    })
+    expect(firstPage.data.rawSqlExposed).toBe(false)
+    expect(firstPage.data.rawDatabaseCredentialsExposed).toBe(false)
+    expect(firstPage.data.permissionDigest).toBe(created.data.queryExecution?.permissionDigest)
+    expect(JSON.stringify(firstPage.data)).not.toMatch(/select\s+|password|secret|jdbc:|postgres:\/\//i)
+
+    const secondPage = service.getResultPage({
+      runId: created.data.runId,
+      conversationId: created.data.conversationId,
+      actor,
+      cursor: firstPage.data.page.nextCursor,
+      limit: 2,
+    })
+    expect(secondPage.ok).toBe(true)
+    if (!secondPage.ok) throw new Error('expected second result page')
+    expect(secondPage.data.rows.map((row) => row.key)).toEqual(['2026-04', '2026-05'])
+    expect(secondPage.data.page.hasMore).toBe(false)
+  })
+
   it('holds an ambiguous run active until clarification resolves it', () => {
     const service = createChatBiApplicationService(() => '2026-06-23T09:00:00+08:00')
     const ambiguous = service.submitQuestion(request('最近销售情况怎么样', { idempotencyKey: 'ambiguous' }))

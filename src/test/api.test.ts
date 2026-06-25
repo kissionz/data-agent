@@ -55,6 +55,7 @@ describe('ChatBI local BFF router', () => {
         '/v1/model-ops/route': expect.any(Object),
         '/v1/operations/slo': expect.any(Object),
         '/v1/operations/slo/budget-evaluations': expect.any(Object),
+        '/v1/results/{runId}': expect.any(Object),
         '/v1/runs/{runId}/clarify': expect.any(Object),
         '/v1/runs/{runId}/events': expect.any(Object),
       },
@@ -70,6 +71,9 @@ describe('ChatBI local BFF router', () => {
             additionalProperties: false,
           }),
           WebhookDeliveryPlanView: expect.objectContaining({
+            additionalProperties: false,
+          }),
+          ResultPageView: expect.objectContaining({
             additionalProperties: false,
           }),
         },
@@ -201,6 +205,56 @@ describe('ChatBI local BFF router', () => {
     })
     expect(resumed.status).toBe(200)
     expect(String(resumed.body)).not.toContain(`id: ${createdData.audit[0].id}`)
+  })
+
+  it('serves cursor-paginated result pages behind the run boundary', () => {
+    const router = createChatBiBffRouter()
+    const created = router.handle({
+      method: 'POST',
+      path: '/v1/questions',
+      headers: { ...actorHeaders, 'idempotency-key': 'api_result_pages' },
+      body: submitBody('过去 12 个月净收入趋势', 'conversation_result_pages_api'),
+    })
+    const createdData = (created.body as { data: { runId: string; conversationId: string } }).data
+
+    const firstPage = router.handle({
+      method: 'GET',
+      path: `/v1/results/${createdData.runId}`,
+      headers: actorHeaders,
+      query: { conversation_id: createdData.conversationId, limit: '1' },
+    })
+    expect(firstPage.status).toBe(200)
+    expect(firstPage.body).toMatchObject({
+      ok: true,
+      data: {
+        runId: createdData.runId,
+        rows: [{ key: '2026-03' }],
+        page: { limit: 1, nextCursor: 'offset:1', hasMore: true, totalRows: 3 },
+        rawSqlExposed: false,
+        rawDatabaseCredentialsExposed: false,
+      },
+    })
+
+    const firstPageData = (firstPage.body as { data: { page: { nextCursor: string } } }).data
+    const secondPage = router.handle({
+      method: 'GET',
+      path: `/v1/results/${createdData.runId}`,
+      headers: actorHeaders,
+      query: { conversation_id: createdData.conversationId, cursor: firstPageData.page.nextCursor, limit: '2' },
+    })
+    expect(secondPage.status).toBe(200)
+    expect((secondPage.body as { data: { rows: Array<{ key: string }>; page: { hasMore: boolean } } }).data.rows.map((row) => row.key))
+      .toEqual(['2026-04', '2026-05'])
+    expect((secondPage.body as { data: { page: { hasMore: boolean } } }).data.page.hasMore).toBe(false)
+
+    const denied = router.handle({
+      method: 'GET',
+      path: `/v1/results/${createdData.runId}`,
+      headers: { ...actorHeaders, 'x-workspace-id': 'other_workspace' },
+      query: { conversation_id: createdData.conversationId, limit: '1' },
+    })
+    expect(denied.status).toBe(403)
+    expect(JSON.stringify(denied.body)).not.toMatch(/2026-03|net_revenue|SELECT/i)
   })
 
   it('keeps event streams behind the same workspace boundary', () => {

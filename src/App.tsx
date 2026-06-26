@@ -46,6 +46,7 @@ import type { ActorContext, PublicRunView } from './contracts'
 type Page = 'workbench' | 'semantic' | 'dataSources' | 'collaboration' | 'operations'
 type RunStatus = 'waiting_input' | 'understanding' | 'querying' | 'completed' | 'needs_clarification' | 'failed'
 type ResultView = 'chart' | 'table' | 'evidence'
+type ResultPayload = NonNullable<PublicRunView['result']>
 
 const WORKBENCH_SNAPSHOT_KEY = 'insightflow.workbench.snapshot.v1'
 
@@ -559,7 +560,7 @@ function AnswerResult({ runView, view, onView, onExport, feedback, onFeedback, o
         <button role="tab" aria-selected={view === 'evidence'} className={view === 'evidence' ? 'active' : ''} onClick={() => onView('evidence')}><IconShieldCheck size={17} /> 口径与来源</button>
       </div>
 
-      {view === 'chart' && <RevenueChart />}
+      {view === 'chart' && <RevenueChart runView={runView} />}
       {view === 'table' && <RevenueTable runView={runView} />}
       {view === 'evidence' && <EvidencePanel />}
 
@@ -584,20 +585,74 @@ function AnswerResult({ runView, view, onView, onExport, feedback, onFeedback, o
   )
 }
 
-function RevenueChart() {
+function RevenueChart({ runView }: { runView: PublicRunView | null }) {
+  const result = runView?.result
+  const chartRows = result ? resultRowsToChartData(result) : revenueData.map((row) => ({
+    label: row.month,
+    value: row.revenue,
+  }))
+  const spec = result?.chartSpec
+  const yAxisColumn = result && spec?.yAxisColumnIds[0]
+    ? result.columns.find((column) => column.id === spec.yAxisColumnIds[0])
+    : undefined
+  const unitLabel = yAxisColumn ? chartUnitLabel(yAxisColumn) : '万元'
+
+  if (result && (spec?.type === 'table' || chartRows.length === 0)) {
+    return (
+      <div className="chart-wrap chart-empty" role="note">
+        <strong>{spec?.title ?? '当前结果不适合绘制图表'}</strong>
+        <span>{spec?.description ?? '请切换到数据表查看完整结果。'}</span>
+      </div>
+    )
+  }
+
   return (
-    <div className="chart-wrap" aria-label="2025 年净收入月度趋势图">
+    <div className="chart-wrap" aria-label={spec ? `${spec.title}，${spec.description}` : '2025 年净收入月度趋势图'}>
+      {spec && (
+        <p className="chart-caption">
+          {spec.title} · 来自校验图表规格 · {spec.safety.warnings.length ? spec.safety.warnings.join('；') : '轴字段与结果列已校验'}
+        </p>
+      )}
       <ResponsiveContainer width="100%" height={286} minWidth={0}>
-        <LineChart data={revenueData} margin={{ top: 16, right: 16, left: 4, bottom: 4 }}>
+        <LineChart data={chartRows} margin={{ top: 16, right: 16, left: 4, bottom: 4 }}>
           <CartesianGrid vertical={false} stroke="#E4E9F0" strokeDasharray="3 3" />
-          <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: '#667085', fontSize: 12 }} />
-          <YAxis axisLine={false} tickLine={false} width={42} tick={{ fill: '#667085', fontSize: 12 }} unit="万" />
-          <Tooltip contentStyle={{ border: '1px solid #E4E9F0', borderRadius: 8, boxShadow: '0 8px 24px rgba(16,24,40,.12)' }} formatter={(value) => [`${value} 万元`, '净收入']} />
-          <Line type="monotone" dataKey="revenue" stroke="#146EF5" strokeWidth={2.5} dot={{ r: 3, fill: '#fff', strokeWidth: 2 }} activeDot={{ r: 5 }} />
+          <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: '#667085', fontSize: 12 }} />
+          <YAxis axisLine={false} tickLine={false} width={42} tick={{ fill: '#667085', fontSize: 12 }} unit={unitLabel === '万元' ? '万' : unitLabel} />
+          <Tooltip contentStyle={{ border: '1px solid #E4E9F0', borderRadius: 8, boxShadow: '0 8px 24px rgba(16,24,40,.12)' }} formatter={(value) => [`${value} ${unitLabel}`.trim(), yAxisColumn?.label ?? '净收入']} />
+          <Line type="monotone" dataKey="value" stroke="#146EF5" strokeWidth={2.5} dot={{ r: 3, fill: '#fff', strokeWidth: 2 }} activeDot={{ r: 5 }} />
         </LineChart>
       </ResponsiveContainer>
     </div>
   )
+}
+
+function resultRowsToChartData(result: ResultPayload): Array<{ label: string; value: number }> {
+  const spec = result.chartSpec
+  const xColumnId = spec.xAxisColumnId
+  const yColumnId = spec.yAxisColumnIds[0]
+  if (!xColumnId || !yColumnId || spec.type === 'table') return []
+
+  const yAxisColumn = result.columns.find((column) => column.id === yColumnId)
+  return result.rows.flatMap((row) => {
+    const rawValue = row.values[yColumnId]
+    if (typeof rawValue !== 'number') return []
+    return [{
+      label: String(row.values[xColumnId] ?? row.key),
+      value: chartDisplayValue(rawValue, yAxisColumn),
+    }]
+  })
+}
+
+function chartDisplayValue(value: number, column: ResultPayload['columns'][number] | undefined): number {
+  if (column?.type === 'currency' && column.unit === 'CNY') return Math.round(value / 100) / 100
+  if (column?.type === 'percentage') return Math.round(value * 10000) / 100
+  return value
+}
+
+function chartUnitLabel(column: ResultPayload['columns'][number]): string {
+  if (column.type === 'currency' && column.unit === 'CNY') return '万元'
+  if (column.type === 'percentage') return '%'
+  return column.unit ?? ''
 }
 
 function RevenueTable({ runView }: { runView: PublicRunView | null }) {

@@ -59,10 +59,27 @@ export interface ResultRow {
   values: Record<string, string | number | null>
 }
 
+export type ResultChartType = 'line' | 'bar' | 'table'
+
+export interface ResultChartSpec {
+  id: string
+  title: string
+  description: string
+  type: ResultChartType
+  xAxisColumnId?: string
+  yAxisColumnIds: string[]
+  source: 'validated_result_spec'
+  safety: {
+    grounded: boolean
+    warnings: string[]
+  }
+}
+
 export interface RunResult {
   id: string
   columns: ResultColumn[]
   rows: ResultRow[]
+  chartSpec: ResultChartSpec
   completeness: ResultCompleteness
   incompleteSteps: string[]
   warnings: string[]
@@ -299,9 +316,41 @@ export function assertResultIntegrity(result: RunResult): void {
   if (result.completeness === 'partial' && result.warnings.length === 0) {
     throw new Error('A partial result must explain its incomplete state')
   }
+  assertChartSpecIntegrity(result)
   const grounding = validateResultGrounding(result)
   if (!grounding.grounded) {
     throw new Error(grounding.mismatches[0] ?? 'Result answer is not grounded in the result set')
+  }
+}
+
+export function assertChartSpecIntegrity(result: RunResult): void {
+  const columnsById = new Map(result.columns.map((column) => [column.id, column]))
+  const spec = result.chartSpec
+
+  if (spec.source !== 'validated_result_spec') throw new Error('Chart spec must be produced by the validator')
+
+  if (spec.type === 'table') {
+    if (spec.yAxisColumnIds.length > 0) throw new Error('Table chart spec cannot define y-axis columns')
+    return
+  }
+
+  if (!spec.xAxisColumnId || !columnsById.has(spec.xAxisColumnId)) {
+    throw new Error('Chart spec references a missing x-axis column')
+  }
+
+  if (spec.yAxisColumnIds.length === 0) throw new Error('Chart spec requires at least one y-axis column')
+
+  for (const columnId of spec.yAxisColumnIds) {
+    const column = columnsById.get(columnId)
+    if (!column) throw new Error('Chart spec references a missing y-axis column')
+    if (column.type !== 'number' && column.type !== 'currency' && column.type !== 'percentage') {
+      throw new Error('Chart spec y-axis column must be numeric')
+    }
+  }
+
+  if (spec.type === 'line') {
+    const xAxisColumn = columnsById.get(spec.xAxisColumnId)
+    if (xAxisColumn?.type !== 'date') throw new Error('Line chart spec requires a date x-axis')
   }
 }
 

@@ -132,6 +132,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .result-toolbar button:hover { color: var(--ink); }
 .result-toolbar button.active { color: #0b57d0; border-bottom-color: var(--blue); font-weight: 600; }
 .chart-wrap { margin-top: 10px; width: 100%; min-height: 286px; }
+.chart-caption { margin: 0 0 -6px; color: var(--subtle); font-size: 11px; line-height: 17px; }
+.chart-empty { min-height: 160px; display: grid; place-content: center; justify-items: center; gap: 5px; border: 1px dashed #cfd8e6; border-radius: 8px; color: var(--muted); background: #fbfcfe; text-align: center; }
+.chart-empty strong { color: var(--ink); font-size: 14px; }
+.chart-empty span { max-width: 46ch; font-size: 12px; line-height: 19px; }
 .table-scroll { overflow-x: auto; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
 .data-table th, .data-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }

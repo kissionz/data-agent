@@ -64,7 +64,8 @@ describe('Accessibility acceptance', () => {
   it('pairs chart summaries with a keyboard-reachable data table alternative', () => {
     render(<App />)
 
-    expect(screen.getByLabelText('2025 年净收入月度趋势图')).toBeInTheDocument()
+    expect(screen.getByLabelText(/净收入月度趋势/)).toBeInTheDocument()
+    expect(screen.getByText(/来自校验图表规格/)).toBeInTheDocument()
     const tableTab = screen.getByRole('tab', { name: /数据表/ })
     tableTab.focus()
     expect(tableTab).toHaveFocus()

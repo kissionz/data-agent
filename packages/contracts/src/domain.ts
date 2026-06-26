@@ -59,10 +59,27 @@ export interface ResultRow {
   values: Record<string, string | number | null>
 }
 
+export type ResultChartType = 'line' | 'bar' | 'table'
+
+export interface ResultChartSpec {
+  id: string
+  title: string
+  description: string
+  type: ResultChartType
+  xAxisColumnId?: string
+  yAxisColumnIds: string[]
+  source: 'validated_result_spec'
+  safety: {
+    grounded: boolean
+    warnings: string[]
+  }
+}
+
 export interface RunResult {
   id: string
   columns: ResultColumn[]
   rows: ResultRow[]
+  chartSpec: ResultChartSpec
   completeness: ResultCompleteness
   incompleteSteps: string[]
   warnings: string[]

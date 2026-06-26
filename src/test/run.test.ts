@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   InvalidRunTransitionError,
   RUN_DISPLAY_STATUSES,
+  assertChartSpecIntegrity,
   assertResultIntegrity,
   createWaitingRun,
   transitionRun,
@@ -121,6 +122,24 @@ describe('Run six-state contract', () => {
       recommendedVisualization: 'table',
     })
     expect(report.chartSafety.warnings[0]).toContain('Empty result')
+  })
+
+  it('requires chart specs to reference existing typed result columns', () => {
+    expect(() => assertChartSpecIntegrity({
+      ...trendResult,
+      chartSpec: {
+        ...trendResult.chartSpec,
+        yAxisColumnIds: ['month'],
+      },
+    })).toThrow('y-axis column must be numeric')
+
+    expect(() => assertChartSpecIntegrity({
+      ...trendResult,
+      chartSpec: {
+        ...trendResult.chartSpec,
+        xAxisColumnId: 'missing_month',
+      },
+    })).toThrow('missing x-axis column')
   })
 
   it('only resolves a clarification with the bound candidate version', () => {

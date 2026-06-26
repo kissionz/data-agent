@@ -33,7 +33,7 @@
 - 模型运营服务：`/v1/model-ops` 支持模型路由列表、单次路由决策和灰度回滚，服务层覆盖版本化 active/candidate、超时、温度、租户覆盖、配额、降级链、发布门禁阻断和 platform_ops/security_admin 回滚权限。
 - SLO 与性能预算服务：`/v1/operations/slo` 支持 SLO 报告和单次 Run 性能预算评估，服务层覆盖可用性、P95 延迟、成本、取消传播、扫描量、告警 runbook 和 allow/warn/block 决策。
 - 查询取消契约：`QueryExecutionSummary` 暴露 public-safe 取消 token、传播目标、3 秒 deadline 和传播状态，`cancelRun` 会把已有执行摘要标记为 `cancelled` 且不暴露结果。
-- 协作资产服务：`/v1/assets` 支持资产列表、收藏、订阅和审计链路，服务层覆盖可见范围过滤、审核中不可订阅、接收者重新鉴权摘要和 public audit event。
+- 协作资产服务：`/v1/assets` 支持资产列表、收藏、重命名、订阅、通知计划和审计链路，服务层覆盖可见范围过滤、重命名权限、审核中不可订阅、接收者重新鉴权摘要、通知不携带明细行、水印要求和 public audit event。
 - 本地编译执行边界：Analysis IR 经语义 Catalog / Join Graph 校验后生成只读 SQL 计划，注入租户/工作区/业务域守卫，并产出 SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。
 - 持久化端口：conversation、run、idempotency 和 audit events 已抽象为 repository interface，并提供内存 adapter、本地 JSON 文件 adapter、SQL migration、versioned migration runner、可替换 SQL adapter 与 retention cleanup planner/executor；审计事件在 SQL adapter 中单独落表并拥有 run/scope 索引，默认留存策略覆盖问题/IR/SQL 指纹 180 天、结果摘要 30 天、原始结果 7 天、敏感样本 3 天、审计 365 天。
@@ -143,7 +143,9 @@ pnpm build
 - `POST /v1/operations/slo/budget-evaluations`
 - `GET /v1/assets`
 - `POST /v1/assets/{assetId}/favorite`
+- `POST /v1/assets/{assetId}/rename`
 - `POST /v1/assets/{assetId}/subscription`
+- `POST /v1/assets/{assetId}/notification-plan`
 - `GET /v1/assets/{assetId}/audit`
 
 本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、结果 cursor 分页、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、异步大文件导出任务、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和由 `@insightflow/contracts/openapi` 导出的 OpenAPI 草案；OpenAPI 已包含公共错误包络与 Run/Result 响应 envelope。持久化目前有内存 adapter、本地 JSON 文件 adapter、SQL migration、versioned migration runner、retention cleanup executor 与可替换 SQL adapter；文件 adapter 使用临时文件 + rename 做原子替换，SQL adapter 将 conversation、run、idempotency 和 audit events 拆表，适合作为 SQLite/PostgreSQL driver 接入点。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、具体 PostgreSQL/Redis driver 和网关部署。

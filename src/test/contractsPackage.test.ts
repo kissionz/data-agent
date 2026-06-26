@@ -66,6 +66,8 @@ describe('@insightflow/contracts package entry', () => {
     expect(openApiDocumentFromSubpath.paths['/v1/data-sources/{dataSourceId}/lineage']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/data-sources/{dataSourceId}/schema-review']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/sharing/exports/{exportId}']).toEqual(expect.any(Object))
+    expect(openApiDocumentFromSubpath.paths['/v1/assets/{assetId}/rename']).toEqual(expect.any(Object))
+    expect(openApiDocumentFromSubpath.paths['/v1/assets/{assetId}/notification-plan']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/developer/api-keys/{keyId}/rotate']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/developer/webhooks/{webhookId}/deliveries']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.components.securitySchemes.bearerAuth).toMatchObject({

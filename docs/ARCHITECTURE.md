@@ -46,7 +46,7 @@
 
 数据源中心当前是 F02 的前端 + 服务治理切片：用 fixture 表达只读连接、凭据引用、元数据目录、字段分类、样本策略、质量门禁和同步记录，并通过组件测试锁定筛选与连接测试反馈。`DataSourceApplicationService` 进一步把 actor 可见范围过滤、只读 credential ref、元数据详情、连接测试、质量门禁状态和受限字段样本策略接入 `/v1/data-sources` API，且 public view 不暴露真实凭据。字段级血缘通过 `/v1/data-sources/{id}/lineage` 暴露上游来源、下游认证指标/看板/验证案例和字段引用；Schema 变更审批通过 `/v1/data-sources/{id}/schema-review` 进行 deterministic 门禁，删除影响 P0 认证指标的字段会阻断，低风险新增字段可批准。它尚未接入真实连接器、扫描调度、真实血缘采集、枚举采样、审批流落库或数据源持久化；这些能力应在后续 `DataSourceService` 与 `MetadataScanner` adapter 中落地。
 
-协作资产中心当前是 F12 的前端 + 服务治理切片：用 fixture 表达会话资产、验证案例、问题模板和订阅，展示收藏、归档、分享范围、订阅频率、审核人、版本快照和审计事件，并通过组件测试锁定搜索、状态筛选、收藏反馈和审核中不可订阅规则。`CollaborationAssetApplicationService` 进一步把列表过滤、收藏更新、审核中/归档不可订阅、接收者重新鉴权摘要和 public audit event 接入 `/v1/assets` API。它尚未接入真实资产持久化、分享链接、通知发送、订阅调度或导出文件生成；这些能力应在后续 `CollaborationAssetService`、`ShareAuthorization` 与 `NotificationScheduler` adapter 中落地。
+协作资产中心当前是 F12 的前端 + 服务治理切片：用 fixture 表达会话资产、验证案例、问题模板和订阅，展示收藏、归档、分享范围、订阅频率、审核人、版本快照和审计事件，并通过组件测试锁定搜索、状态筛选、收藏反馈和审核中不可订阅规则。`CollaborationAssetApplicationService` 进一步把列表过滤、收藏更新、重命名权限、审核中/归档不可订阅、接收者重新鉴权摘要、订阅通知计划和 public audit event 接入 `/v1/assets` API。通知计划不会发送真实消息，但会声明接收者重新鉴权、明细行不入载荷、水印要求和阻断原因。它尚未接入真实资产持久化、分享链接、真实通知发送、生产订阅调度或导出文件生成；这些能力应在后续 `CollaborationAssetService`、`ShareAuthorization` 与 `NotificationScheduler` adapter 中落地。
 
 导出分享当前是 F08 的服务治理切片：`SharingExportApplicationService` 在导出前调用身份策略裁决，检查 100k 行/50MB 在线预算、受限分类阻断、脱敏规则、水印文本和短期下载链接预览；超过在线阈值的任务会返回 `queued`、异步队列名、状态 URL、预计就绪时间和 `requiresAuditApproval=true`，并可通过 `/v1/sharing/exports/{id}` 查询；工作台 CSV 下载会调用该服务并把水印、策略版本、权限摘要、脱敏规则和审计事件写入文件；分享只保存 run/asset 引用，不保存高权限结果快照，接收者打开时按自身身份重新鉴权。它尚未生成真实 XLSX/PDF/PNG 文件、生产对象存储结果、生产水印或异步 worker。
 

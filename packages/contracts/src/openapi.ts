@@ -535,6 +535,19 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/assets/{assetId}/rename': {
+      post: {
+        summary: '重命名协作资产',
+        description: '仅分析师、指标管理员或平台运维可重命名活跃资产；审核中和归档资产不能重命名。',
+        parameters: [{ name: 'assetId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '资产已重命名' },
+          400: { description: '名称长度无效或资产状态不允许重命名' },
+          403: { description: '角色无权重命名' },
+          404: { description: '资产不存在或不可见' },
+        },
+      },
+    },
     '/v1/assets/{assetId}/subscription': {
       post: {
         summary: '更新协作资产订阅',
@@ -543,6 +556,17 @@ export const openApiDocument = {
         responses: {
           200: { description: '订阅状态已更新' },
           400: { description: '订阅频率无效或资产状态不允许订阅' },
+          404: { description: '资产不存在或不可见' },
+        },
+      },
+    },
+    '/v1/assets/{assetId}/notification-plan': {
+      post: {
+        summary: '生成协作资产订阅通知计划',
+        description: '不会发送真实通知；返回接收者重新鉴权、水印、明细行排除和阻断原因。',
+        parameters: [{ name: 'assetId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '通知计划或阻断计划已生成' },
           404: { description: '资产不存在或不可见' },
         },
       },

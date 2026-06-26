@@ -588,7 +588,7 @@ export function createChatBiBffRouter(
         return withCors(respond(httpStatusForAssetEnvelope(envelope), envelope))
       }
 
-      const assetMatch = path.match(/^\/v1\/assets\/([^/]+)(?:\/(favorite|subscription|audit))?$/)
+      const assetMatch = path.match(/^\/v1\/assets\/([^/]+)(?:\/(favorite|rename|subscription|notification-plan|audit))?$/)
       if (assetMatch) {
         const [, pathAssetId, action] = assetMatch
         const assetId = assetIdFrom(pathAssetId)
@@ -605,12 +605,24 @@ export function createChatBiBffRouter(
           })
           return withCors(respond(httpStatusForAssetEnvelope(envelope), envelope))
         }
+        if (method === 'POST' && action === 'rename') {
+          const envelope = assets.renameAsset({
+            actor: actorFrom(request),
+            assetId,
+            title: String(body.title ?? ''),
+          })
+          return withCors(respond(httpStatusForAssetEnvelope(envelope), envelope))
+        }
         if (method === 'POST' && action === 'subscription') {
           const envelope = assets.updateSubscription({
             actor: actorFrom(request),
             assetId,
             cadence: (body.cadence || 'none') as SubscriptionCadence,
           })
+          return withCors(respond(httpStatusForAssetEnvelope(envelope), envelope))
+        }
+        if (method === 'POST' && action === 'notification-plan') {
+          const envelope = assets.planNotification({ actor: actorFrom(request), assetId })
           return withCors(respond(httpStatusForAssetEnvelope(envelope), envelope))
         }
       }

@@ -5,11 +5,14 @@ import {
   validateActor,
   validationError,
   type ApiEnvelope,
+  type AssetNotificationPlan,
   type CollaborationAssetView,
   type CollaborationAuditEvent,
   type GetAssetAuditRequest,
   type ListAssetsRequest,
+  type PlanAssetNotificationRequest,
   type PublicApiError,
+  type RenameAssetRequest,
   type SubscriptionCadence,
   type UpdateAssetFavoriteRequest,
   type UpdateAssetSubscriptionRequest,
@@ -18,7 +21,9 @@ import {
 export interface CollaborationAssetApplicationService {
   listAssets(request: ListAssetsRequest): ApiEnvelope<{ items: CollaborationAssetView[]; total: number }>
   updateFavorite(request: UpdateAssetFavoriteRequest): ApiEnvelope<CollaborationAssetView>
+  renameAsset(request: RenameAssetRequest): ApiEnvelope<CollaborationAssetView>
   updateSubscription(request: UpdateAssetSubscriptionRequest): ApiEnvelope<CollaborationAssetView>
+  planNotification(request: PlanAssetNotificationRequest): ApiEnvelope<AssetNotificationPlan>
   getAudit(request: GetAssetAuditRequest): ApiEnvelope<{ assetId: string; events: CollaborationAuditEvent[] }>
 }
 
@@ -65,6 +70,10 @@ export function createCollaborationAssetApplicationService(
     if (asset.isArchived) return request.actor.roles.some((role) => ['analyst', 'metric_admin', 'security_admin'].includes(role))
     if (asset.status === 'review') return request.actor.roles.some((role) => ['analyst', 'metric_admin'].includes(role))
     return asset.shareScope !== 'external_blocked'
+  }
+
+  function canManageAsset(request: { actor: ListAssetsRequest['actor'] }) {
+    return request.actor.roles.some((role) => ['analyst', 'metric_admin', 'platform_ops'].includes(role))
   }
 
   function audit(type: CollaborationAuditEvent['type'], request: { actor: ListAssetsRequest['actor'] }, assetId: string, summary: string) {
@@ -160,6 +169,28 @@ export function createCollaborationAssetApplicationService(
       return success(view(asset))
     },
 
+    renameAsset(request) {
+      const invalid = actorFailure(request)
+      if (invalid) return invalid
+      const asset = findVisibleAsset(request.assetId, request)
+      if (!asset) return failure(notFound(request.assetId))
+      if (!canManageAsset(request)) {
+        return failure({
+          code: 'PERMISSION_DENIED',
+          message: '无权重命名协作资产',
+          retryable: false,
+          debugReference: `asset_rename_${asset.id}`,
+        })
+      }
+      const title = request.title.trim()
+      if (title.length < 4 || title.length > 80) return failure(validationError('资产名称长度必须在 4 到 80 个字符之间'))
+      if (asset.status !== 'active') return failure(validationError('仅活跃资产允许重命名'))
+      asset.title = title
+      asset.updatedAt = now()
+      audit('asset.renamed', request, asset.id, `协作资产已重命名为：${title}。`)
+      return success(view(asset))
+    },
+
     updateSubscription(request) {
       const invalid = actorFailure(request)
       if (invalid) return invalid
@@ -184,6 +215,46 @@ export function createCollaborationAssetApplicationService(
       return success(view(asset))
     },
 
+    planNotification(request) {
+      const invalid = actorFailure(request)
+      if (invalid) return invalid
+      const asset = findVisibleAsset(request.assetId, request)
+      if (!asset) return failure(notFound(request.assetId))
+      const blockedReasons = [
+        asset.status !== 'active' ? '非活跃资产不能发送订阅通知。' : '',
+        asset.subscriptionCadence === 'none' ? '资产未开启订阅。' : '',
+        asset.shareScope === 'external_blocked' ? '分享范围阻断外发通知。' : '',
+      ].filter(Boolean)
+      audit(
+        'asset.notification_planned',
+        request,
+        asset.id,
+        blockedReasons.length ? `通知计划被阻断：${blockedReasons.join('；')}` : `通知计划已生成，接收者 ${asset.subscribers} 人需重新鉴权。`,
+      )
+      return success({
+        contractVersion: CONTRACT_VERSION,
+        assetId: asset.id,
+        cadence: asset.subscriptionCadence,
+        recipientCount: blockedReasons.length ? 0 : asset.subscribers,
+        delivery: {
+          channel: asset.subscriptionCadence === 'threshold' ? 'in_app' : 'email_digest',
+          nextAttemptAt: nextNotificationAt(asset.subscriptionCadence, now()),
+          requiresRecipientReauth: true,
+          payloadIncludesRows: false,
+          watermarkedExportRequired: asset.watermarkedExport,
+        },
+        guards: [
+          'active_asset',
+          'subscription_enabled',
+          'recipient_reauth',
+          'workspace_scope',
+          ...(asset.watermarkedExport ? ['watermark' as const] : []),
+        ],
+        blockedReasons,
+        audit: view(asset).audit,
+      })
+    },
+
     getAudit(request) {
       const invalid = actorFailure(request)
       if (invalid) return invalid
@@ -197,6 +268,14 @@ export function createCollaborationAssetApplicationService(
 
 export function isSubscriptionCadence(value: unknown): value is SubscriptionCadence {
   return value === 'daily' || value === 'weekly' || value === 'threshold' || value === 'none'
+}
+
+function nextNotificationAt(cadence: SubscriptionCadence, baseIso: string) {
+  const base = new Date(baseIso)
+  if (Number.isNaN(base.getTime())) return baseIso
+  const days = cadence === 'daily' ? 1 : cadence === 'weekly' ? 7 : cadence === 'threshold' ? 0 : 0
+  base.setUTCDate(base.getUTCDate() + days)
+  return base.toISOString()
 }
 
 export function httpStatusForAssetEnvelope<T>(envelope: ApiEnvelope<T>) {

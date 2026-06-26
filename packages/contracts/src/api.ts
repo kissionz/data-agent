@@ -182,8 +182,10 @@ export interface CollaborationAuditEvent {
   type:
     | 'asset.listed'
     | 'asset.favorite_updated'
+    | 'asset.renamed'
     | 'asset.subscription_updated'
     | 'asset.subscription_blocked'
+    | 'asset.notification_planned'
     | 'asset.audit_viewed'
   actorUserId: string
   tenantId: string
@@ -238,6 +240,34 @@ export interface UpdateAssetSubscriptionRequest {
   actor: ActorContext
   assetId: string
   cadence: SubscriptionCadence
+}
+
+export interface RenameAssetRequest {
+  actor: ActorContext
+  assetId: string
+  title: string
+}
+
+export interface PlanAssetNotificationRequest {
+  actor: ActorContext
+  assetId: string
+}
+
+export interface AssetNotificationPlan {
+  contractVersion: typeof CONTRACT_VERSION
+  assetId: string
+  cadence: SubscriptionCadence
+  recipientCount: number
+  delivery: {
+    channel: 'in_app' | 'email_digest'
+    nextAttemptAt: string
+    requiresRecipientReauth: true
+    payloadIncludesRows: false
+    watermarkedExportRequired: boolean
+  }
+  guards: Array<'active_asset' | 'subscription_enabled' | 'recipient_reauth' | 'workspace_scope' | 'watermark'>
+  blockedReasons: string[]
+  audit: CollaborationAuditEvent[]
 }
 
 export interface GetAssetAuditRequest {

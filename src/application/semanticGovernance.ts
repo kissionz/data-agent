@@ -9,10 +9,15 @@ import {
   type GetSemanticMetricRequest,
   type JoinGraphEdgeView,
   type ListSemanticMetricsRequest,
+  type PlanSemanticMetricReleaseRequest,
   type PublicApiError,
+  type ReconcileSemanticMetricRequest,
+  type RollbackSemanticMetricRequest,
   type SemanticDimensionGovernanceView,
   type SemanticGovernanceAuditEvent,
   type SemanticMetricGovernanceView,
+  type SemanticMetricReleasePlanView,
+  type SemanticReferenceReconciliationView,
   type SubmitSemanticMetricReviewRequest,
 } from '../contracts'
 
@@ -25,7 +30,10 @@ export interface SemanticGovernanceApplicationService {
   }>
   getMetric(request: GetSemanticMetricRequest): ApiEnvelope<SemanticMetricGovernanceView>
   submitForReview(request: SubmitSemanticMetricReviewRequest): ApiEnvelope<SemanticMetricGovernanceView>
+  reconcileReferenceSql(request: ReconcileSemanticMetricRequest): ApiEnvelope<SemanticReferenceReconciliationView>
   certifyMetric(request: CertifySemanticMetricRequest): ApiEnvelope<SemanticMetricGovernanceView>
+  planRelease(request: PlanSemanticMetricReleaseRequest): ApiEnvelope<SemanticMetricReleasePlanView>
+  rollbackMetric(request: RollbackSemanticMetricRequest): ApiEnvelope<SemanticMetricGovernanceView>
 }
 
 export interface SemanticGovernanceApplicationOptions {
@@ -39,6 +47,8 @@ export function createSemanticGovernanceApplicationService(
   let sequence = 0
   const metrics = catalogMetrics.map((metric) => ({ ...metric, immutableVersion: true, certifiedBy: undefined as string | undefined }))
   const auditEvents = new Map<string, SemanticGovernanceAuditEvent[]>()
+  const reconciliations = new Map<string, SemanticReferenceReconciliationView>()
+  const releasePlans = new Map<string, SemanticMetricReleasePlanView>()
 
   function nextId(prefix: string) {
     sequence += 1
@@ -73,6 +83,10 @@ export function createSemanticGovernanceApplicationService(
 
   function canManage(actor: ListSemanticMetricsRequest['actor']) {
     return actor.roles.some((role) => ['metric_admin', 'data_admin', 'platform_ops'].includes(role))
+  }
+
+  function canRollback(actor: ListSemanticMetricsRequest['actor']) {
+    return actor.roles.some((role) => ['metric_admin', 'platform_ops', 'security_admin'].includes(role))
   }
 
   function canSee(metric: CatalogMetric, actor: ListSemanticMetricsRequest['actor']) {
@@ -130,6 +144,8 @@ export function createSemanticGovernanceApplicationService(
   function view(metric: typeof metrics[number]): SemanticMetricGovernanceView {
     const reasons = blockingReasons(metric)
     const joinReasons = joinGraphRiskReasons(metric)
+    const reconciliation = reconciliations.get(metric.id)
+    const releasePlan = releasePlans.get(metric.id)
     return {
       contractVersion: CONTRACT_VERSION,
       id: metric.id,
@@ -144,13 +160,41 @@ export function createSemanticGovernanceApplicationService(
       immutableVersion: metric.immutableVersion,
       canUseInTrustedMode: metric.lifecycle === 'certified',
       releaseReadiness: {
-        referenceSqlReconciled: metric.lifecycle === 'certified',
+        referenceSqlReconciled: metric.lifecycle === 'certified' || reconciliation?.status === 'passed',
         approvedJoinGraph: joinReasons.length === 0,
         certifiedBy: metric.certifiedBy,
         blockingReasons: [...reasons, ...joinReasons],
+        reconciliation: reconciliation
+          ? {
+              status: reconciliation.status,
+              maxDeltaPct: reconciliation.maxDeltaPct,
+              comparedRows: reconciliation.comparedRows,
+              tolerancePct: reconciliation.tolerancePct,
+            }
+          : { status: 'not_run' },
+        releasePlan: releasePlan
+          ? {
+              status: releasePlan.status,
+              rolloutPercentages: releasePlan.stages.map((stage) => stage.percentage),
+              rollbackThresholds: releasePlan.automaticRollback.rollbackThresholds,
+            }
+          : {
+              status: 'not_planned',
+              rolloutPercentages: [],
+              rollbackThresholds: [],
+            },
       },
       audit: auditEvents.get(metric.id) ?? [],
     }
+  }
+
+  function rolloutPercentages(request: PlanSemanticMetricReleaseRequest) {
+    const percentages = request.rolloutPercentages && request.rolloutPercentages.length > 0
+      ? request.rolloutPercentages
+      : [5, 20, 50, 100]
+    const invalid = percentages.some((percentage) => percentage <= 0 || percentage > 100)
+    if (invalid) return undefined
+    return percentages
   }
 
   function dimensions(actor: ListSemanticMetricsRequest['actor']): SemanticDimensionGovernanceView[] {
@@ -224,6 +268,38 @@ export function createSemanticGovernanceApplicationService(
       return success(view(metric))
     },
 
+    reconcileReferenceSql(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      if (!canManage(request.actor)) return failure({ code: 'PERMISSION_DENIED', message: '无权执行参考 SQL 对账', retryable: false, debugReference: 'semantic_reconcile_role' })
+      const metric = findVisible(request.metricId, request)
+      if (!metric) return failure(notFound(request.metricId))
+      if (request.tolerancePct < 0 || request.comparedRows < 1 || request.maxDeltaPct < 0) return failure(validationError('对账容差、样本行数和最大偏差必须有效'))
+      const passed = request.maxDeltaPct <= request.tolerancePct
+      audit(
+        passed ? 'semantic.reference_reconciled' : 'semantic.release_blocked',
+        request,
+        metric.id,
+        passed
+          ? `参考 SQL 自动对账通过：${request.comparedRows} 行，最大偏差 ${request.maxDeltaPct}%。`
+          : `参考 SQL 自动对账失败：最大偏差 ${request.maxDeltaPct}% 超过容差 ${request.tolerancePct}%。`,
+      )
+      const result: SemanticReferenceReconciliationView = {
+        contractVersion: CONTRACT_VERSION,
+        metricId: metric.id,
+        status: passed ? 'passed' : 'failed',
+        referenceSqlFingerprint: request.referenceSqlFingerprint,
+        compiledSqlFingerprint: request.compiledSqlFingerprint,
+        tolerancePct: request.tolerancePct,
+        comparedRows: request.comparedRows,
+        maxDeltaPct: request.maxDeltaPct,
+        blocksCertification: !passed,
+        audit: auditEvents.get(metric.id) ?? [],
+      }
+      reconciliations.set(metric.id, result)
+      return success(result)
+    },
+
     certifyMetric(request) {
       const invalid = invalidActor(request)
       if (invalid) return invalid
@@ -231,7 +307,8 @@ export function createSemanticGovernanceApplicationService(
       const metric = findVisible(request.metricId, request)
       if (!metric) return failure(notFound(request.metricId))
       if (metric.lifecycle !== 'review') return failure(validationError('只有评审中的指标可以认证'))
-      if (!request.referenceSqlReconciled) {
+      const reconciliationPassed = reconciliations.get(metric.id)?.status === 'passed'
+      if (!request.referenceSqlReconciled && !reconciliationPassed) {
         audit('semantic.release_blocked', request, metric.id, '参考 SQL 对账未通过，认证发布被阻断。')
         return failure({
           code: 'VALIDATION_FAILED',
@@ -253,6 +330,68 @@ export function createSemanticGovernanceApplicationService(
       metric.lifecycle = 'certified'
       metric.certifiedBy = request.actor.userId
       audit('semantic.metric_certified', request, metric.id, `指标已认证发布：${request.note || '无备注'}。`)
+      return success(view(metric))
+    },
+
+    planRelease(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      if (!canManage(request.actor)) return failure({ code: 'PERMISSION_DENIED', message: '无权规划语义灰度发布', retryable: false, debugReference: 'semantic_release_role' })
+      const metric = findVisible(request.metricId, request)
+      if (!metric) return failure(notFound(request.metricId))
+      if (metric.lifecycle !== 'certified') return failure(validationError('只有已认证指标可以规划灰度发布'))
+      const percentages = rolloutPercentages(request)
+      if (!percentages) return failure(validationError('灰度百分比必须在 1 到 100 之间'))
+      const plan: SemanticMetricReleasePlanView = {
+        contractVersion: CONTRACT_VERSION,
+        metricId: metric.id,
+        currentSemanticVersion: metric.semanticVersion,
+        targetSemanticVersion: `${metric.semanticVersion}+${metric.id}.release`,
+        status: 'planned',
+        stages: percentages.map((percentage, index) => ({
+          percentage,
+          gate: index === 0
+            ? 'offline_eval'
+            : index === 1
+              ? 'shadow_traffic'
+              : percentage < 100
+                ? 'tenant_canary'
+                : 'business_cycle_observation',
+          autoRollbackThreshold: percentage < 100 ? 'P0 准确率 < 100% 或 P95 延迟超预算 20%' : '观察一个业务周期内无 P0 回归',
+        })),
+        automaticRollback: {
+          enabled: true,
+          rollbackThresholds: ['P0 认证指标准确率低于 100%', '受限权限样本泄漏', 'P95 延迟连续 10 分钟超过预算 20%'],
+          runbook: 'runbooks/semantic-release-rollback.md',
+        },
+        requiresApproval: true,
+        audit: auditEvents.get(metric.id) ?? [],
+      }
+      audit('semantic.release_planned', request, metric.id, `语义指标灰度发布计划已生成：${request.note || '无备注'}。`)
+      releasePlans.set(metric.id, plan)
+      return success({
+        ...plan,
+        audit: auditEvents.get(metric.id) ?? [],
+      })
+    },
+
+    rollbackMetric(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      if (!canRollback(request.actor)) return failure({ code: 'PERMISSION_DENIED', message: '无权回滚语义指标', retryable: false, debugReference: 'semantic_rollback_role' })
+      const metric = findVisible(request.metricId, request)
+      if (!metric) return failure(notFound(request.metricId))
+      if (metric.lifecycle !== 'certified') return failure(validationError('只有已认证指标可以回滚'))
+      metric.lifecycle = 'deprecated'
+      const existingPlan = releasePlans.get(metric.id)
+      if (existingPlan) {
+        releasePlans.set(metric.id, {
+          ...existingPlan,
+          status: 'rolled_back',
+          audit: auditEvents.get(metric.id) ?? [],
+        })
+      }
+      audit('semantic.rollback_completed', request, metric.id, `语义指标已回滚到 ${request.targetSemanticVersion || metric.semanticVersion}：${request.reason || '无备注'}。`)
       return success(view(metric))
     },
   }

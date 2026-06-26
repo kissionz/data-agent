@@ -484,12 +484,48 @@ export const openApiDocument = {
     '/v1/semantic/metrics/{metricId}/certify': {
       post: {
         summary: '认证发布语义指标',
-        description: '需要参考 SQL 对账通过，且 Join Graph 无高风险/未批准路径。',
+        description: '需要自动参考 SQL 对账通过或显式携带已对账证明，且 Join Graph 无高风险/未批准路径。',
         parameters: [{ name: 'metricId', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
           200: { description: '指标已认证发布' },
           400: { description: '对账或 Join Graph 门禁阻断' },
           403: { description: '角色无权认证' },
+        },
+      },
+    },
+    '/v1/semantic/metrics/{metricId}/reconcile-reference': {
+      post: {
+        summary: '执行参考 SQL 自动对账',
+        description: '比较参考 SQL 与编译 SQL 的指纹、样本行数、最大偏差和容差；失败会阻断认证发布。',
+        parameters: [{ name: 'metricId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '对账结果，包含 passed/failed 和是否阻断认证' },
+          400: { description: '对账参数无效' },
+          403: { description: '角色无权对账' },
+        },
+      },
+    },
+    '/v1/semantic/metrics/{metricId}/release-plan': {
+      post: {
+        summary: '规划语义指标灰度发布',
+        description: '为 certified 指标生成 5/20/50/100 或自定义阶段的灰度计划，每阶段带自动回滚阈值和 runbook。',
+        parameters: [{ name: 'metricId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '语义灰度发布计划' },
+          400: { description: '指标状态或灰度比例无效' },
+          403: { description: '角色无权规划发布' },
+        },
+      },
+    },
+    '/v1/semantic/metrics/{metricId}/rollback': {
+      post: {
+        summary: '回滚语义指标发布',
+        description: '仅 metric_admin/platform_ops/security_admin 可调用；回滚后当前 certified 指标降为 deprecated，历史版本保留只读。',
+        parameters: [{ name: 'metricId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '语义指标已回滚' },
+          400: { description: '指标状态不可回滚' },
+          403: { description: '角色无权回滚' },
         },
       },
     },

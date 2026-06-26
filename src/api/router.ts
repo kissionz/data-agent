@@ -492,7 +492,7 @@ export function createChatBiBffRouter(
         return withCors(respond(httpStatusForSemanticEnvelope(envelope), envelope))
       }
 
-      const semanticMetricMatch = path.match(/^\/v1\/semantic\/metrics\/([^/]+)(?:\/(submit-review|certify))?$/)
+      const semanticMetricMatch = path.match(/^\/v1\/semantic\/metrics\/([^/]+)(?:\/(submit-review|reconcile-reference|certify|release-plan|rollback))?$/)
       if (semanticMetricMatch) {
         const [, pathMetricId, action] = semanticMetricMatch
         const metricId = decodeURIComponent(pathMetricId)
@@ -515,6 +515,42 @@ export function createChatBiBffRouter(
             metricId,
             note: String(body.note ?? ''),
             referenceSqlReconciled: Boolean(body.referenceSqlReconciled ?? body.reference_sql_reconciled),
+          })
+          return withCors(respond(httpStatusForSemanticEnvelope(envelope), envelope))
+        }
+        if (method === 'POST' && action === 'reconcile-reference') {
+          const envelope = semantic.reconcileReferenceSql({
+            actor: actorFrom(request),
+            metricId,
+            referenceSqlFingerprint: String(body.referenceSqlFingerprint ?? body.reference_sql_fingerprint ?? ''),
+            compiledSqlFingerprint: String(body.compiledSqlFingerprint ?? body.compiled_sql_fingerprint ?? ''),
+            tolerancePct: Number(body.tolerancePct ?? body.tolerance_pct ?? 0),
+            comparedRows: Number(body.comparedRows ?? body.compared_rows ?? 0),
+            maxDeltaPct: Number(body.maxDeltaPct ?? body.max_delta_pct ?? 0),
+          })
+          return withCors(respond(httpStatusForSemanticEnvelope(envelope), envelope))
+        }
+        if (method === 'POST' && action === 'release-plan') {
+          const rolloutInput = body.rolloutPercentages ?? body.rollout_percentages
+          const rollout = Array.isArray(rolloutInput)
+            ? rolloutInput.map((value: unknown) => Number(value))
+            : undefined
+          const envelope = semantic.planRelease({
+            actor: actorFrom(request),
+            metricId,
+            note: String(body.note ?? ''),
+            rolloutPercentages: rollout,
+          })
+          return withCors(respond(httpStatusForSemanticEnvelope(envelope), envelope))
+        }
+        if (method === 'POST' && action === 'rollback') {
+          const envelope = semantic.rollbackMetric({
+            actor: actorFrom(request),
+            metricId,
+            reason: String(body.reason ?? ''),
+            targetSemanticVersion: body.targetSemanticVersion || body.target_semantic_version
+              ? String(body.targetSemanticVersion ?? body.target_semantic_version)
+              : undefined,
           })
           return withCors(respond(httpStatusForSemanticEnvelope(envelope), envelope))
         }

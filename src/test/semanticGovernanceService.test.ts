@@ -93,6 +93,134 @@ describe('Semantic governance service', () => {
     })
   })
 
+  it('records automatic reference SQL reconciliation and uses it as a certification gate', () => {
+    const service = createSemanticGovernanceApplicationService({ now: () => '2026-06-24T11:03:00+08:00' })
+    const submitted = service.submitForReview({ actor: metricAdmin, metricId: 'refund_rate', note: '进入自动对账' })
+    expect(submitted.ok).toBe(true)
+
+    const failed = service.reconcileReferenceSql({
+      actor: metricAdmin,
+      metricId: 'refund_rate',
+      referenceSqlFingerprint: 'sql_ref_refund_rate',
+      compiledSqlFingerprint: 'sql_compiled_refund_rate',
+      tolerancePct: 0.1,
+      comparedRows: 120,
+      maxDeltaPct: 0.8,
+    })
+    expect(failed.ok).toBe(true)
+    if (!failed.ok) return
+    expect(failed.data).toMatchObject({
+      status: 'failed',
+      blocksCertification: true,
+      comparedRows: 120,
+    })
+
+    const blocked = service.certifyMetric({
+      actor: metricAdmin,
+      metricId: 'refund_rate',
+      note: '失败对账不能发布',
+      referenceSqlReconciled: false,
+    })
+    expect(blocked.ok).toBe(false)
+
+    const passed = service.reconcileReferenceSql({
+      actor: metricAdmin,
+      metricId: 'refund_rate',
+      referenceSqlFingerprint: 'sql_ref_refund_rate',
+      compiledSqlFingerprint: 'sql_compiled_refund_rate',
+      tolerancePct: 0.1,
+      comparedRows: 120,
+      maxDeltaPct: 0.02,
+    })
+    expect(passed.ok).toBe(true)
+    if (!passed.ok) return
+    expect(passed.data).toMatchObject({
+      status: 'passed',
+      blocksCertification: false,
+    })
+    expect(passed.data.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'semantic.reference_reconciled' }),
+    ]))
+
+    const certified = service.certifyMetric({
+      actor: metricAdmin,
+      metricId: 'refund_rate',
+      note: '自动对账通过后发布',
+      referenceSqlReconciled: false,
+    })
+    expect(certified.ok).toBe(true)
+    if (!certified.ok) return
+    expect(certified.data.releaseReadiness).toMatchObject({
+      referenceSqlReconciled: true,
+      reconciliation: {
+        status: 'passed',
+        maxDeltaPct: 0.02,
+        comparedRows: 120,
+        tolerancePct: 0.1,
+      },
+    })
+  })
+
+  it('plans gray release stages and rolls back certified semantic metrics', () => {
+    const service = createSemanticGovernanceApplicationService({ now: () => '2026-06-24T11:04:00+08:00' })
+    const plan = service.planRelease({
+      actor: metricAdmin,
+      metricId: 'net_revenue',
+      note: '按 PRD 灰度节奏发布',
+    })
+    expect(plan.ok).toBe(true)
+    if (!plan.ok) return
+    expect(plan.data).toMatchObject({
+      metricId: 'net_revenue',
+      status: 'planned',
+      stages: [
+        expect.objectContaining({ percentage: 5, gate: 'offline_eval' }),
+        expect.objectContaining({ percentage: 20, gate: 'shadow_traffic' }),
+        expect.objectContaining({ percentage: 50, gate: 'tenant_canary' }),
+        expect.objectContaining({ percentage: 100, gate: 'business_cycle_observation' }),
+      ],
+      automaticRollback: {
+        enabled: true,
+        runbook: 'runbooks/semantic-release-rollback.md',
+      },
+      requiresApproval: true,
+    })
+    expect(plan.data.automaticRollback.rollbackThresholds).toEqual(expect.arrayContaining([
+      'P0 认证指标准确率低于 100%',
+    ]))
+
+    const denied = service.rollbackMetric({
+      actor: { ...metricAdmin, userId: 'user_business', roles: ['business_user'] },
+      metricId: 'net_revenue',
+      reason: '普通用户不能回滚',
+    })
+    expect(denied.ok).toBe(false)
+    if (denied.ok) return
+    expect(denied.error.code).toBe('PERMISSION_DENIED')
+
+    const rolledBack = service.rollbackMetric({
+      actor: metricAdmin,
+      metricId: 'net_revenue',
+      reason: '灰度准确率低于阈值',
+      targetSemanticVersion: 'sales-semantic-2026.06.1',
+    })
+    expect(rolledBack.ok).toBe(true)
+    if (!rolledBack.ok) return
+    expect(rolledBack.data).toMatchObject({
+      lifecycle: 'deprecated',
+      canUseInTrustedMode: false,
+      releaseReadiness: {
+        releasePlan: {
+          status: 'rolled_back',
+          rolloutPercentages: [5, 20, 50, 100],
+        },
+      },
+    })
+    expect(rolledBack.data.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'semantic.rollback_completed' }),
+    ]))
+  })
+
   it('rejects lifecycle changes from ordinary business users', () => {
     const service = createSemanticGovernanceApplicationService()
     const response = service.submitForReview({
@@ -169,6 +297,21 @@ describe('Semantic governance service', () => {
         id: 'refund_rate',
         lifecycle: 'certified',
         canUseInTrustedMode: true,
+      },
+    })
+
+    const releasePlan = router.handle({
+      method: 'POST',
+      path: '/v1/semantic/metrics/refund_rate/release-plan',
+      headers: adminHeaders,
+      body: { note: '发布计划', rollout_percentages: [5, 20, 50, 100] },
+    })
+    expect(releasePlan.status).toBe(200)
+    expect(releasePlan.body).toMatchObject({
+      ok: true,
+      data: {
+        metricId: 'refund_rate',
+        automaticRollback: { enabled: true },
       },
     })
   })

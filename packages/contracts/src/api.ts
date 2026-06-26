@@ -518,6 +518,9 @@ export interface SemanticGovernanceAuditEvent {
     | 'semantic.metric_viewed'
     | 'semantic.metric_submitted'
     | 'semantic.metric_certified'
+    | 'semantic.reference_reconciled'
+    | 'semantic.release_planned'
+    | 'semantic.rollback_completed'
     | 'semantic.release_blocked'
   actorUserId: string
   tenantId: string
@@ -544,6 +547,17 @@ export interface SemanticMetricGovernanceView {
     approvedJoinGraph: boolean
     certifiedBy?: string
     blockingReasons: string[]
+    reconciliation?: {
+      status: 'not_run' | 'passed' | 'failed'
+      maxDeltaPct?: number
+      comparedRows?: number
+      tolerancePct?: number
+    }
+    releasePlan?: {
+      status: 'not_planned' | 'planned' | 'rolled_back'
+      rolloutPercentages: number[]
+      rollbackThresholds: string[]
+    }
   }
   audit: SemanticGovernanceAuditEvent[]
 }
@@ -588,6 +602,63 @@ export interface CertifySemanticMetricRequest {
   metricId: string
   note: string
   referenceSqlReconciled: boolean
+}
+
+export interface ReconcileSemanticMetricRequest {
+  actor: ActorContext
+  metricId: string
+  referenceSqlFingerprint: string
+  compiledSqlFingerprint: string
+  tolerancePct: number
+  comparedRows: number
+  maxDeltaPct: number
+}
+
+export interface SemanticReferenceReconciliationView {
+  contractVersion: typeof CONTRACT_VERSION
+  metricId: string
+  status: 'passed' | 'failed'
+  referenceSqlFingerprint: string
+  compiledSqlFingerprint: string
+  tolerancePct: number
+  comparedRows: number
+  maxDeltaPct: number
+  blocksCertification: boolean
+  audit: SemanticGovernanceAuditEvent[]
+}
+
+export interface PlanSemanticMetricReleaseRequest {
+  actor: ActorContext
+  metricId: string
+  note: string
+  rolloutPercentages?: number[]
+}
+
+export interface SemanticMetricReleasePlanView {
+  contractVersion: typeof CONTRACT_VERSION
+  metricId: string
+  currentSemanticVersion: string
+  targetSemanticVersion: string
+  status: 'planned' | 'rolled_back'
+  stages: Array<{
+    percentage: number
+    gate: 'offline_eval' | 'shadow_traffic' | 'tenant_canary' | 'business_cycle_observation'
+    autoRollbackThreshold: string
+  }>
+  automaticRollback: {
+    enabled: boolean
+    rollbackThresholds: string[]
+    runbook: string
+  }
+  requiresApproval: boolean
+  audit: SemanticGovernanceAuditEvent[]
+}
+
+export interface RollbackSemanticMetricRequest {
+  actor: ActorContext
+  metricId: string
+  reason: string
+  targetSemanticVersion?: string
 }
 
 export interface IdentityAuditEvent {

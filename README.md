@@ -35,7 +35,7 @@
 - 协作资产服务：`/v1/assets` 支持资产列表、收藏、订阅和审计链路，服务层覆盖可见范围过滤、审核中不可订阅、接收者重新鉴权摘要和 public audit event。
 - 本地编译执行边界：Analysis IR 经语义 Catalog / Join Graph 校验后生成只读 SQL 计划，注入租户/工作区/业务域守卫，并产出 SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。
-- 持久化端口：conversation、run、idempotency 和 audit events 已抽象为 repository interface，并提供内存 adapter、本地 JSON 文件 adapter、SQL migration、可替换 SQL adapter 与 retention cleanup planner；审计事件在 SQL adapter 中单独落表，默认留存策略覆盖问题/IR/SQL 指纹 180 天、结果摘要 30 天、原始结果 7 天、敏感样本 3 天、审计 365 天。
+- 持久化端口：conversation、run、idempotency 和 audit events 已抽象为 repository interface，并提供内存 adapter、本地 JSON 文件 adapter、SQL migration、versioned migration runner、可替换 SQL adapter 与 retention cleanup planner/executor；审计事件在 SQL adapter 中单独落表并拥有 run/scope 索引，默认留存策略覆盖问题/IR/SQL 指纹 180 天、结果摘要 30 天、原始结果 7 天、敏感样本 3 天、审计 365 天。
 
 ## 技术栈
 
@@ -144,7 +144,7 @@ pnpm build
 - `POST /v1/assets/{assetId}/subscription`
 - `GET /v1/assets/{assetId}/audit`
 
-本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、结果 cursor 分页、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和由 `@insightflow/contracts/openapi` 导出的 OpenAPI 草案；OpenAPI 已包含公共错误包络与 Run/Result 响应 envelope。持久化目前有内存 adapter、本地 JSON 文件 adapter、SQL migration 与可替换 SQL adapter；文件 adapter 使用临时文件 + rename 做原子替换，SQL adapter 将 conversation、run、idempotency 和 audit events 拆表，适合作为 SQLite/PostgreSQL driver 接入点。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、具体 PostgreSQL/Redis driver 和网关部署。
+本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、结果 cursor 分页、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和由 `@insightflow/contracts/openapi` 导出的 OpenAPI 草案；OpenAPI 已包含公共错误包络与 Run/Result 响应 envelope。持久化目前有内存 adapter、本地 JSON 文件 adapter、SQL migration、versioned migration runner、retention cleanup executor 与可替换 SQL adapter；文件 adapter 使用临时文件 + rename 做原子替换，SQL adapter 将 conversation、run、idempotency 和 audit events 拆表，适合作为 SQLite/PostgreSQL driver 接入点。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、具体 PostgreSQL/Redis driver 和网关部署。
 
 ## 浏览器验收建议
 
@@ -184,7 +184,7 @@ pnpm build
 ## 建议下一阶段
 
 1. 将 `@insightflow/contracts/openapi` 从当前草案升级为 schema 生成产物，并把当前 `@insightflow/contracts/sdk` 手写基线升级为代码生成/发布流程。
-2. 将 `src/persistence/sql.ts` 接入具体 SQLite/PostgreSQL driver，补 migration runner、连接池配置和生产审计查询索引；本地 JSON adapter 只作为开发替代。
+2. 将 `src/persistence/sql.ts` 接入具体 SQLite/PostgreSQL driver，补连接池配置、迁移执行 CLI 和生产审计查询 API；本地 JSON adapter 只作为开发替代。
 3. 增加 `apps/api`，用 Fastify/TypeBox 包装当前 deterministic service、router 和 SSE 契约。
 4. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。
 5. 扩展 Playwright E2E：WebKit/Safari、XLSX/PDF/PNG 和异步大文件导出验收。

@@ -9,8 +9,10 @@ import {
 } from '../persistence/retention'
 import {
   CHATBI_SQL_MIGRATION,
+  executeRetentionCleanupPlan,
   createSqlChatBiPersistence,
   migrateChatBiSqlPersistence,
+  runChatBiSqlMigrations,
   type SqlPersistenceClient,
 } from '../persistence/sql'
 import type { ActorContext } from '../contracts'
@@ -195,9 +197,33 @@ describe('ChatBI persistence ports', () => {
     expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_runs')
     expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_idempotency')
     expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_audit_events')
+    expect(client.executedStatements.join('\n')).toContain('chatbi_audit_events_scope_idx')
     expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_result_blobs')
     expect(client.executedStatements.join('\n')).toContain('create table if not exists chatbi_data_samples')
     expect(CHATBI_SQL_MIGRATION.length).toBeGreaterThanOrEqual(10)
+  })
+
+  it('runs SQL migrations through a versioned and idempotent migration runner', () => {
+    const client = new FakeSqlClient()
+    const first = runChatBiSqlMigrations(client, undefined, '2026-06-26T09:00:00+08:00')
+    const second = runChatBiSqlMigrations(client, undefined, '2026-06-26T09:05:00+08:00')
+
+    expect(first).toMatchObject({
+      appliedVersions: [1],
+      skippedVersions: [],
+      latestVersion: 1,
+    })
+    expect(first.executedStatements).toBeGreaterThan(CHATBI_SQL_MIGRATION.length)
+    expect(second).toMatchObject({
+      appliedVersions: [],
+      skippedVersions: [1],
+      executedStatements: 0,
+      latestVersion: 1,
+    })
+    expect(client.schemaMigrations.get(1)).toMatchObject({
+      name: 'chatbi_core_persistence',
+      applied_at: '2026-06-26T09:00:00+08:00',
+    })
   })
 
   it('persists runs through the SQL adapter and stores audit events in their own table', () => {
@@ -314,6 +340,27 @@ describe('ChatBI persistence ports', () => {
     ]))
   })
 
+  it('executes a retention cleanup plan through the SQL client without dropping tenant scope', () => {
+    const client = new FakeSqlClient()
+    const plan = createRetentionCleanupPlan({
+      tenantId: 'tenant_demo',
+      workspaceId: 'workspace_sales',
+      now: '2026-06-25T12:00:00+08:00',
+    })
+
+    const executed = executeRetentionCleanupPlan(client, plan)
+
+    expect(executed).toHaveLength(plan.items.length)
+    expect(executed.map((item) => item.dataClass)).toContain('audit_event')
+    expect(client.retentionDeletes).toHaveLength(plan.items.length)
+    expect(client.retentionDeletes.every((statement) => statement.statement.includes('tenant_id = :tenant_id and workspace_id = :workspace_id')))
+      .toBe(true)
+    expect(client.retentionDeletes[0].params).toMatchObject({
+      tenant_id: 'tenant_demo',
+      workspace_id: 'workspace_sales',
+    })
+  })
+
   it('rejects invalid retention overrides that would keep sensitive samples too long or audit too short', () => {
     expect(() => createRetentionPolicy({
       tenantId: 'tenant_demo',
@@ -335,6 +382,8 @@ class FakeSqlClient implements SqlPersistenceClient {
   runs = new Map<string, Record<string, unknown>>()
   idempotency = new Map<string, Record<string, unknown>>()
   auditEvents = new Map<string, Array<Record<string, unknown>>>()
+  schemaMigrations = new Map<number, Record<string, unknown>>()
+  retentionDeletes: Array<{ statement: string; params: Record<string, unknown> }> = []
 
   execute(statement: string, params: Record<string, unknown> = {}): void {
     this.executedStatements.push(statement)
@@ -350,8 +399,17 @@ class FakeSqlClient implements SqlPersistenceClient {
       this.idempotency.set(String(params.idempotency_key), { ...params })
       return
     }
+    if (statement.startsWith('insert into chatbi_schema_migrations')) {
+      this.schemaMigrations.set(Number(params.version), { ...params })
+      return
+    }
     if (statement.startsWith('delete from chatbi_audit_events')) {
+      if (params.tenant_id) this.retentionDeletes.push({ statement, params: { ...params } })
       this.auditEvents.set(String(params.run_id), [])
+      return
+    }
+    if (statement.startsWith('delete from chatbi_runs') || statement.startsWith('delete from chatbi_result_blobs') || statement.startsWith('delete from chatbi_data_samples')) {
+      this.retentionDeletes.push({ statement, params: { ...params } })
       return
     }
     if (statement.startsWith('insert into chatbi_audit_events')) {
@@ -368,6 +426,7 @@ class FakeSqlClient implements SqlPersistenceClient {
   }
 
   queryMany<T>(statement: string, params: Record<string, unknown> = {}): T[] {
+    if (statement.includes('from chatbi_schema_migrations')) return [...this.schemaMigrations.values()] as T[]
     if (statement.includes('from chatbi_audit_events')) return [...(this.auditEvents.get(String(params.run_id)) ?? [])] as T[]
     return []
   }

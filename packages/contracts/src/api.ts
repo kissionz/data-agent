@@ -98,6 +98,8 @@ export interface AuditEvent {
   at: string
   type:
     | 'question.accepted'
+    | 'retrieval.performed'
+    | 'planner.plan_created'
     | 'planner.ir_created'
     | 'planner.clarification_required'
     | 'security.denied'
@@ -114,6 +116,65 @@ export interface AuditEvent {
   summary: string
 }
 
+export interface RetrievalTraceView {
+  strategyVersion: string
+  normalizedQuestion: string
+  permissionFilter: {
+    tenantId: string
+    workspaceId: string
+    businessDomainId: string
+    semanticVersion: string
+    roles: UserRole[]
+  }
+  entityLinks: Array<{
+    entityType: 'metric' | 'dimension' | 'time' | 'intent'
+    sourceText: string
+    label: string
+    semanticObjectId?: string
+    confidence: number
+    status: 'linked' | 'ambiguous' | 'filtered_out'
+    reason?: string
+  }>
+  safeguards: {
+    permissionFilteredBeforeRanking: boolean
+    exposesUnauthorizedCandidates: false
+    preservesOriginalConstraints: boolean
+  }
+  qualityTargets: {
+    entityLinkingF1: number
+    lexicalCoverage: number
+  }
+}
+
+export interface PlannerTraceView {
+  plannerVersion: string
+  schemaVersion: typeof ANALYSIS_IR_VERSION
+  normalizedQuestion: string
+  steps: Array<{
+    id: string
+    input: string
+    output: string
+    budget: {
+      maxTokens: number
+      maxQueries: number
+      maxScanBytes: number
+      timeoutMs: number
+    }
+    dependencies: string[]
+    terminationCondition: string
+  }>
+  ambiguity: {
+    requiresClarification: boolean
+    reasonCodes: Array<'metric_ambiguity' | 'time_ambiguity' | 'member_ambiguity' | 'join_ambiguity'>
+    maxCandidates: 3
+  }
+  replay: {
+    originalQuestion: string
+    normalizedQuestion: string
+    retrievalStrategyVersion: string
+  }
+}
+
 export interface PublicRunView {
   contractVersion: typeof CONTRACT_VERSION
   requestId: string
@@ -126,6 +187,8 @@ export interface PublicRunView {
   semanticVersion: string
   version: number
   executedQuery: boolean
+  retrieval?: RetrievalTraceView
+  planner?: PlannerTraceView
   analysisIr?: AnalysisIR
   queryExecution?: QueryExecutionSummary
   clarification?: Clarification

@@ -1,9 +1,11 @@
 import type { Conversation, Run } from '../domain'
-import type { AnalysisIR, AuditEvent, QueryExecutionSummary } from '../contracts'
+import type { AnalysisIR, AuditEvent, PlannerTraceView, QueryExecutionSummary, RetrievalTraceView } from '../contracts'
 
 export interface StoredRunRecord {
   run: Run
   executedQuery: boolean
+  retrieval?: RetrievalTraceView
+  planner?: PlannerTraceView
   analysisIr?: AnalysisIR
   queryExecution?: QueryExecutionSummary
   audit: AuditEvent[]

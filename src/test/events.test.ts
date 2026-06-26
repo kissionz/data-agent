@@ -58,6 +58,8 @@ describe('SSE and error contracts', () => {
     const events = runViewToSseEvents(response.data)
     expect(events.map((event) => event.event)).toEqual([
       'question.accepted',
+      'retrieval.performed',
+      'planner.plan_created',
       'planner.ir_created',
       'compiler.plan_created',
       'query.started',

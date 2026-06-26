@@ -123,6 +123,8 @@ describe('ChatBI persistence ports', () => {
     if (!created.ok) throw new Error('expected run')
     expect(persistence.listAuditEvents(created.data.runId).map((event) => event.type)).toEqual([
       'question.accepted',
+      'retrieval.performed',
+      'planner.plan_created',
       'planner.ir_created',
       'compiler.plan_created',
       'query.started',
@@ -258,9 +260,11 @@ describe('ChatBI persistence ports', () => {
     if (!loaded.ok) throw new Error('expected loaded sql run')
     expect(loaded.data.runId).toBe(created.data.runId)
     expect(secondPersistence.getRunIdByIdempotencyKey('sql_persisted_run')).toBe(created.data.runId)
-    expect(client.auditEvents.get(created.data.runId)).toHaveLength(6)
+    expect(client.auditEvents.get(created.data.runId)).toHaveLength(8)
     expect(secondPersistence.listAuditEvents(created.data.runId).map((event) => event.type)).toEqual([
       'question.accepted',
+      'retrieval.performed',
+      'planner.plan_created',
       'planner.ir_created',
       'compiler.plan_created',
       'query.started',

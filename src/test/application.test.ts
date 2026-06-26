@@ -43,6 +43,49 @@ describe('ChatBI application service', () => {
       metricIds: ['net_revenue'],
       safety: { permissionChecked: true, budgetChecked: true, executedQuery: true },
     })
+    expect(response.data.retrieval).toMatchObject({
+      strategyVersion: 'local-retrieval-v0.2',
+      normalizedQuestion: '过去 12 个月净收入趋势',
+      permissionFilter: {
+        tenantId: 'tenant_demo',
+        workspaceId: 'workspace_sales',
+        businessDomainId: 'sales',
+        semanticVersion: 'sales-semantic-2026.06.1',
+      },
+      safeguards: {
+        permissionFilteredBeforeRanking: true,
+        exposesUnauthorizedCandidates: false,
+        preservesOriginalConstraints: true,
+      },
+      qualityTargets: {
+        entityLinkingF1: 0.95,
+        lexicalCoverage: 0.95,
+      },
+    })
+    expect(response.data.retrieval?.entityLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: 'metric', semanticObjectId: 'net_revenue', status: 'linked' }),
+      expect.objectContaining({ entityType: 'dimension', semanticObjectId: 'order_date', status: 'linked' }),
+    ]))
+    expect(response.data.planner).toMatchObject({
+      plannerVersion: 'local-planner-v0.2',
+      schemaVersion: 'analysis_ir.v1',
+      ambiguity: { requiresClarification: false, maxCandidates: 3 },
+      replay: {
+        originalQuestion: '过去 12 个月净收入趋势',
+        normalizedQuestion: '过去 12 个月净收入趋势',
+      },
+    })
+    expect(response.data.planner?.steps).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'retrieve_entities',
+        budget: expect.objectContaining({ maxQueries: 1, maxScanBytes: 0 }),
+        dependencies: ['load_context'],
+      }),
+      expect.objectContaining({
+        id: 'create_ir',
+        terminationCondition: 'IR passes JSON schema and safety guards',
+      }),
+    ]))
     const result = response.data.result
     expect(result).toBeDefined()
     expect(result!.answer.facts[0].references[0]).toMatchObject({
@@ -64,6 +107,8 @@ describe('ChatBI application service', () => {
     expect(JSON.stringify(response.data.queryExecution)).not.toContain('SELECT')
     expect(response.data.audit.map((event) => event.type)).toEqual([
       'question.accepted',
+      'retrieval.performed',
+      'planner.plan_created',
       'planner.ir_created',
       'compiler.plan_created',
       'query.started',
@@ -203,6 +248,20 @@ describe('ChatBI application service', () => {
     expect(ambiguous.data.displayStatus).toBe('needs_clarification')
     expect(ambiguous.data.executedQuery).toBe(false)
     expect(ambiguous.data.analysisIr?.safety.requiresClarification).toBe(true)
+    expect(ambiguous.data.retrieval).toMatchObject({
+      safeguards: { permissionFilteredBeforeRanking: true, exposesUnauthorizedCandidates: false },
+    })
+    expect(ambiguous.data.retrieval?.entityLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: 'metric', status: 'ambiguous' }),
+      expect.objectContaining({ entityType: 'time', status: 'ambiguous' }),
+    ]))
+    expect(ambiguous.data.planner).toMatchObject({
+      ambiguity: {
+        requiresClarification: true,
+        reasonCodes: ['metric_ambiguity', 'time_ambiguity'],
+        maxCandidates: 3,
+      },
+    })
 
     const blocked = service.submitQuestion(request('过去 12 个月净收入趋势', { idempotencyKey: 'blocked_by_active' }))
     expect(blocked.ok).toBe(false)
@@ -250,6 +309,10 @@ describe('ChatBI application service', () => {
       actor,
     })
     expect(current.ok && current.data.executedQuery).toBe(false)
+    expect(current.ok && current.data.clarification?.candidates[0].candidateVersion).toBe('clarification-v2')
+    expect(current.ok && current.data.audit.map((event) => event.type)).toEqual(expect.arrayContaining([
+      'planner.clarification_required',
+    ]))
   })
 
   it('denies unauthorized questions before query execution and without leaking resources', () => {

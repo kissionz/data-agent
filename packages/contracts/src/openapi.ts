@@ -1,4 +1,4 @@
-import { CONTRACT_VERSION, PUBLIC_ERROR_CATALOG, analysisIrJsonSchema } from './api'
+import { ANALYSIS_IR_VERSION, CONTRACT_VERSION, PUBLIC_ERROR_CATALOG, analysisIrJsonSchema } from './api'
 
 const publicErrorCodeEnum = Object.keys(PUBLIC_ERROR_CATALOG)
 
@@ -715,6 +715,40 @@ export const openApiDocument = {
           semanticVersion: { type: 'string', minLength: 1 },
           version: { type: 'integer', minimum: 1 },
           executedQuery: { type: 'boolean' },
+          retrieval: {
+            type: 'object',
+            additionalProperties: true,
+            required: ['strategyVersion', 'normalizedQuestion', 'permissionFilter', 'entityLinks', 'safeguards', 'qualityTargets'],
+            properties: {
+              strategyVersion: { type: 'string', minLength: 1 },
+              normalizedQuestion: { type: 'string', minLength: 1 },
+              permissionFilter: { type: 'object', additionalProperties: true },
+              entityLinks: { type: 'array', items: { type: 'object', additionalProperties: true } },
+              safeguards: {
+                type: 'object',
+                additionalProperties: true,
+                properties: {
+                  permissionFilteredBeforeRanking: { type: 'boolean' },
+                  exposesUnauthorizedCandidates: { const: false },
+                  preservesOriginalConstraints: { type: 'boolean' },
+                },
+              },
+              qualityTargets: { type: 'object', additionalProperties: true },
+            },
+          },
+          planner: {
+            type: 'object',
+            additionalProperties: true,
+            required: ['plannerVersion', 'schemaVersion', 'normalizedQuestion', 'steps', 'ambiguity', 'replay'],
+            properties: {
+              plannerVersion: { type: 'string', minLength: 1 },
+              schemaVersion: { const: ANALYSIS_IR_VERSION },
+              normalizedQuestion: { type: 'string', minLength: 1 },
+              steps: { type: 'array', items: { type: 'object', additionalProperties: true } },
+              ambiguity: { type: 'object', additionalProperties: true },
+              replay: { type: 'object', additionalProperties: true },
+            },
+          },
           analysisIr: { $ref: '#/components/schemas/AnalysisIR' },
           queryExecution: { $ref: '#/components/schemas/QueryExecutionSummary' },
           result: { type: 'object', additionalProperties: true },

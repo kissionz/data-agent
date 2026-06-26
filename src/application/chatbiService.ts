@@ -12,6 +12,7 @@ import { emptyResult, partialTrendResult, trendResult } from '../mocks'
 import { createInMemoryChatBiPersistence } from '../persistence/memory'
 import type { ChatBiPersistence, StoredRunRecord } from '../persistence/ports'
 import { compileAnalysisQuery, executeReadOnlyQuery, markQueryExecutionCancelled } from '../query'
+import { createRetrievalPlanningTrace, refreshClarificationCandidateVersions } from './retrievalPlanning'
 import {
   ANALYSIS_IR_VERSION,
   CONTRACT_VERSION,
@@ -229,6 +230,8 @@ export function createChatBiApplicationService(
         executedQuery: stored.executedQuery,
         analysisIr: stored.analysisIr,
         queryExecution: stored.queryExecution,
+        retrieval: stored.retrieval,
+        planner: stored.planner,
         clarification: stored.run.clarification,
         result: stored.run.result,
         error: stored.run.error ? toPublicError(stored.run.error) : undefined,
@@ -294,6 +297,11 @@ export function createChatBiApplicationService(
       const auditEvents = [audit('question.accepted', request.actor, run.id, '问题已接收并进入规划。')]
 
       if (/其他事业部|手机号|忽略权限/.test(run.question)) {
+        const trace = createRetrievalPlanningTrace({
+          question: run.question,
+          actor: request.actor,
+          requiresClarification: false,
+        })
         const error: RunError = sanitizeRunError({
           code: 'PERMISSION_DENIED',
           userMessage: '无权访问该内容',
@@ -306,6 +314,8 @@ export function createChatBiApplicationService(
           requestId,
           traceId,
           executedQuery: false,
+          retrieval: trace.retrieval,
+          planner: trace.planner,
           audit: [...auditEvents, audit('security.denied', request.actor, run.id, '权限校验拒绝，未执行查询。')],
         }
         persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
@@ -313,6 +323,11 @@ export function createChatBiApplicationService(
       }
 
       if (/全部历史|明细|全量/.test(run.question)) {
+        const trace = createRetrievalPlanningTrace({
+          question: run.question,
+          actor: request.actor,
+          requiresClarification: false,
+        })
         const error: RunError = {
           code: 'QUERY_TOO_EXPENSIVE',
           userMessage: '查询范围过大，请缩短时间或增加筛选条件',
@@ -326,6 +341,8 @@ export function createChatBiApplicationService(
           requestId,
           traceId,
           executedQuery: false,
+          retrieval: trace.retrieval,
+          planner: trace.planner,
           audit: [...auditEvents, audit('planner.ir_created', request.actor, run.id, '预算门禁阻断，未执行查询。')],
         }
         persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
@@ -334,6 +351,12 @@ export function createChatBiApplicationService(
 
       if (/最近|销售情况/.test(run.question) && !/12|月|季度|年度/.test(run.question)) {
         const analysisIr = makeIr(request, run.id, 'clarification', { requiresClarification: true })
+        const trace = createRetrievalPlanningTrace({
+          question: run.question,
+          actor: request.actor,
+          requiresClarification: true,
+          reasonCodes: ['metric_ambiguity', 'time_ambiguity'],
+        })
         const clarification = {
           reasonCode: 'metric_ambiguity' as const,
           prompt: '“销售情况”需要确认口径',
@@ -362,14 +385,26 @@ export function createChatBiApplicationService(
           requestId,
           traceId,
           executedQuery: false,
+          retrieval: trace.retrieval,
+          planner: trace.planner,
           analysisIr,
-          audit: [...auditEvents, audit('planner.clarification_required', request.actor, run.id, '关键指标口径多义，等待用户澄清。')],
+          audit: [
+            ...auditEvents,
+            audit('retrieval.performed', request.actor, run.id, '检索已按租户、工作区、业务域和语义版本过滤后召回候选。'),
+            audit('planner.plan_created', request.actor, run.id, 'Planner 已生成多步计划并识别关键歧义。'),
+            audit('planner.clarification_required', request.actor, run.id, '关键指标口径多义，等待用户澄清。'),
+          ],
         }
         persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
         return persist(stored)
       }
 
       const analysisIr = makeIr(request, run.id, /区域|城市/.test(run.question) ? 'breakdown' : 'trend', { executedQuery: true })
+      const trace = createRetrievalPlanningTrace({
+        question: run.question,
+        actor: request.actor,
+        requiresClarification: false,
+      })
       const compiledPlan = compileAnalysisQuery({ ir: analysisIr, actor: request.actor })
       const execution = executeReadOnlyQuery({ plan: compiledPlan, actor: request.actor })
       run = transitionRun(run, { type: 'QUERY_STARTED', at: now() })
@@ -384,12 +419,16 @@ export function createChatBiApplicationService(
         queryExecution: execution.summary,
         audit: [
           ...auditEvents,
+          audit('retrieval.performed', request.actor, run.id, '检索已按租户、工作区、业务域和语义版本过滤，实体链接完成。'),
+          audit('planner.plan_created', request.actor, run.id, 'Planner 已生成带预算、依赖和终止条件的多步计划。'),
           audit('planner.ir_created', request.actor, run.id, 'Analysis IR 已创建并通过语义、权限和预算校验。'),
           audit('compiler.plan_created', request.actor, run.id, `确定性 SQL 计划已创建，指纹 ${execution.summary.sqlFingerprint}。`),
           audit('query.started', request.actor, run.id, '查询网关开始执行，只读与预算门禁已生效。'),
           audit('query.completed', request.actor, run.id, `查询完成，缓存键 ${execution.summary.cacheKey}。`),
           audit('result.ready', request.actor, run.id, '确定性答案已从结果集生成。'),
         ],
+        retrieval: trace.retrieval,
+        planner: trace.planner,
       }
       persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
       return persist(stored)
@@ -400,6 +439,29 @@ export function createChatBiApplicationService(
       if (found.envelope) return found.envelope
       const stored = found.stored!
       try {
+        const currentCandidate = stored.run.clarification?.candidates.find((item) => item.id === request.candidateId)
+        if (stored.run.displayStatus === 'needs_clarification' && (!currentCandidate || currentCandidate.candidateVersion !== request.candidateVersion)) {
+          const refreshedClarification = stored.run.clarification
+            ? {
+                ...stored.run.clarification,
+                expiresAt: '2026-06-24T23:59:59+08:00',
+                candidates: refreshClarificationCandidateVersions(stored.run.clarification.candidates),
+              }
+            : stored.run.clarification
+          const refreshedRun = refreshedClarification
+            ? { ...stored.run, clarification: refreshedClarification, updatedAt: now() }
+            : stored.run
+          const refreshedStored: StoredRunRecord = {
+            ...stored,
+            run: refreshedRun,
+            audit: [
+              ...stored.audit,
+              audit('planner.clarification_required', request.actor, stored.run.id, '澄清候选版本已失效，已重新鉴权并刷新候选；未执行查询。'),
+            ],
+          }
+          persist(refreshedStored)
+          throw new Error('Clarification candidate is missing, stale, or unauthorized')
+        }
         let run = transitionRun(stored.run, {
           type: 'CLARIFICATION_RESOLVED',
           candidateId: request.candidateId,
@@ -440,6 +502,8 @@ export function createChatBiApplicationService(
           executedQuery: true,
           analysisIr,
           queryExecution: execution.summary,
+          retrieval: stored.retrieval,
+          planner: stored.planner,
           audit: [
             ...stored.audit,
             audit('planner.ir_created', request.actor, run.id, '澄清结果已绑定到新版 Analysis IR。'),

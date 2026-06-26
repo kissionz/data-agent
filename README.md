@@ -28,7 +28,7 @@
 - 运行事件流：`GET /v1/runs/{id}/events` 的 SSE 契约、事件序列化、`Last-Event-ID` 续传和工作空间边界检查。
 - 数据源服务：`/v1/data-sources` 支持数据源列表、元数据详情和只读连接测试，服务层覆盖可见范围过滤、credential ref、不暴露真实凭据、质量门禁与受限字段样本策略。
 - 语义治理服务：`/v1/semantic` 支持指标列表、详情、提交评审和认证发布，服务层覆盖角色权限、参考 SQL 对账门禁、不可变版本、Join Graph 风险暴露和 public audit event。
-- 导出分享服务：`/v1/sharing` 支持导出请求、分享引用和接收者重新鉴权，服务层覆盖导出前重新鉴权、100k 行/50MB 限制、水印计划、脱敏规则和“不复制高权限结果”。
+- 导出分享服务：`/v1/sharing` 支持导出请求、异步大文件导出任务、分享引用和接收者重新鉴权，服务层覆盖导出前重新鉴权、100k 行/50MB 在线限制、超阈值进入受审计异步队列、水印计划、脱敏规则和“不复制高权限结果”。
 - 评测回放服务：`/v1/evaluation` 支持黄金集发布门禁、失败回放列表和回放详情，服务层覆盖 P0 门禁阻断、阻断样本角色可见性、脱敏重放计划和不使用生产凭据规则。
 - 模型运营服务：`/v1/model-ops` 支持模型路由列表、单次路由决策和灰度回滚，服务层覆盖版本化 active/candidate、超时、温度、租户覆盖、配额、降级链、发布门禁阻断和 platform_ops/security_admin 回滚权限。
 - SLO 与性能预算服务：`/v1/operations/slo` 支持 SLO 报告和单次 Run 性能预算评估，服务层覆盖可用性、P95 延迟、成本、取消传播、扫描量、告警 runbook 和 allow/warn/block 决策。
@@ -129,6 +129,7 @@ pnpm build
 - `POST /v1/semantic/metrics/{metricId}/submit-review`
 - `POST /v1/semantic/metrics/{metricId}/certify`
 - `POST /v1/sharing/exports`
+- `GET /v1/sharing/exports/{exportId}`
 - `POST /v1/sharing/shares`
 - `POST /v1/sharing/shares/{shareId}/reauthorize`
 - `GET /v1/evaluation/gates/current`
@@ -144,7 +145,7 @@ pnpm build
 - `POST /v1/assets/{assetId}/subscription`
 - `GET /v1/assets/{assetId}/audit`
 
-本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、结果 cursor 分页、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和由 `@insightflow/contracts/openapi` 导出的 OpenAPI 草案；OpenAPI 已包含公共错误包络与 Run/Result 响应 envelope。持久化目前有内存 adapter、本地 JSON 文件 adapter、SQL migration、versioned migration runner、retention cleanup executor 与可替换 SQL adapter；文件 adapter 使用临时文件 + rename 做原子替换，SQL adapter 将 conversation、run、idempotency 和 audit events 拆表，适合作为 SQLite/PostgreSQL driver 接入点。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、具体 PostgreSQL/Redis driver 和网关部署。
+本地 router 已验证状态码映射、幂等键、CORS、身份策略裁决、跨工作空间拒绝、结果 cursor 分页、开发者接入治理、澄清候选版本绑定、SSE 事件流、数据源安全摘要、语义评审/发布门禁、导出分享重新鉴权、异步大文件导出任务、评测发布阻断、回放脱敏计划、模型路由/降级/回滚、SLO 报告/性能预算决策、协作资产门禁和由 `@insightflow/contracts/openapi` 导出的 OpenAPI 草案；OpenAPI 已包含公共错误包络与 Run/Result 响应 envelope。持久化目前有内存 adapter、本地 JSON 文件 adapter、SQL migration、versioned migration runner、retention cleanup executor 与可替换 SQL adapter；文件 adapter 使用临时文件 + rename 做原子替换，SQL adapter 将 conversation、run、idempotency 和 audit events 拆表，适合作为 SQLite/PostgreSQL driver 接入点。生产阶段仍需接入 Fastify/TypeBox、真实认证上下文、长连接运行时、具体 PostgreSQL/Redis driver 和网关部署。
 
 ## 浏览器验收建议
 
@@ -156,7 +157,7 @@ pnpm build
 - 治理：语义指标评审/认证、数据源降级质量门禁、受限字段样本策略、协作资产重新鉴权、水印策略和审核中不可订阅。
 - 移动：会话列表抽屉和分析上下文面板可达。
 - 可访问性：全键盘 Tab 顺序、Esc 关闭浮层、焦点归还、`prefers-reduced-motion`、图表数据表替代。
-- 后续仍建议补 Safari/WebKit、XLSX/PDF/PNG 和异步大文件导出等浏览器路径。
+- 后续仍建议补 Safari/WebKit、真实 XLSX/PDF/PNG 文件生成和异步大文件导出的浏览器轮询路径。
 
 ## 文档索引
 
@@ -175,9 +176,9 @@ pnpm build
 - OIDC/SAML/SCIM、外部 Policy Engine、服务账号短期令牌、策略审批和审计落库。
 - 真实数据源连接器、元数据扫描任务、数据质量门禁执行器、语义对象持久化与 Join Graph 编辑审批。
 - Analysis IR 契约包、Planner、生产方言 Compiler、真实 Query Gateway 执行器、成本模型和取消传播。
-- 真实协作资产持久化、通知发送、XLSX/PDF/PNG 生成、异步大文件导出、生产水印写入、分享链接服务、缓存权限失效。
+- 真实协作资产持久化、通知发送、XLSX/PDF/PNG 生成、异步导出 worker/对象存储、生产水印写入、分享链接服务、缓存权限失效。
 - 真实 Model Gateway、成本采集、模型调用审计、真实黄金集回归调度、线上灰度发布控制面、真实监控告警与自动回滚。
-- 真实压测/SLO 证明、安全与多租户隔离测试；Playwright 仍需扩展到 WebKit/Safari、XLSX/PDF/PNG 和异步大文件导出。
+- 真实压测/SLO 证明、安全与多租户隔离测试；Playwright 仍需扩展到 WebKit/Safari、XLSX/PDF/PNG 和异步大文件导出轮询。
 
 语义中心和运营中心的筛选、刷新、审批、回放等交互当前均为 fixture/mock 交互，不代表已连接真实审批流、监控平台或评测流水线。
 

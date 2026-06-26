@@ -6,6 +6,7 @@ import {
   type CreateShareRequest,
   type ExportJobView,
   type ExportRequest,
+  type GetExportJobRequest,
   type PublicApiError,
   type ReauthorizeShareRequest,
   type ShareGrantView,
@@ -19,6 +20,7 @@ import {
 
 export interface SharingExportApplicationService {
   requestExport(request: ExportRequest): ApiEnvelope<ExportJobView>
+  getExportJob(request: GetExportJobRequest): ApiEnvelope<ExportJobView>
   createShare(request: CreateShareRequest): ApiEnvelope<ShareGrantView>
   reauthorizeShare(request: ReauthorizeShareRequest): ApiEnvelope<ShareReauthorizationView>
 }
@@ -31,6 +33,12 @@ export interface SharingExportApplicationOptions {
 interface StoredShare {
   grant: ShareGrantView
   businessDomainId: string
+  workspaceId: string
+}
+
+interface StoredExport {
+  job: ExportJobView
+  tenantId: string
   workspaceId: string
 }
 
@@ -47,6 +55,7 @@ export function createSharingExportApplicationService(
   let sequence = 0
   const auditEvents: SharingAuditEvent[] = []
   const shares = new Map<string, StoredShare>()
+  const exportJobs = new Map<string, StoredExport>()
 
   function nextId(prefix: string) {
     sequence += 1
@@ -116,13 +125,28 @@ export function createSharingExportApplicationService(
     return []
   }
 
+  function addHoursIso(hours: number) {
+    const base = new Date(now())
+    base.setUTCHours(base.getUTCHours() + hours)
+    return base.toISOString()
+  }
+
+  function onlineLimitReasons(request: ExportRequest) {
+    const reasons: string[] = []
+    if (request.estimatedRows > EXPORT_LIMITS.maxRows) reasons.push('导出超过 100000 行在线上限。')
+    if (request.estimatedBytes > EXPORT_LIMITS.maxBytes) reasons.push('导出超过 50MB 在线上限。')
+    return reasons
+  }
+
   function exportView(
     request: ExportRequest,
     status: ExportJobView['status'],
     blockingReasons: string[],
+    asyncReasons: string[] = [],
   ): ExportJobView {
     const id = nextId('export')
     const available = status === 'completed'
+    const async = status === 'queued'
     return {
       contractVersion: CONTRACT_VERSION,
       id,
@@ -147,9 +171,31 @@ export function createSharingExportApplicationService(
         expiresAt: available ? addDaysIso(1) : undefined,
         signedUrlPreview: available ? `https://download.local/${id}?signature=redacted` : undefined,
       },
+      delivery: async
+        ? {
+            mode: 'async',
+            requiresAuditApproval: true,
+            queueName: 'governed-export-large-result',
+            statusUrl: `/v1/sharing/exports/${id}`,
+            estimatedReadyAt: addHoursIso(2),
+          }
+        : {
+            mode: 'online',
+            requiresAuditApproval: request.classification !== 'public',
+          },
       blockingReasons,
+      asyncReasons,
       audit: auditEvents,
     }
+  }
+
+  function storeExport(request: ExportRequest, job: ExportJobView) {
+    exportJobs.set(job.id, {
+      job,
+      tenantId: request.actor.tenantId,
+      workspaceId: request.actor.workspaceId,
+    })
+    return job
   }
 
   return {
@@ -168,16 +214,38 @@ export function createSharingExportApplicationService(
       })
       const blockingReasons: string[] = []
       if (!policy.ok || !policy.data.allowed) blockingReasons.push(policy.ok ? policy.data.reason : policy.error.message)
-      if (request.estimatedRows > EXPORT_LIMITS.maxRows) blockingReasons.push('导出超过 100000 行在线上限。')
-      if (request.estimatedBytes > EXPORT_LIMITS.maxBytes) blockingReasons.push('导出超过 50MB 在线上限。')
+      const asyncReasons = onlineLimitReasons(request)
 
       if (blockingReasons.length > 0) {
         audit('export.blocked', request, `导出被阻断：${blockingReasons.join('；')}`)
-        return success(exportView(request, 'blocked', blockingReasons))
+        return success(storeExport(request, exportView(request, 'blocked', blockingReasons)))
       }
       audit('export.requested', request, `导出请求已重新鉴权：${sourceSummary(request.source)}。`)
+      if (asyncReasons.length > 0) {
+        audit('export.queued', request, `导出超过在线阈值，已进入受审计异步队列：${asyncReasons.join('；')}`)
+        return success(storeExport(request, exportView(request, 'queued', [], asyncReasons)))
+      }
       audit('export.completed', request, '导出计划完成，已应用水印、脱敏和短期下载链接。')
-      return success(exportView(request, 'completed', []))
+      return success(storeExport(request, exportView(request, 'completed', [])))
+    },
+
+    getExportJob(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      const stored = exportJobs.get(request.exportId)
+      if (!stored || stored.tenantId !== request.actor.tenantId || stored.workspaceId !== request.actor.workspaceId) {
+        return failure({
+          code: 'SEMANTIC_NOT_FOUND',
+          message: '没有找到可访问的导出任务',
+          retryable: false,
+          debugReference: `export_${request.exportId}`,
+        })
+      }
+      audit('export.status_viewed', request, `用户查看导出任务状态：${request.exportId}。`)
+      return success({
+        ...stored.job,
+        audit: auditEvents,
+      })
     },
 
     createShare(request) {

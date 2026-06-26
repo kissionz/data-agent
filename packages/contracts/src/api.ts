@@ -560,7 +560,9 @@ export interface SharingAuditEvent {
   type:
     | 'export.requested'
     | 'export.completed'
+    | 'export.queued'
     | 'export.blocked'
+    | 'export.status_viewed'
     | 'share.created'
     | 'share.reauthorized'
     | 'share.denied'
@@ -585,7 +587,7 @@ export interface ExportRequest {
 export interface ExportJobView {
   contractVersion: typeof CONTRACT_VERSION
   id: string
-  status: 'completed' | 'blocked'
+  status: 'completed' | 'queued' | 'blocked'
   source: ExportRequest['source']
   format: ExportFormat
   estimatedRows: number
@@ -609,8 +611,21 @@ export interface ExportJobView {
     expiresAt?: string
     signedUrlPreview?: string
   }
+  delivery: {
+    mode: 'online' | 'async'
+    requiresAuditApproval: boolean
+    queueName?: string
+    statusUrl?: string
+    estimatedReadyAt?: string
+  }
   blockingReasons: string[]
+  asyncReasons: string[]
   audit: SharingAuditEvent[]
+}
+
+export interface GetExportJobRequest {
+  actor: ActorContext
+  exportId: string
 }
 
 export interface CreateShareRequest {

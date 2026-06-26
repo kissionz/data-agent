@@ -62,6 +62,7 @@ describe('@insightflow/contracts package entry', () => {
     expect(openApiDocumentFromSubpath.paths['/v1/questions']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/operations/slo']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/results/{runId}']).toEqual(expect.any(Object))
+    expect(openApiDocumentFromSubpath.paths['/v1/sharing/exports/{exportId}']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/developer/api-keys/{keyId}/rotate']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/developer/webhooks/{webhookId}/deliveries']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.components.securitySchemes.bearerAuth).toMatchObject({
@@ -100,6 +101,24 @@ describe('@insightflow/contracts package entry', () => {
       content: {
         'application/json': {
           schema: { $ref: '#/components/schemas/ResultPageEnvelope' },
+        },
+      },
+    })
+    expect(openApiDocumentFromSubpath.components.schemas.ExportJobView).toMatchObject({
+      additionalProperties: false,
+      properties: {
+        status: { enum: ['completed', 'queued', 'blocked'] },
+        delivery: expect.objectContaining({
+          properties: expect.objectContaining({
+            mode: { enum: ['online', 'async'] },
+          }),
+        }),
+      },
+    })
+    expect(openApiDocumentFromSubpath.paths['/v1/sharing/exports/{exportId}'].get.responses[200]).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/ExportJobEnvelope' },
         },
       },
     })

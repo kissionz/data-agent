@@ -81,7 +81,7 @@ describe('Sharing export service', () => {
     expect(JSON.stringify(response.data)).not.toMatch(/password|secret|token/i)
   })
 
-  it('blocks online exports that exceed row or byte limits', () => {
+  it('queues large exports that exceed online row or byte limits', () => {
     const service = createSharingExportApplicationService({ now: () => '2026-06-24T13:01:00+08:00' })
     const response = service.requestExport({
       actor,
@@ -94,14 +94,33 @@ describe('Sharing export service', () => {
 
     expect(response.ok).toBe(true)
     if (!response.ok) return
-    expect(response.data.status).toBe('blocked')
+    expect(response.data.status).toBe('queued')
     expect(response.data.download.available).toBe(false)
-    expect(response.data.blockingReasons).toEqual(expect.arrayContaining([
+    expect(response.data.delivery).toMatchObject({
+      mode: 'async',
+      requiresAuditApproval: true,
+      queueName: 'governed-export-large-result',
+      statusUrl: `/v1/sharing/exports/${response.data.id}`,
+    })
+    expect(response.data.asyncReasons).toEqual(expect.arrayContaining([
       '导出超过 100000 行在线上限。',
       '导出超过 50MB 在线上限。',
     ]))
     expect(response.data.audit).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'export.blocked' }),
+      expect.objectContaining({ type: 'export.requested' }),
+      expect.objectContaining({ type: 'export.queued' }),
+    ]))
+
+    const status = service.getExportJob({ actor, exportId: response.data.id })
+    expect(status.ok).toBe(true)
+    if (!status.ok) return
+    expect(status.data).toMatchObject({
+      id: response.data.id,
+      status: 'queued',
+      delivery: { mode: 'async' },
+    })
+    expect(status.data.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'export.status_viewed' }),
     ]))
   })
 
@@ -189,6 +208,43 @@ describe('Sharing export service', () => {
       data: {
         status: 'completed',
         watermark: { enabled: true },
+        delivery: { mode: 'online' },
+      },
+    })
+
+    const largeExport = router.handle({
+      method: 'POST',
+      path: '/v1/sharing/exports',
+      headers: actorHeaders,
+      body: {
+        source: { type: 'run', runId: 'run_large', conversationId: 'conversation_large' },
+        format: 'xlsx',
+        estimated_rows: 120000,
+        estimated_bytes: 60 * 1024 * 1024,
+        classification: 'internal',
+      },
+    })
+    expect(largeExport.status).toBe(200)
+    expect(largeExport.body).toMatchObject({
+      ok: true,
+      data: {
+        status: 'queued',
+        delivery: { mode: 'async' },
+      },
+    })
+    const exportId = (largeExport.body as { data: { id: string } }).data.id
+    const exportStatus = router.handle({
+      method: 'GET',
+      path: `/v1/sharing/exports/${exportId}`,
+      headers: actorHeaders,
+    })
+    expect(exportStatus.status).toBe(200)
+    expect(exportStatus.body).toMatchObject({
+      ok: true,
+      data: {
+        id: exportId,
+        status: 'queued',
+        delivery: { mode: 'async' },
       },
     })
 

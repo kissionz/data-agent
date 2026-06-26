@@ -545,7 +545,7 @@ export function createChatBiBffRouter(
         return withCors(respond(httpStatusForDataSourceEnvelope(envelope), envelope))
       }
 
-      const dataSourceMatch = path.match(/^\/v1\/data-sources\/([^/]+)(?:\/(test-connection))?$/)
+      const dataSourceMatch = path.match(/^\/v1\/data-sources\/([^/]+)(?:\/(test-connection|lineage|schema-review))?$/)
       if (dataSourceMatch) {
         const [, pathDataSourceId, action] = dataSourceMatch
         const dataSourceId = decodeURIComponent(pathDataSourceId)
@@ -555,6 +555,26 @@ export function createChatBiBffRouter(
         }
         if (method === 'POST' && action === 'test-connection') {
           const envelope = dataSources.testConnection({ actor: actorFrom(request), dataSourceId })
+          return withCors(respond(httpStatusForDataSourceEnvelope(envelope), envelope))
+        }
+        if (method === 'GET' && action === 'lineage') {
+          const envelope = dataSources.getLineage({ actor: actorFrom(request), dataSourceId })
+          return withCors(respond(httpStatusForDataSourceEnvelope(envelope), envelope))
+        }
+        if (method === 'POST' && action === 'schema-review') {
+          const body = (request.body ?? {}) as Record<string, any>
+          const nestedChange = (body.change ?? {}) as Record<string, any>
+          const envelope = dataSources.reviewSchemaChange({
+            actor: actorFrom(request),
+            dataSourceId,
+            change: {
+              type: body.type ?? nestedChange.type,
+              tableId: body.tableId ?? body.table_id ?? nestedChange.tableId ?? nestedChange.table_id,
+              columnName: body.columnName ?? body.column_name ?? nestedChange.columnName ?? nestedChange.column_name,
+              newType: body.newType ?? body.new_type ?? nestedChange.newType ?? nestedChange.new_type,
+              reason: body.reason ?? nestedChange.reason ?? '',
+            },
+          })
           return withCors(respond(httpStatusForDataSourceEnvelope(envelope), envelope))
         }
       }

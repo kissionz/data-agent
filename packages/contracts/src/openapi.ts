@@ -502,6 +502,29 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/data-sources/{dataSourceId}/lineage': {
+      get: {
+        summary: '获取数据源字段级血缘',
+        description: '返回上游来源、下游认证指标/看板/验证案例影响、字段级引用和 Schema 变更审批摘要。',
+        parameters: [{ name: 'dataSourceId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '字段级血缘与下游影响' },
+          404: { description: '数据源不存在或不可见' },
+        },
+      },
+    },
+    '/v1/data-sources/{dataSourceId}/schema-review': {
+      post: {
+        summary: '评审数据源 Schema 变更',
+        description: '按字段血缘、认证指标、受限字段和下游资产影响返回 approved/blocked/requires_review 裁决。',
+        parameters: [{ name: 'dataSourceId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: 'Schema 变更评审结果' },
+          403: { description: '角色无权评审' },
+          404: { description: '数据源不存在或不可见' },
+        },
+      },
+    },
     '/v1/assets/{assetId}/favorite': {
       post: {
         summary: '更新协作资产收藏状态',

@@ -250,7 +250,13 @@ export type DataSourceConnectionStatus = 'healthy' | 'degraded' | 'failed' | 'sy
 export interface DataSourceAuditEvent {
   id: string
   at: string
-  type: 'data_source.listed' | 'data_source.connection_tested' | 'data_source.metadata_viewed' | 'data_source.quality_blocked'
+  type:
+    | 'data_source.listed'
+    | 'data_source.connection_tested'
+    | 'data_source.metadata_viewed'
+    | 'data_source.quality_blocked'
+    | 'data_source.lineage_viewed'
+    | 'data_source.schema_change_reviewed'
   actorUserId: string
   tenantId: string
   workspaceId: string
@@ -309,6 +315,68 @@ export interface DataSourceView {
   audit: DataSourceAuditEvent[]
 }
 
+export interface DataSourceLineageView {
+  contractVersion: typeof CONTRACT_VERSION
+  dataSourceId: string
+  upstream: Array<{
+    id: string
+    type: 'source_system' | 'ingestion_job'
+    name: string
+    freshness: string
+  }>
+  downstream: Array<{
+    id: string
+    type: 'semantic_metric' | 'dashboard' | 'verified_case'
+    name: string
+    owner: string
+    criticality: 'p0' | 'p1' | 'p2'
+  }>
+  columnLineage: Array<{
+    tableId: string
+    columnName: string
+    upstreamExpression: string
+    downstreamRefs: string[]
+    classification: 'public' | 'internal' | 'confidential' | 'restricted'
+  }>
+  impactSummary: {
+    certifiedMetricsAffected: number
+    dashboardsAffected: number
+    restrictedFields: number
+    requiresApprovalForSchemaChange: boolean
+  }
+  audit: DataSourceAuditEvent[]
+}
+
+export type DataSourceSchemaChangeType = 'add_column' | 'drop_column' | 'change_type'
+
+export interface DataSourceSchemaChangeReviewRequest {
+  actor: ActorContext
+  dataSourceId: string
+  change: {
+    type: DataSourceSchemaChangeType
+    tableId: string
+    columnName: string
+    newType?: string
+    reason: string
+  }
+}
+
+export interface DataSourceSchemaChangeReview {
+  contractVersion: typeof CONTRACT_VERSION
+  dataSourceId: string
+  changeId: string
+  decision: 'approved' | 'blocked' | 'requires_review'
+  reasons: string[]
+  impactedAssets: DataSourceLineageView['downstream']
+  requiredApprovers: UserRole[]
+  rolloutPlan: {
+    requiresBackfill: boolean
+    requiresSemanticReview: boolean
+    safeDeployWindow: string
+  }
+  audit: DataSourceAuditEvent[]
+}
+
 export interface ListDataSourcesRequest {
   actor: ActorContext
   query?: string
@@ -316,6 +384,11 @@ export interface ListDataSourcesRequest {
 }
 
 export interface GetDataSourceRequest {
+  actor: ActorContext
+  dataSourceId: string
+}
+
+export interface GetDataSourceLineageRequest {
   actor: ActorContext
   dataSourceId: string
 }

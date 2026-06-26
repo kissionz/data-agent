@@ -63,6 +63,106 @@ describe('Data source service', () => {
     ]))
   })
 
+  it('returns field-level lineage and downstream impact before schema changes', () => {
+    const service = createDataSourceApplicationService({ now: () => '2026-06-24T10:03:00+08:00' })
+    const response = service.getLineage({ actor, dataSourceId: 'warehouse_sales' })
+
+    expect(response.ok).toBe(true)
+    if (!response.ok) return
+    expect(response.data).toMatchObject({
+      dataSourceId: 'warehouse_sales',
+      impactSummary: {
+        certifiedMetricsAffected: 1,
+        dashboardsAffected: 1,
+        restrictedFields: 1,
+        requiresApprovalForSchemaChange: true,
+      },
+    })
+    expect(response.data.downstream).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'metric_net_revenue', type: 'semantic_metric', criticality: 'p0' }),
+    ]))
+    expect(response.data.columnLineage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        columnName: 'net_revenue',
+        downstreamRefs: expect.arrayContaining(['metric_net_revenue']),
+      }),
+    ]))
+    expect(response.data.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'data_source.lineage_viewed' }),
+    ]))
+  })
+
+  it('blocks schema changes that would break certified metric lineage', () => {
+    const service = createDataSourceApplicationService({ now: () => '2026-06-24T10:04:00+08:00' })
+    const response = service.reviewSchemaChange({
+      actor,
+      dataSourceId: 'warehouse_sales',
+      change: {
+        type: 'drop_column',
+        tableId: 'dwd_order_settlement',
+        columnName: 'net_revenue',
+        reason: '上游字段计划下线',
+      },
+    })
+
+    expect(response.ok).toBe(true)
+    if (!response.ok) return
+    expect(response.data).toMatchObject({
+      decision: 'blocked',
+      rolloutPlan: {
+        requiresBackfill: true,
+        requiresSemanticReview: true,
+      },
+    })
+    expect(response.data.impactedAssets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'metric_net_revenue', criticality: 'p0' }),
+    ]))
+    expect(response.data.reasons.join(' ')).toContain('P0')
+    expect(response.data.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'data_source.schema_change_reviewed' }),
+    ]))
+  })
+
+  it('approves low-risk additive schema changes and denies non-admin reviewers', () => {
+    const service = createDataSourceApplicationService({ now: () => '2026-06-24T10:05:00+08:00' })
+    const approved = service.reviewSchemaChange({
+      actor,
+      dataSourceId: 'warehouse_sales',
+      change: {
+        type: 'add_column',
+        tableId: 'dwd_order_settlement',
+        columnName: 'campaign_code',
+        newType: 'varchar',
+        reason: '补充营销活动维度',
+      },
+    })
+    expect(approved.ok).toBe(true)
+    if (!approved.ok) return
+    expect(approved.data).toMatchObject({
+      decision: 'approved',
+      impactedAssets: [],
+      requiredApprovers: [],
+      rolloutPlan: {
+        requiresBackfill: false,
+        requiresSemanticReview: false,
+      },
+    })
+
+    const denied = service.reviewSchemaChange({
+      actor: { ...actor, roles: ['business_user'] },
+      dataSourceId: 'warehouse_sales',
+      change: {
+        type: 'add_column',
+        tableId: 'dwd_order_settlement',
+        columnName: 'campaign_code',
+        reason: '普通用户尝试变更',
+      },
+    })
+    expect(denied.ok).toBe(false)
+    if (denied.ok) return
+    expect(denied.error.code).toBe('PERMISSION_DENIED')
+  })
+
   it('tests read-only connections without exposing raw credentials', () => {
     const service = createDataSourceApplicationService({ now: () => '2026-06-24T10:02:00+08:00' })
     const response = service.testConnection({ actor, dataSourceId: 'warehouse_finance' })
@@ -133,6 +233,38 @@ describe('Data source service', () => {
         status: 'warning',
         latencyMs: 238,
         readOnlyCredential: true,
+      },
+    })
+
+    const lineage = router.handle({
+      method: 'GET',
+      path: '/v1/data-sources/warehouse_sales/lineage',
+      headers: actorHeaders,
+    })
+    expect(lineage.status).toBe(200)
+    expect(lineage.body).toMatchObject({
+      ok: true,
+      data: {
+        impactSummary: { certifiedMetricsAffected: 1 },
+      },
+    })
+
+    const schemaReview = router.handle({
+      method: 'POST',
+      path: '/v1/data-sources/warehouse_sales/schema-review',
+      headers: actorHeaders,
+      body: {
+        type: 'drop_column',
+        table_id: 'dwd_order_settlement',
+        column_name: 'net_revenue',
+        reason: '测试下线',
+      },
+    })
+    expect(schemaReview.status).toBe(200)
+    expect(schemaReview.body).toMatchObject({
+      ok: true,
+      data: {
+        decision: 'blocked',
       },
     })
   })

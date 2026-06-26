@@ -13,6 +13,7 @@ import { RUN_DISPLAY_STATUSES, type RunMode } from '@insightflow/contracts/domai
 import { serializeSseEvents as serializeEventsFromSubpath } from '@insightflow/contracts/events'
 import { openApiDocument as openApiDocumentFromSubpath } from '@insightflow/contracts/openapi'
 import {
+  createDeveloperEndpointRequest,
   createDeveloperSdkRequest,
   createEmbedFrameConfig,
   createEmbedIframeSnippet,
@@ -122,6 +123,8 @@ describe('@insightflow/contracts package entry', () => {
         },
       },
     })
+    expect(requiredScopesForEndpoint('exports.status')).toEqual(['exports:read'])
+    expect(requiredScopesForEndpoint('results.page')).toEqual(['runs:read'])
     expect(requiredScopesForEndpoint('embed.issue')).toEqual(['embed:issue'])
   })
 
@@ -182,6 +185,44 @@ describe('@insightflow/contracts package entry', () => {
       body: {
         source: { type: 'asset', assetId: 'asset_revenue_trend' },
         database_password: 'should-not-pass',
+      },
+    })).toThrow(/database credentials/)
+
+    const pageRequest = createDeveloperEndpointRequest({
+      baseUrl: 'https://api.example.com/',
+      endpoint: 'results.page',
+      apiKey: 'ifk_live_redacted',
+      runId: 'run_001',
+      conversationId: 'conversation_001',
+      cursor: 'offset:50',
+      limit: 50,
+    })
+    expect(pageRequest).toMatchObject({
+      method: 'GET',
+      url: 'https://api.example.com/v1/results/run_001?conversation_id=conversation_001&cursor=offset%3A50&limit=50',
+      headers: expect.objectContaining({
+        authorization: 'Bearer ifk_live_redacted',
+      }),
+    })
+
+    const exportStatus = createDeveloperEndpointRequest({
+      baseUrl: 'https://api.example.com',
+      endpoint: 'exports.status',
+      apiKey: 'ifk_live_redacted',
+      exportId: 'export_001',
+    })
+    expect(exportStatus).toMatchObject({
+      method: 'GET',
+      url: 'https://api.example.com/v1/sharing/exports/export_001',
+    })
+
+    expect(() => createDeveloperEndpointRequest({
+      baseUrl: 'https://api.example.com',
+      endpoint: 'exports.create',
+      apiKey: 'ifk_live_redacted',
+      body: {
+        source: { type: 'run', runId: 'run_001', conversationId: 'conversation_001' },
+        database_connection_string: 'postgres://should-not-pass',
       },
     })).toThrow(/database credentials/)
 

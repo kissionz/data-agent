@@ -848,6 +848,7 @@ export type DeveloperScope =
   | 'semantic:read'
   | 'assets:read'
   | 'exports:create'
+  | 'exports:read'
   | 'webhooks:manage'
   | 'embed:issue'
 

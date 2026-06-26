@@ -4,11 +4,39 @@ export type DeveloperSdkEndpoint =
   | 'questions.submit'
   | 'runs.read'
   | 'runs.events'
+  | 'results.page'
   | 'semantic.read'
   | 'assets.read'
   | 'exports.create'
+  | 'exports.status'
   | 'webhooks.manage'
   | 'embed.issue'
+
+export type DeveloperEndpointRequestInput =
+  | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
+      endpoint: 'questions.submit'
+      body: unknown
+    })
+  | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
+      endpoint: 'runs.read' | 'runs.events'
+      runId: string
+      conversationId: string
+    })
+  | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
+      endpoint: 'results.page'
+      runId: string
+      conversationId: string
+      cursor?: string
+      limit?: number
+    })
+  | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
+      endpoint: 'exports.create'
+      body: unknown
+    })
+  | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
+      endpoint: 'exports.status'
+      exportId: string
+    })
 
 export interface DeveloperSdkRequestInput {
   baseUrl: string
@@ -55,9 +83,11 @@ const endpointScopes: Record<DeveloperSdkEndpoint, DeveloperScope[]> = {
   'questions.submit': ['questions:write'],
   'runs.read': ['runs:read'],
   'runs.events': ['runs:read'],
+  'results.page': ['runs:read'],
   'semantic.read': ['semantic:read'],
   'assets.read': ['assets:read'],
   'exports.create': ['exports:create'],
+  'exports.status': ['exports:read'],
   'webhooks.manage': ['webhooks:manage'],
   'embed.issue': ['embed:issue'],
 }
@@ -91,6 +121,53 @@ export function createDeveloperSdkRequest(input: DeveloperSdkRequestInput): Deve
   }
 
   return request
+}
+
+export function createDeveloperEndpointRequest(input: DeveloperEndpointRequestInput): DeveloperSdkRequest {
+  switch (input.endpoint) {
+    case 'questions.submit':
+      return createDeveloperSdkRequest({
+        ...baseEndpointInput(input),
+        method: 'POST',
+        path: '/v1/questions',
+        body: input.body,
+      })
+    case 'runs.read':
+      return createDeveloperSdkRequest({
+        ...baseEndpointInput(input),
+        method: 'GET',
+        path: `/v1/runs/${encodeURIComponent(input.runId)}?${query({ conversation_id: input.conversationId })}` as `/${string}`,
+      })
+    case 'runs.events':
+      return createDeveloperSdkRequest({
+        ...baseEndpointInput(input),
+        method: 'GET',
+        path: `/v1/runs/${encodeURIComponent(input.runId)}/events?${query({ conversation_id: input.conversationId })}` as `/${string}`,
+      })
+    case 'results.page':
+      return createDeveloperSdkRequest({
+        ...baseEndpointInput(input),
+        method: 'GET',
+        path: `/v1/results/${encodeURIComponent(input.runId)}?${query({
+          conversation_id: input.conversationId,
+          cursor: input.cursor,
+          limit: input.limit,
+        })}` as `/${string}`,
+      })
+    case 'exports.create':
+      return createDeveloperSdkRequest({
+        ...baseEndpointInput(input),
+        method: 'POST',
+        path: '/v1/sharing/exports',
+        body: input.body,
+      })
+    case 'exports.status':
+      return createDeveloperSdkRequest({
+        ...baseEndpointInput(input),
+        method: 'GET',
+        path: `/v1/sharing/exports/${encodeURIComponent(input.exportId)}`,
+      })
+  }
 }
 
 export function createEmbedFrameConfig(input: EmbedFrameConfigInput): EmbedFrameConfig {
@@ -165,6 +242,23 @@ function normalizeBaseUrl(baseUrl: string) {
     throw new Error('baseUrl must use HTTPS outside localhost.')
   }
   return parsed.toString().replace(/\/+$/, '')
+}
+
+function baseEndpointInput(input: DeveloperEndpointRequestInput): Pick<DeveloperSdkRequestInput, 'baseUrl' | 'apiKey' | 'headers' | 'idempotencyKey'> {
+  return {
+    baseUrl: input.baseUrl,
+    apiKey: input.apiKey,
+    headers: input.headers,
+    idempotencyKey: input.idempotencyKey,
+  }
+}
+
+function query(values: Record<string, string | number | undefined>) {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) params.set(key, String(value))
+  }
+  return params.toString()
 }
 
 function assertHttpsOrigin(origin: string, label: string) {

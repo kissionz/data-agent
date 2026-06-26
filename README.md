@@ -19,7 +19,7 @@
 - 响应式布局：桌面四栏；窄屏抽屉/底部面板；移动端单栏与固定输入。
 - 领域与测试基座：运行状态机、会话模型、语义版本、权限拒绝与安全场景测试。
 - 共享契约：`AnalysisIR v1`、`PublicRunView`、`ResultPageView`、API 包络、澄清、取消、审计事件与错误对象。
-- 共享契约包：`@insightflow/contracts` workspace 包已拥有独立的 `api`、`domain`、`events`、`openapi`、`sdk` 契约源码，暴露版本、schema、错误码、公共 DTO、SSE helper、OpenAPI 草案、公共错误包络、Run/Result envelope、开发者请求 helper 和嵌入式 iframe 配置 helper。
+- 共享契约包：`@insightflow/contracts` workspace 包已拥有独立的 `api`、`domain`、`events`、`openapi`、`sdk` 契约源码，暴露版本、schema、错误码、公共 DTO、SSE helper、OpenAPI 草案、公共错误包络、Run/Result envelope、开发者 endpoint 请求 helper 和嵌入式 iframe 配置 helper。
 - 开发者接入契约：`/v1/developer` 支持服务账号、API Key、Webhook 和短期 embed token 的本地治理契约，覆盖 scope、配额、过期、撤销、轮换宽限期、API Key 验签为服务端可信 actor、Webhook 签名/重放保护/退避重试/死信计划和不暴露明文密钥/数据库凭据。
 - 本地应用服务：deterministic `submitQuestion` / `clarifyRun` / `cancelRun` / `getRun` / `getResultPage`，前端工作台已通过该服务驱动 mock 流程。
 - 本地 BFF router：`/healthz`、`/openapi.json`、`POST /v1/questions`、`GET /v1/runs/{id}`、`GET /v1/results/{id}`、`POST /v1/runs/{id}/clarify`、`POST /v1/runs/{id}/cancel` 的可测试 HTTP 契约。
@@ -184,7 +184,7 @@ pnpm build
 
 ## 建议下一阶段
 
-1. 将 `@insightflow/contracts/openapi` 从当前草案升级为 schema 生成产物，并把当前 `@insightflow/contracts/sdk` 手写基线升级为代码生成/发布流程。
+1. 将 `@insightflow/contracts/openapi` 从当前草案升级为 schema 生成产物，并把当前 `@insightflow/contracts/sdk` endpoint helper 手写基线升级为代码生成/发布流程。
 2. 将 `src/persistence/sql.ts` 接入具体 SQLite/PostgreSQL driver，补连接池配置、迁移执行 CLI 和生产审计查询 API；本地 JSON adapter 只作为开发替代。
 3. 增加 `apps/api`，用 Fastify/TypeBox 包装当前 deterministic service、router 和 SSE 契约。
 4. 将前端 service adapter 切到真实 BFF，同时保留 fixtures 作为黄金问题回归样本。

@@ -57,7 +57,7 @@ describe('Developer access service', () => {
     const created = service.createServiceAccount({
       actor: opsActor,
       name: 'BI Embed Host',
-      scopes: ['runs:read', 'embed:issue', 'webhooks:manage'],
+      scopes: ['runs:read', 'embed:issue', 'webhooks:manage', 'exports:read'],
       expiresInDays: 90,
       dailyRequestLimit: 1000,
     })
@@ -75,7 +75,7 @@ describe('Developer access service', () => {
       },
       createdBy: 'user_ops',
     })
-    expect(created.data.scopes).toEqual(['runs:read', 'embed:issue', 'webhooks:manage'])
+    expect(created.data.scopes).toEqual(['runs:read', 'embed:issue', 'webhooks:manage', 'exports:read'])
     expect(created.data.audit).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'developer.service_account_created' }),
     ]))

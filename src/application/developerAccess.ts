@@ -47,6 +47,7 @@ const allowedScopes: DeveloperScope[] = [
   'semantic:read',
   'assets:read',
   'exports:create',
+  'exports:read',
   'webhooks:manage',
   'embed:issue',
 ]

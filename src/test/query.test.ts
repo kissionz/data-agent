@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { ANALYSIS_IR_VERSION, type ActorContext, type AnalysisIR } from '../contracts'
-import { assertReadOnlySql, compileAnalysisQuery, executeReadOnlyQuery } from '../query'
+import {
+  assertReadOnlySql,
+  compileAnalysisQuery,
+  createQueryCancellationPlan,
+  executeReadOnlyQuery,
+  markQueryExecutionCancelled,
+} from '../query'
 
 const actor: ActorContext = {
   tenantId: 'tenant_demo',
@@ -119,8 +125,14 @@ describe('deterministic SQL compiler and query gateway', () => {
       sqlFingerprint: plan.sqlFingerprint,
       permissionDigest: plan.permissionDigest,
       status: 'executed',
+      cancellation: {
+        propagationTargets: ['planner', 'compiler', 'query_adapter', 'result_writer'],
+        deadlineMs: 3000,
+        status: 'pending',
+      },
     })
     expect(execution.summary.cacheKey).toMatch(/^qcache_/)
+    expect(execution.summary.cancellation.token).toMatch(/^qcancel_/)
     expect(JSON.stringify(execution.summary)).not.toContain('SELECT')
 
     const overBudget = compileAnalysisQuery({
@@ -129,5 +141,24 @@ describe('deterministic SQL compiler and query gateway', () => {
       budget: { maxScanBytes: 10 },
     })
     expect(() => executeReadOnlyQuery({ plan: overBudget, actor })).toThrow('scan estimate exceeds budget')
+  })
+
+  it('creates stable cancellation handles and marks propagation without exposing SQL', () => {
+    const plan = compileAnalysisQuery({ ir: ir(), actor })
+    const first = createQueryCancellationPlan(plan)
+    const second = createQueryCancellationPlan(plan)
+    const execution = executeReadOnlyQuery({ plan, actor })
+    const cancelled = markQueryExecutionCancelled(execution.summary, '2026-06-24T10:00:00+08:00')
+
+    expect(first).toEqual(second)
+    expect(cancelled).toMatchObject({
+      status: 'cancelled',
+      cancellation: {
+        token: first.token,
+        status: 'propagated',
+        propagatedAt: '2026-06-24T10:00:00+08:00',
+      },
+    })
+    expect(JSON.stringify(cancelled)).not.toContain(plan.sql)
   })
 })

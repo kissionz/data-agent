@@ -11,7 +11,7 @@ import { attachRun } from '../domain'
 import { emptyResult, partialTrendResult, trendResult } from '../mocks'
 import { createInMemoryChatBiPersistence } from '../persistence/memory'
 import type { ChatBiPersistence, StoredRunRecord } from '../persistence/ports'
-import { compileAnalysisQuery, executeReadOnlyQuery } from '../query'
+import { compileAnalysisQuery, executeReadOnlyQuery, markQueryExecutionCancelled } from '../query'
 import {
   ANALYSIS_IR_VERSION,
   CONTRACT_VERSION,
@@ -474,7 +474,10 @@ export function createChatBiApplicationService(
           ...found.stored!,
           run,
           executedQuery: false,
-          audit: [...found.stored!.audit, audit('query.cancelled', request.actor, run.id, '用户取消运行，当前未暴露结果。')],
+          queryExecution: found.stored!.queryExecution
+            ? markQueryExecutionCancelled(found.stored!.queryExecution, now())
+            : undefined,
+          audit: [...found.stored!.audit, audit('query.cancelled', request.actor, run.id, '用户取消运行，取消令牌已传播且当前未暴露结果。')],
         })
       } catch (error) {
         return {

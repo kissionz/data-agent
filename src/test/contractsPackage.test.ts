@@ -73,6 +73,16 @@ describe('@insightflow/contracts package entry', () => {
     expect(openApiDocumentFromSubpath.components.schemas.WebhookDeliveryPlanView).toMatchObject({
       additionalProperties: false,
     })
+    expect(openApiDocumentFromSubpath.components.schemas.QueryExecutionSummary).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining(['cancellation']),
+      properties: {
+        status: { enum: ['executed', 'blocked', 'cancelled'] },
+        cancellation: expect.objectContaining({
+          additionalProperties: false,
+        }),
+      },
+    })
     expect(openApiDocumentFromSubpath.components.schemas.ResultPageView).toMatchObject({
       additionalProperties: false,
       properties: {

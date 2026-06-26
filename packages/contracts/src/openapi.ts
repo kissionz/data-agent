@@ -762,6 +762,7 @@ export const openApiDocument = {
           'timeoutMs',
           'maxRows',
           'appliedGuards',
+          'cancellation',
           'status',
         ],
         properties: {
@@ -775,7 +776,22 @@ export const openApiDocument = {
           timeoutMs: { type: 'integer', minimum: 1 },
           maxRows: { type: 'integer', minimum: 1 },
           appliedGuards: { type: 'array', items: { type: 'string' } },
-          status: { enum: ['executed', 'blocked'] },
+          cancellation: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['token', 'propagationTargets', 'deadlineMs', 'status'],
+            properties: {
+              token: { type: 'string', minLength: 1 },
+              propagationTargets: {
+                type: 'array',
+                items: { enum: ['planner', 'compiler', 'query_adapter', 'result_writer'] },
+              },
+              deadlineMs: { type: 'integer', minimum: 1, maximum: 3000 },
+              status: { enum: ['pending', 'propagated', 'not_required'] },
+              propagatedAt: { type: 'string' },
+            },
+          },
+          status: { enum: ['executed', 'blocked', 'cancelled'] },
         },
       },
       ResultPageView: {

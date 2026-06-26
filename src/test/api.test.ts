@@ -116,6 +116,10 @@ describe('ChatBI local BFF router', () => {
     expect((firstBody.data as { queryExecution: { cacheKey: string; sqlFingerprint: string } }).queryExecution).toMatchObject({
       cacheKey: expect.stringMatching(/^qcache_/),
       sqlFingerprint: expect.any(String),
+      cancellation: {
+        token: expect.stringMatching(/^qcancel_/),
+        status: 'pending',
+      },
     })
     expect(JSON.stringify((firstBody.data as { queryExecution: unknown }).queryExecution)).not.toContain('SELECT')
   })

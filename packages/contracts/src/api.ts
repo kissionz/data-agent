@@ -70,6 +70,14 @@ export interface AnalysisIR {
 
 export type QueryDialect = 'postgresql' | 'snowflake'
 
+export interface QueryCancellationPlan {
+  token: string
+  propagationTargets: Array<'planner' | 'compiler' | 'query_adapter' | 'result_writer'>
+  deadlineMs: number
+  status: 'pending' | 'propagated' | 'not_required'
+  propagatedAt?: string
+}
+
 export interface QueryExecutionSummary {
   dialect: QueryDialect
   sqlFingerprint: string
@@ -81,7 +89,8 @@ export interface QueryExecutionSummary {
   timeoutMs: number
   maxRows: number
   appliedGuards: string[]
-  status: 'executed' | 'blocked'
+  cancellation: QueryCancellationPlan
+  status: 'executed' | 'blocked' | 'cancelled'
 }
 
 export interface AuditEvent {

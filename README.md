@@ -32,6 +32,7 @@
 - 评测回放服务：`/v1/evaluation` 支持黄金集发布门禁、失败回放列表和回放详情，服务层覆盖 P0 门禁阻断、阻断样本角色可见性、脱敏重放计划和不使用生产凭据规则。
 - 模型运营服务：`/v1/model-ops` 支持模型路由列表、单次路由决策和灰度回滚，服务层覆盖版本化 active/candidate、超时、温度、租户覆盖、配额、降级链、发布门禁阻断和 platform_ops/security_admin 回滚权限。
 - SLO 与性能预算服务：`/v1/operations/slo` 支持 SLO 报告和单次 Run 性能预算评估，服务层覆盖可用性、P95 延迟、成本、取消传播、扫描量、告警 runbook 和 allow/warn/block 决策。
+- 查询取消契约：`QueryExecutionSummary` 暴露 public-safe 取消 token、传播目标、3 秒 deadline 和传播状态，`cancelRun` 会把已有执行摘要标记为 `cancelled` 且不暴露结果。
 - 协作资产服务：`/v1/assets` 支持资产列表、收藏、订阅和审计链路，服务层覆盖可见范围过滤、审核中不可订阅、接收者重新鉴权摘要和 public audit event。
 - 本地编译执行边界：Analysis IR 经语义 Catalog / Join Graph 校验后生成只读 SQL 计划，注入租户/工作区/业务域守卫，并产出 SQL 指纹、缓存键、预算阻断和 public-safe 执行摘要。
 - 错误码目录：所有 public error code 都有 HTTP 状态、默认可重试性和用户安全性标记。

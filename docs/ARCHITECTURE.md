@@ -54,7 +54,7 @@
 
 语义治理当前是 F03 的服务治理切片：`SemanticGovernanceApplicationService` 以本地 catalog 为事实源，提供指标列表、详情、提交评审、认证发布、参考 SQL 对账门禁、角色权限、不可变版本和 Join Graph 风险暴露。认证后的指标才可进入可信模式；具体高风险 Join 仍在 Compiler 使用该维度时阻断。它尚未接入真实语义对象仓库、Join Graph 编辑器、参考 SQL 自动对账执行器、灰度发布或回滚。
 
-本地 Query Gateway 当前是 F06 的安全边界切片：Compiler 只接受规范 Analysis IR 和 Semantic Catalog 裁决后的 metric/dimension ID，生成只读 SQL AST/SQL，并注入 tenant/workspace/business domain 守卫；Gateway 再次校验只读、多语句、预算、语义版本、SQL 指纹、权限摘要、数据版本和缓存键。`PublicRunView` 只返回 public-safe `QueryExecutionSummary`，不向业务用户暴露原始 SQL；`ResultPageView` 通过 `/v1/results/{id}` 在服务端复核租户/工作区边界后返回列、当前页行、`nextCursor`、`hasMore`、权限摘要和显式 `rawSqlExposed=false`/`rawDatabaseCredentialsExposed=false`。它尚未连接真实数仓、EXPLAIN、连接池、取消令牌、生产对象存储结果页或方言插件矩阵。
+本地 Query Gateway 当前是 F06 的安全边界切片：Compiler 只接受规范 Analysis IR 和 Semantic Catalog 裁决后的 metric/dimension ID，生成只读 SQL AST/SQL，并注入 tenant/workspace/business domain 守卫；Gateway 再次校验只读、多语句、预算、语义版本、SQL 指纹、权限摘要、数据版本、缓存键和取消令牌。`PublicRunView` 只返回 public-safe `QueryExecutionSummary`，不向业务用户暴露原始 SQL；该摘要包含取消 token、planner/compiler/query_adapter/result_writer 传播目标、≤3s deadline 和传播状态，`cancelRun` 会把已有执行摘要标记为 `cancelled` 并保持结果不可见；`ResultPageView` 通过 `/v1/results/{id}` 在服务端复核租户/工作区边界后返回列、当前页行、`nextCursor`、`hasMore`、权限摘要和显式 `rawSqlExposed=false`/`rawDatabaseCredentialsExposed=false`。它尚未连接真实数仓、EXPLAIN、连接池、生产 AbortController/数据库取消、生产对象存储结果页或方言插件矩阵。
 
 评测回放当前是 F09/F10 的服务治理切片：`EvaluationApplicationService` 使用运营中心 fixtures 形成可测试的黄金集门禁和失败回放契约。任一 P0 门禁低于目标时 `releaseAllowed=false`，阻断样本按角色过滤，回放计划显式声明需要脱敏且不能使用生产凭据。它尚未接入真实黄金集管理、批量回归队列、OpenTelemetry trace、灰度发布控制面或审计落库；这些能力应在后续 `EvaluationService`、`ReplayRunner` 与 `ReleaseGate` adapter 中落地。
 
@@ -336,7 +336,7 @@ interface EventBus { publish(event: DomainEvent): Promise<void>; subscribe(runId
 - UI 中所有数字必须来自 fixture 查询结果，不能硬编码在答案组件。
 - 状态由后端状态机产生，刷新后可恢复；不能只保存在 React state。
 - 澄清选择会生成新的 IR revision，并继续同一个 Run 链路。
-- 取消使用 `AbortController` 贯穿 Planner/Query Adapter；测试断言不再产生完成事件。
+- 取消在本地契约中生成 query cancellation token、传播目标和 3 秒 deadline；生产 adapter 必须把 token 贯穿到 `AbortController`、Query Adapter 和结果写入器，测试断言不再产生完成事件。
 - 开发调试面板可切换场景，但生产构建不可见。
 
 ## 9. 安全、治理与可观测性

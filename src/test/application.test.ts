@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { createChatBiApplicationService } from '../application'
-import type { ActorContext, SubmitQuestionRequest } from '../contracts'
+import { ANALYSIS_IR_VERSION, type ActorContext, type AnalysisIR, type SubmitQuestionRequest } from '../contracts'
+import { createWaitingRun, transitionRun } from '../domain'
+import { createInMemoryChatBiPersistence } from '../persistence'
+import { compileAnalysisQuery, executeReadOnlyQuery } from '../query'
 
 const actor: ActorContext = {
   tenantId: 'tenant_demo',
@@ -49,7 +52,13 @@ describe('ChatBI application service', () => {
     expect(response.data.queryExecution).toMatchObject({
       dialect: 'postgresql',
       status: 'executed',
-      appliedGuards: expect.arrayContaining(['tenant_scope', 'read_only_ast', 'budget_limit']),
+      appliedGuards: expect.arrayContaining(['tenant_scope', 'read_only_ast', 'budget_limit', 'cancellation_token']),
+      cancellation: {
+        token: expect.stringMatching(/^qcancel_/),
+        propagationTargets: ['planner', 'compiler', 'query_adapter', 'result_writer'],
+        deadlineMs: 3000,
+        status: 'pending',
+      },
     })
     expect(response.data.queryExecution?.cacheKey).toMatch(/^qcache_/)
     expect(JSON.stringify(response.data.queryExecution)).not.toContain('SELECT')
@@ -109,6 +118,81 @@ describe('ChatBI application service', () => {
     if (!secondPage.ok) throw new Error('expected second result page')
     expect(secondPage.data.rows.map((row) => row.key)).toEqual(['2026-04', '2026-05'])
     expect(secondPage.data.page.hasMore).toBe(false)
+  })
+
+  it('propagates cancellation to the query execution handle before hiding results', () => {
+    const persistence = createInMemoryChatBiPersistence()
+    const service = createChatBiApplicationService({
+      now: () => '2026-06-23T09:30:00+08:00',
+      persistence,
+    })
+    const runId = 'run_cancel_querying'
+    const conversationId = 'conversation_cancel_querying'
+    const started = transitionRun(transitionRun(createWaitingRun({
+      id: runId,
+      tenantId: actor.tenantId,
+      workspaceId: actor.workspaceId,
+      conversationId,
+      question: '过去 12 个月净收入趋势',
+      mode: 'trusted',
+      semanticVersion: actor.semanticVersion,
+      createdAt: '2026-06-23T09:00:00+08:00',
+    }), { type: 'QUESTION_SUBMITTED', at: '2026-06-23T09:00:01+08:00' }), {
+      type: 'QUERY_STARTED',
+      at: '2026-06-23T09:00:02+08:00',
+    })
+    const analysisIr: AnalysisIR = {
+      schemaVersion: ANALYSIS_IR_VERSION,
+      irId: `ir_${runId}`,
+      revision: 1,
+      mode: 'trusted',
+      semanticVersion: actor.semanticVersion,
+      intent: 'trend',
+      metricIds: ['net_revenue'],
+      dimensionIds: ['order_date'],
+      filters: [],
+      timeRange: {
+        kind: 'relative',
+        expression: 'last_12_complete_months',
+        timezone: actor.timezone,
+        grain: 'month',
+      },
+      limit: 500,
+      assumptions: ['使用认证指标。'],
+      safety: {
+        requiresClarification: false,
+        executedQuery: true,
+        permissionChecked: true,
+        budgetChecked: true,
+      },
+    }
+    const plan = compileAnalysisQuery({ ir: analysisIr, actor })
+    const execution = executeReadOnlyQuery({ plan, actor })
+    persistence.saveRun({
+      run: started,
+      executedQuery: true,
+      analysisIr,
+      queryExecution: execution.summary,
+      audit: [],
+      requestId: 'req_cancel_querying',
+      traceId: 'trace_cancel_querying',
+    })
+
+    const cancelled = service.cancelRun({ runId, conversationId, actor })
+
+    expect(cancelled.ok).toBe(true)
+    if (!cancelled.ok) throw new Error('expected cancel response')
+    expect(cancelled.data.displayStatus).toBe('waiting_input')
+    expect(cancelled.data.executedQuery).toBe(false)
+    expect(cancelled.data.queryExecution).toMatchObject({
+      status: 'cancelled',
+      cancellation: {
+        token: execution.summary.cancellation.token,
+        status: 'propagated',
+        propagatedAt: '2026-06-23T09:30:00+08:00',
+      },
+    })
+    expect(cancelled.data.audit.map((event) => event.type)).toEqual(['query.cancelled'])
   })
 
   it('holds an ambiguous run active until clarification resolves it', () => {

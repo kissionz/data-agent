@@ -36,6 +36,19 @@ describe('@insightflow/contracts package entry', () => {
     expect(serializeSseEvents([{ id: 'evt_1', event: 'run.snapshot', data: { ok: true } }])).toContain('event: run.snapshot')
     expect(openApiDocument.info.version).toBe(CONTRACT_VERSION)
     expect(openApiDocument.components.schemas.AnalysisIR).toBe(analysisIrJsonSchema)
+    expect(openApiDocument.components.schemas.PublicApiError).toMatchObject({
+      additionalProperties: false,
+      properties: {
+        code: { enum: expect.arrayContaining(Object.keys(PUBLIC_ERROR_CATALOG)) },
+      },
+    })
+    expect(openApiDocument.paths['/v1/questions'].post.responses[400]).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' },
+        },
+      },
+    })
   })
 
   it('supports direct api, domain, events, openapi and sdk subpath imports without app-source imports', () => {
@@ -63,6 +76,31 @@ describe('@insightflow/contracts package entry', () => {
       properties: {
         rawSqlExposed: { const: false },
         rawDatabaseCredentialsExposed: { const: false },
+      },
+    })
+    expect(openApiDocumentFromSubpath.components.schemas.PublicRunEnvelope).toMatchObject({
+      oneOf: expect.arrayContaining([
+        expect.objectContaining({
+          properties: expect.objectContaining({
+            data: { $ref: '#/components/schemas/PublicRunView' },
+          }),
+        }),
+      ]),
+    })
+    expect(openApiDocumentFromSubpath.components.schemas.ResultPageEnvelope).toMatchObject({
+      oneOf: expect.arrayContaining([
+        expect.objectContaining({
+          properties: expect.objectContaining({
+            data: { $ref: '#/components/schemas/ResultPageView' },
+          }),
+        }),
+      ]),
+    })
+    expect(openApiDocumentFromSubpath.paths['/v1/results/{runId}'].get.responses[200]).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/ResultPageEnvelope' },
+        },
       },
     })
     expect(requiredScopesForEndpoint('embed.issue')).toEqual(['embed:issue'])

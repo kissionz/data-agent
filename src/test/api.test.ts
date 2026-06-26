@@ -70,6 +70,12 @@ describe('ChatBI local BFF router', () => {
           QueryExecutionSummary: expect.objectContaining({
             additionalProperties: false,
           }),
+          PublicApiError: expect.objectContaining({
+            additionalProperties: false,
+          }),
+          PublicRunEnvelope: expect.objectContaining({
+            oneOf: expect.any(Array),
+          }),
           WebhookDeliveryPlanView: expect.objectContaining({
             additionalProperties: false,
           }),

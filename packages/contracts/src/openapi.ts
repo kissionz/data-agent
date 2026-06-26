@@ -1,4 +1,21 @@
-import { CONTRACT_VERSION, analysisIrJsonSchema } from './api'
+import { CONTRACT_VERSION, PUBLIC_ERROR_CATALOG, analysisIrJsonSchema } from './api'
+
+const publicErrorCodeEnum = Object.keys(PUBLIC_ERROR_CATALOG)
+
+function jsonResponse(description: string, schema: Record<string, unknown> = { $ref: '#/components/schemas/ApiEnvelope' }) {
+  return {
+    description,
+    content: {
+      'application/json': {
+        schema,
+      },
+    },
+  }
+}
+
+function errorResponse(description: string) {
+  return jsonResponse(description, { $ref: '#/components/schemas/ErrorEnvelope' })
+}
 
 export const openApiDocument = {
   openapi: '3.1.0',
@@ -21,7 +38,7 @@ export const openApiDocument = {
       get: {
         summary: 'OpenAPI 契约',
         responses: {
-          200: { description: 'OpenAPI 3.1 document' },
+          200: jsonResponse('OpenAPI 3.1 document', { type: 'object', additionalProperties: true }),
         },
       },
     },
@@ -30,9 +47,9 @@ export const openApiDocument = {
         summary: '提交自然语言问题',
         description: '返回 PublicRunView。当前本地实现同步返回最终 mock 状态，生产可改为 202 + SSE。',
         responses: {
-          200: { description: '问题已处理或进入澄清/失败状态' },
-          400: { description: '请求契约无效' },
-          409: { description: '会话已有活动 Run' },
+          200: jsonResponse('问题已处理或进入澄清/失败状态', { $ref: '#/components/schemas/PublicRunEnvelope' }),
+          400: errorResponse('请求契约无效'),
+          409: errorResponse('会话已有活动 Run'),
         },
       },
     },
@@ -278,9 +295,9 @@ export const openApiDocument = {
         summary: '获取 Run 快照',
         parameters: [{ name: 'runId', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
-          200: { description: 'Run 快照' },
-          403: { description: '租户/工作空间边界拒绝' },
-          404: { description: 'Run 不存在' },
+          200: jsonResponse('Run 快照', { $ref: '#/components/schemas/PublicRunEnvelope' }),
+          403: errorResponse('租户/工作空间边界拒绝'),
+          404: errorResponse('Run 不存在'),
         },
       },
     },
@@ -295,10 +312,10 @@ export const openApiDocument = {
           { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 500, default: 50 } },
         ],
         responses: {
-          200: { description: '结果页，包含列定义、当前页行、下一页 cursor 和权限摘要' },
-          400: { description: 'cursor 或 limit 无效' },
-          403: { description: '租户/工作空间边界拒绝' },
-          404: { description: 'Run 或结果不存在' },
+          200: jsonResponse('结果页，包含列定义、当前页行、下一页 cursor 和权限摘要', { $ref: '#/components/schemas/ResultPageEnvelope' }),
+          400: errorResponse('cursor 或 limit 无效'),
+          403: errorResponse('租户/工作空间边界拒绝'),
+          404: errorResponse('Run 或结果不存在'),
         },
       },
     },
@@ -307,8 +324,8 @@ export const openApiDocument = {
         summary: '提交澄清候选',
         parameters: [{ name: 'runId', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
-          200: { description: '澄清完成并返回 Run 快照' },
-          400: { description: '候选缺失、过期或版本不匹配' },
+          200: jsonResponse('澄清完成并返回 Run 快照', { $ref: '#/components/schemas/PublicRunEnvelope' }),
+          400: errorResponse('候选缺失、过期或版本不匹配'),
         },
       },
     },
@@ -323,8 +340,8 @@ export const openApiDocument = {
         ],
         responses: {
           200: { description: 'SSE event stream' },
-          403: { description: '租户/工作空间边界拒绝' },
-          404: { description: 'Run 不存在' },
+          403: errorResponse('租户/工作空间边界拒绝'),
+          404: errorResponse('Run 不存在'),
         },
       },
     },
@@ -333,8 +350,8 @@ export const openApiDocument = {
         summary: '取消 Run',
         parameters: [{ name: 'runId', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
-          200: { description: '取消完成并返回 Run 快照' },
-          409: { description: '当前 Run 不可取消' },
+          200: jsonResponse('取消完成并返回 Run 快照', { $ref: '#/components/schemas/PublicRunEnvelope' }),
+          409: errorResponse('当前 Run 不可取消'),
         },
       },
     },
@@ -517,6 +534,121 @@ export const openApiDocument = {
       },
     },
     schemas: {
+      PublicApiError: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['code', 'message', 'retryable', 'debugReference'],
+        properties: {
+          code: {
+            enum: publicErrorCodeEnum,
+            description: '公共错误码；完整 HTTP 映射由 PUBLIC_ERROR_CATALOG 维护。',
+          },
+          message: { type: 'string', minLength: 1 },
+          retryable: { type: 'boolean' },
+          debugReference: {
+            type: 'string',
+            minLength: 1,
+            description: '可给支持团队定位的安全引用，不包含 SQL、凭据或无权资源明细。',
+          },
+        },
+      },
+      ErrorEnvelope: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['ok', 'error', 'requestId', 'traceId'],
+        properties: {
+          ok: { const: false },
+          error: { $ref: '#/components/schemas/PublicApiError' },
+          requestId: { type: 'string', minLength: 1 },
+          traceId: { type: 'string', minLength: 1 },
+        },
+      },
+      ApiEnvelope: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok', 'data', 'requestId', 'traceId'],
+            properties: {
+              ok: { const: true },
+              data: { type: 'object', additionalProperties: true },
+              requestId: { type: 'string', minLength: 1 },
+              traceId: { type: 'string', minLength: 1 },
+            },
+          },
+          { $ref: '#/components/schemas/ErrorEnvelope' },
+        ],
+      },
+      PublicRunView: {
+        type: 'object',
+        additionalProperties: true,
+        required: [
+          'contractVersion',
+          'requestId',
+          'traceId',
+          'runId',
+          'conversationId',
+          'question',
+          'displayStatus',
+          'mode',
+          'semanticVersion',
+          'version',
+          'executedQuery',
+          'audit',
+          'updatedAt',
+        ],
+        properties: {
+          contractVersion: { const: CONTRACT_VERSION },
+          requestId: { type: 'string', minLength: 1 },
+          traceId: { type: 'string', minLength: 1 },
+          runId: { type: 'string', minLength: 1 },
+          conversationId: { type: 'string', minLength: 1 },
+          question: { type: 'string', minLength: 1 },
+          displayStatus: { enum: ['waiting_input', 'understanding', 'querying', 'completed', 'needs_clarification', 'failed'] },
+          mode: { enum: ['trusted', 'exploration', 'expert'] },
+          semanticVersion: { type: 'string', minLength: 1 },
+          version: { type: 'integer', minimum: 1 },
+          executedQuery: { type: 'boolean' },
+          analysisIr: { $ref: '#/components/schemas/AnalysisIR' },
+          queryExecution: { $ref: '#/components/schemas/QueryExecutionSummary' },
+          result: { type: 'object', additionalProperties: true },
+          error: { $ref: '#/components/schemas/PublicApiError' },
+          audit: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          updatedAt: { type: 'string', minLength: 1 },
+        },
+      },
+      PublicRunEnvelope: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok', 'data', 'requestId', 'traceId'],
+            properties: {
+              ok: { const: true },
+              data: { $ref: '#/components/schemas/PublicRunView' },
+              requestId: { type: 'string', minLength: 1 },
+              traceId: { type: 'string', minLength: 1 },
+            },
+          },
+          { $ref: '#/components/schemas/ErrorEnvelope' },
+        ],
+      },
+      ResultPageEnvelope: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok', 'data', 'requestId', 'traceId'],
+            properties: {
+              ok: { const: true },
+              data: { $ref: '#/components/schemas/ResultPageView' },
+              requestId: { type: 'string', minLength: 1 },
+              traceId: { type: 'string', minLength: 1 },
+            },
+          },
+          { $ref: '#/components/schemas/ErrorEnvelope' },
+        ],
+      },
       AnalysisIR: analysisIrJsonSchema,
       WebhookDeliveryPlanView: {
         type: 'object',

@@ -5,9 +5,10 @@ import {
   assertResultIntegrity,
   createWaitingRun,
   transitionRun,
+  validateResultGrounding,
   type Clarification,
 } from '../domain'
-import { partialTrendResult, trendResult } from '../mocks'
+import { emptyResult, partialTrendResult, trendResult } from '../mocks'
 
 const at = '2026-06-22T09:00:00+08:00'
 
@@ -80,6 +81,46 @@ describe('Run six-state contract', () => {
         }],
       },
     })).toThrow('invalid cell reference')
+  })
+
+  it('rejects deterministic facts whose values do not match their referenced cells', () => {
+    expect(() => assertResultIntegrity({
+      ...trendResult,
+      answer: {
+        ...trendResult.answer,
+        facts: [{
+          ...trendResult.answer.facts[0],
+          value: 9999999,
+        }],
+      },
+    })).toThrow('value does not match any referenced cell')
+  })
+
+  it('reports grounded facts and a safe chart recommendation for trend results', () => {
+    const report = validateResultGrounding(trendResult)
+
+    expect(report).toMatchObject({
+      grounded: true,
+      checkedFacts: 2,
+      checkedReferences: 2,
+      chartSafety: {
+        safe: true,
+        recommendedVisualization: 'line',
+        warnings: [],
+      },
+    })
+  })
+
+  it('keeps empty results grounded while recommending a table or empty state', () => {
+    const report = validateResultGrounding(emptyResult)
+
+    expect(report.grounded).toBe(true)
+    expect(report.checkedFacts).toBe(0)
+    expect(report.chartSafety).toMatchObject({
+      safe: true,
+      recommendedVisualization: 'table',
+    })
+    expect(report.chartSafety.warnings[0]).toContain('Empty result')
   })
 
   it('only resolves a clarification with the bound candidate version', () => {

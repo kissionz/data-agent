@@ -70,6 +70,20 @@ export interface RunResult {
   freshnessAt: string
 }
 
+export type RecommendedVisualization = 'line' | 'bar' | 'table'
+
+export interface ResultGroundingReport {
+  grounded: boolean
+  checkedFacts: number
+  checkedReferences: number
+  mismatches: string[]
+  chartSafety: {
+    safe: boolean
+    recommendedVisualization: RecommendedVisualization
+    warnings: string[]
+  }
+}
+
 export interface ClarificationCandidate {
   id: string
   label: string
@@ -285,13 +299,102 @@ export function assertResultIntegrity(result: RunResult): void {
   if (result.completeness === 'partial' && result.warnings.length === 0) {
     throw new Error('A partial result must explain its incomplete state')
   }
+  const grounding = validateResultGrounding(result)
+  if (!grounding.grounded) {
+    throw new Error(grounding.mismatches[0] ?? 'Result answer is not grounded in the result set')
+  }
+}
+
+export function validateResultGrounding(result: RunResult): ResultGroundingReport {
+  const mismatches: string[] = []
+  let checkedReferences = 0
+
+  const rowsByKey = new Map(result.rows.map((row) => [row.key, row]))
+
   for (const fact of result.answer.facts) {
-    if (fact.references.length === 0) throw new Error(`Fact ${fact.id} has no result reference`)
-    for (const reference of fact.references) {
-      if (reference.resultId !== result.id) throw new Error(`Fact ${fact.id} references another result`)
-      const row = result.rows.find((item) => item.key === reference.rowKey)
-      if (!row || !(reference.columnId in row.values)) throw new Error(`Fact ${fact.id} has an invalid cell reference`)
+    if (fact.references.length === 0) {
+      mismatches.push(`Fact ${fact.id} has no result reference`)
+      continue
     }
+
+    const directlyReferencedValues: Array<string | number | null> = []
+    let hasTransformReference = false
+
+    for (const reference of fact.references) {
+      checkedReferences += 1
+      if (reference.resultId !== result.id) {
+        mismatches.push(`Fact ${fact.id} references another result`)
+        continue
+      }
+
+      const row = rowsByKey.get(reference.rowKey)
+      if (!row || !(reference.columnId in row.values)) {
+        mismatches.push(`Fact ${fact.id} has an invalid cell reference`)
+        continue
+      }
+
+      if (reference.transformId) {
+        hasTransformReference = true
+      } else {
+        directlyReferencedValues.push(row.values[reference.columnId])
+      }
+    }
+
+    if (!hasTransformReference && directlyReferencedValues.length > 0) {
+      const matchesFactValue = directlyReferencedValues.some((value) => cellValueMatchesFactValue(value, fact.value))
+      if (!matchesFactValue) {
+        mismatches.push(`Fact ${fact.id} value does not match any referenced cell`)
+      }
+    }
+  }
+
+  const chartSafety = evaluateChartSafety(result)
+
+  return {
+    grounded: mismatches.length === 0,
+    checkedFacts: result.answer.facts.length,
+    checkedReferences,
+    mismatches,
+    chartSafety,
+  }
+}
+
+function cellValueMatchesFactValue(cellValue: string | number | null, factValue: string | number): boolean {
+  if (cellValue === null) return false
+  if (typeof cellValue === 'number' && typeof factValue === 'number') return Object.is(cellValue, factValue)
+  return String(cellValue).trim() === String(factValue).trim()
+}
+
+function evaluateChartSafety(result: RunResult): ResultGroundingReport['chartSafety'] {
+  const warnings: string[] = []
+  const dateColumn = result.columns.find((column) => column.type === 'date')
+  const numericColumns = result.columns.filter((column) => (
+    column.type === 'number' || column.type === 'currency' || column.type === 'percentage'
+  ))
+
+  if (result.rows.length === 0 || numericColumns.length === 0) {
+    return {
+      safe: true,
+      recommendedVisualization: 'table',
+      warnings: result.rows.length === 0 ? ['Empty result should be presented as a table or empty state, not a chart.'] : [],
+    }
+  }
+
+  if (dateColumn) {
+    const values = result.rows.map((row) => row.values[dateColumn.id]).filter((value): value is string | number => value !== null)
+    const sorted = values.every((value, index) => index === 0 || String(values[index - 1]) <= String(value))
+    if (!sorted) warnings.push(`Date axis ${dateColumn.id} is not sorted ascending before charting.`)
+    return {
+      safe: warnings.length === 0,
+      recommendedVisualization: 'line',
+      warnings,
+    }
+  }
+
+  return {
+    safe: true,
+    recommendedVisualization: 'bar',
+    warnings,
   }
 }
 

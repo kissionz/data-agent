@@ -68,7 +68,16 @@ export interface AnalysisIR {
   }
 }
 
-export type QueryDialect = 'postgresql' | 'snowflake'
+export type QueryDialect = 'postgresql' | 'snowflake' | 'mysql' | 'clickhouse' | 'starrocks' | 'trino' | 'bigquery'
+
+export interface QueryDialectCapability {
+  dialect: QueryDialect
+  status: 'local_supported' | 'plugin_declared'
+  parameterStyle: 'numbered' | 'question_mark' | 'named'
+  explainSupported: boolean
+  cancellationSupported: boolean
+  notes: string[]
+}
 
 export interface QueryCancellationPlan {
   token: string
@@ -80,12 +89,34 @@ export interface QueryCancellationPlan {
 
 export interface QueryExecutionSummary {
   dialect: QueryDialect
+  dialectCapability: QueryDialectCapability
   sqlFingerprint: string
   cacheKey: string
+  cache: {
+    ttlSeconds: number
+    keyIncludes: Array<'tenant' | 'workspace' | 'business_domain' | 'mode' | 'semantic_version' | 'sql_fingerprint' | 'permission_digest' | 'data_version' | 'policy_version'>
+    invalidation: {
+      dataVersion: string
+      semanticVersion: string
+      permissionDigest: string
+      policyVersion?: string
+      reasons: Array<'data_version_changed' | 'semantic_version_changed' | 'permission_changed' | 'policy_changed' | 'ttl_expired'>
+    }
+    stale: false
+  }
   permissionDigest: string
   dataVersion: string
   estimatedRows: number
   estimatedScanBytes: number
+  explain: {
+    available: boolean
+    estimatedRows: number
+    estimatedScanBytes: number
+    costUnits: number
+    budgetStatus: 'within_budget' | 'blocked'
+    checkedAt: string
+    redacted: true
+  }
   timeoutMs: number
   maxRows: number
   appliedGuards: string[]

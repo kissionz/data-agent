@@ -5,6 +5,7 @@ import {
   compileAnalysisQuery,
   createQueryCancellationPlan,
   executeReadOnlyQuery,
+  listQueryDialectCapabilities,
   markQueryExecutionCancelled,
 } from '../query'
 
@@ -122,8 +123,32 @@ describe('deterministic SQL compiler and query gateway', () => {
 
     expect(execution.summary).toMatchObject({
       dialect: 'postgresql',
+      dialectCapability: {
+        dialect: 'postgresql',
+        status: 'local_supported',
+        explainSupported: true,
+        cancellationSupported: true,
+      },
       sqlFingerprint: plan.sqlFingerprint,
       permissionDigest: plan.permissionDigest,
+      cache: {
+        ttlSeconds: 180,
+        stale: false,
+        keyIncludes: expect.arrayContaining(['tenant', 'semantic_version', 'sql_fingerprint', 'permission_digest', 'data_version', 'policy_version']),
+        invalidation: {
+          dataVersion: plan.dataVersion,
+          semanticVersion: actor.semanticVersion,
+          permissionDigest: plan.permissionDigest,
+          reasons: expect.arrayContaining(['data_version_changed', 'semantic_version_changed', 'permission_changed', 'policy_changed', 'ttl_expired']),
+        },
+      },
+      explain: {
+        available: true,
+        estimatedRows: plan.estimatedRows,
+        estimatedScanBytes: plan.estimatedScanBytes,
+        budgetStatus: 'within_budget',
+        redacted: true,
+      },
       status: 'executed',
       cancellation: {
         propagationTargets: ['planner', 'compiler', 'query_adapter', 'result_writer'],
@@ -141,6 +166,21 @@ describe('deterministic SQL compiler and query gateway', () => {
       budget: { maxScanBytes: 10 },
     })
     expect(() => executeReadOnlyQuery({ plan: overBudget, actor })).toThrow('scan estimate exceeds budget')
+  })
+
+  it('declares a dialect plugin matrix while only executing locally supported dialects', () => {
+    const capabilities = listQueryDialectCapabilities()
+
+    expect(capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dialect: 'postgresql', status: 'local_supported', parameterStyle: 'numbered' }),
+      expect.objectContaining({ dialect: 'snowflake', status: 'local_supported', parameterStyle: 'numbered' }),
+      expect.objectContaining({ dialect: 'mysql', status: 'plugin_declared', parameterStyle: 'question_mark' }),
+      expect.objectContaining({ dialect: 'clickhouse', status: 'plugin_declared' }),
+      expect.objectContaining({ dialect: 'starrocks', status: 'plugin_declared' }),
+      expect.objectContaining({ dialect: 'trino', status: 'plugin_declared' }),
+      expect.objectContaining({ dialect: 'bigquery', status: 'plugin_declared', parameterStyle: 'named' }),
+    ]))
+    expect(() => compileAnalysisQuery({ ir: ir(), actor, dialect: 'bigquery' })).toThrow('not locally executable')
   })
 
   it('creates stable cancellation handles and marks propagation without exposing SQL', () => {

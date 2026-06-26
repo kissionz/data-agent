@@ -12,6 +12,7 @@ const defaultBudget: QueryBudget = {
 
 export function compileAnalysisQuery(input: CompileQueryInput): CompiledQueryPlan {
   const dialect = input.dialect ?? 'postgresql'
+  assertLocallyExecutableDialect(dialect)
   const dataVersion = input.dataVersion ?? 'sales_warehouse_2026_06_23_0800'
   const budget = { ...defaultBudget, ...input.budget }
   const ir = input.ir
@@ -85,6 +86,12 @@ export function compileAnalysisQuery(input: CompileQueryInput): CompiledQueryPla
       'read_only_ast',
       'budget_limit',
     ],
+  }
+}
+
+function assertLocallyExecutableDialect(dialect: QueryDialect) {
+  if (dialect !== 'postgresql' && dialect !== 'snowflake') {
+    throw new Error(`Dialect plugin is declared but not locally executable: ${dialect}`)
   }
 }
 

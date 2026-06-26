@@ -94,7 +94,23 @@ describe('ChatBI application service', () => {
     })
     expect(response.data.queryExecution).toMatchObject({
       dialect: 'postgresql',
+      dialectCapability: {
+        status: 'local_supported',
+        explainSupported: true,
+      },
       status: 'executed',
+      explain: {
+        available: true,
+        budgetStatus: 'within_budget',
+        redacted: true,
+      },
+      cache: {
+        stale: false,
+        keyIncludes: expect.arrayContaining(['semantic_version', 'sql_fingerprint', 'permission_digest', 'data_version']),
+        invalidation: {
+          reasons: expect.arrayContaining(['data_version_changed', 'permission_changed', 'ttl_expired']),
+        },
+      },
       appliedGuards: expect.arrayContaining(['tenant_scope', 'read_only_ast', 'budget_limit', 'cancellation_token']),
       cancellation: {
         token: expect.stringMatching(/^qcancel_/),

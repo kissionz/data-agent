@@ -128,9 +128,27 @@ describe('@insightflow/contracts package entry', () => {
             mode: { enum: ['online', 'async'] },
           }),
         }),
+        artifact: expect.objectContaining({
+          properties: expect.objectContaining({
+            objectKey: expect.objectContaining({ type: 'string' }),
+            watermarkApplied: expect.objectContaining({ type: 'boolean' }),
+          }),
+        }),
+        notification: expect.objectContaining({
+          properties: expect.objectContaining({
+            payloadIncludesDownloadUrl: expect.objectContaining({ type: 'boolean' }),
+          }),
+        }),
       },
     })
     expect(openApiDocumentFromSubpath.paths['/v1/sharing/exports/{exportId}'].get.responses[200]).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/ExportJobEnvelope' },
+        },
+      },
+    })
+    expect(openApiDocumentFromSubpath.paths['/v1/sharing/exports/{exportId}/process'].post.responses[200]).toMatchObject({
       content: {
         'application/json': {
           schema: { $ref: '#/components/schemas/ExportJobEnvelope' },

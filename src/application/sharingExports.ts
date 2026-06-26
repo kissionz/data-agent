@@ -7,6 +7,7 @@ import {
   type ExportJobView,
   type ExportRequest,
   type GetExportJobRequest,
+  type ProcessExportJobRequest,
   type PublicApiError,
   type ReauthorizeShareRequest,
   type ShareGrantView,
@@ -21,6 +22,7 @@ import {
 export interface SharingExportApplicationService {
   requestExport(request: ExportRequest): ApiEnvelope<ExportJobView>
   getExportJob(request: GetExportJobRequest): ApiEnvelope<ExportJobView>
+  processQueuedExport(request: ProcessExportJobRequest): ApiEnvelope<ExportJobView>
   createShare(request: CreateShareRequest): ApiEnvelope<ShareGrantView>
   reauthorizeShare(request: ReauthorizeShareRequest): ApiEnvelope<ShareReauthorizationView>
 }
@@ -40,6 +42,7 @@ interface StoredExport {
   job: ExportJobView
   tenantId: string
   workspaceId: string
+  request: ExportRequest
 }
 
 const EXPORT_LIMITS = {
@@ -118,6 +121,10 @@ export function createSharingExportApplicationService(
     return source.type === 'run' ? `run:${source.runId}` : `asset:${source.assetId}`
   }
 
+  function sourceSlug(source: ExportRequest['source']) {
+    return source.type === 'run' ? source.runId : source.assetId
+  }
+
   function desensitizationRules(classification: ExportRequest['classification']) {
     if (classification === 'restricted') return ['restricted_fields_removed', 'recipient_reauth_required']
     if (classification === 'confidential') return ['mask_direct_identifiers', 'aggregate_small_groups']
@@ -138,6 +145,36 @@ export function createSharingExportApplicationService(
     return reasons
   }
 
+  function contentType(format: ExportRequest['format']) {
+    if (format === 'csv') return 'text/csv; charset=utf-8'
+    if (format === 'xlsx') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    if (format === 'png') return 'image/png'
+    return 'application/pdf'
+  }
+
+  function checksumFor(input: string) {
+    let hash = 2166136261
+    for (let index = 0; index < input.length; index += 1) {
+      hash ^= input.charCodeAt(index)
+      hash = Math.imul(hash, 16777619)
+    }
+    return `sha256:${(hash >>> 0).toString(16).padStart(8, '0')}${(input.length * 2654435761 >>> 0).toString(16).padStart(8, '0')}`
+  }
+
+  function artifactFor(request: ExportRequest, exportId: string): NonNullable<ExportJobView['artifact']> {
+    const fileName = `${sourceSlug(request.source)}-${exportId}.${request.format}`
+    return {
+      objectKey: `exports/${request.actor.tenantId}/${request.actor.workspaceId}/${exportId}/${fileName}`,
+      contentType: contentType(request.format),
+      fileName,
+      sizeBytes: Math.max(1, request.estimatedBytes),
+      checksumSha256: checksumFor(`${exportId}|${request.format}|${permissionDigest(request.actor)}|${request.estimatedBytes}`),
+      watermarkApplied: true,
+      storageClass: 'governed-temporary',
+      expiresAt: addDaysIso(1),
+    }
+  }
+
   function exportView(
     request: ExportRequest,
     status: ExportJobView['status'],
@@ -147,6 +184,7 @@ export function createSharingExportApplicationService(
     const id = nextId('export')
     const available = status === 'completed'
     const async = status === 'queued'
+    const artifact = available ? artifactFor(request, id) : undefined
     return {
       contractVersion: CONTRACT_VERSION,
       id,
@@ -171,6 +209,7 @@ export function createSharingExportApplicationService(
         expiresAt: available ? addDaysIso(1) : undefined,
         signedUrlPreview: available ? `https://download.local/${id}?signature=redacted` : undefined,
       },
+      artifact,
       delivery: async
         ? {
             mode: 'async',
@@ -183,6 +222,15 @@ export function createSharingExportApplicationService(
             mode: 'online',
             requiresAuditApproval: request.classification !== 'public',
           },
+      notification: async
+        ? {
+            required: true,
+            channel: 'in_app',
+            recipientReauthRequired: true,
+            payloadIncludesDownloadUrl: false,
+            scheduledAt: addHoursIso(2),
+          }
+        : undefined,
       blockingReasons,
       asyncReasons,
       audit: auditEvents,
@@ -194,6 +242,7 @@ export function createSharingExportApplicationService(
       job,
       tenantId: request.actor.tenantId,
       workspaceId: request.actor.workspaceId,
+      request,
     })
     return job
   }
@@ -244,6 +293,61 @@ export function createSharingExportApplicationService(
       audit('export.status_viewed', request, `用户查看导出任务状态：${request.exportId}。`)
       return success({
         ...stored.job,
+        audit: auditEvents,
+      })
+    },
+
+    processQueuedExport(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      const stored = exportJobs.get(request.exportId)
+      if (!stored || stored.tenantId !== request.actor.tenantId || stored.workspaceId !== request.actor.workspaceId) {
+        return failure({
+          code: 'SEMANTIC_NOT_FOUND',
+          message: '没有找到可访问的导出任务',
+          retryable: false,
+          debugReference: `export_${request.exportId}`,
+        })
+      }
+      if (stored.job.status !== 'queued') {
+        return failure({
+          code: 'VALIDATION_FAILED',
+          message: '只有已排队的异步导出任务可以被 worker 完成',
+          retryable: true,
+          debugReference: `export_status_${stored.job.status}`,
+        })
+      }
+      const completedJob: ExportJobView = {
+        ...stored.job,
+        status: 'completed',
+        download: {
+          available: true,
+          expiresAt: addDaysIso(1),
+          signedUrlPreview: `https://download.local/${stored.job.id}?signature=redacted`,
+        },
+        artifact: artifactFor(stored.request, stored.job.id),
+        delivery: {
+          mode: 'async',
+          requiresAuditApproval: true,
+          queueName: stored.job.delivery.queueName,
+          statusUrl: stored.job.delivery.statusUrl,
+        },
+        notification: {
+          required: true,
+          channel: 'email_digest',
+          recipientReauthRequired: true,
+          payloadIncludesDownloadUrl: false,
+          scheduledAt: now(),
+        },
+        audit: auditEvents,
+      }
+      audit('export.processed', request, `异步导出 worker ${request.workerId} 已完成制品清单并计划通知，通知 payload 不包含下载链接。`)
+      exportJobs.set(stored.job.id, {
+        ...stored,
+        job: completedJob,
+      })
+      return success({
+        ...completedJob,
         audit: auditEvents,
       })
     },

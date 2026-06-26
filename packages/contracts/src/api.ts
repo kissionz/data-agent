@@ -673,6 +673,7 @@ export interface SharingAuditEvent {
     | 'export.requested'
     | 'export.completed'
     | 'export.queued'
+    | 'export.processed'
     | 'export.blocked'
     | 'export.status_viewed'
     | 'share.created'
@@ -723,12 +724,29 @@ export interface ExportJobView {
     expiresAt?: string
     signedUrlPreview?: string
   }
+  artifact?: {
+    objectKey: string
+    contentType: string
+    fileName: string
+    sizeBytes: number
+    checksumSha256: string
+    watermarkApplied: boolean
+    storageClass: 'standard' | 'governed-temporary'
+    expiresAt: string
+  }
   delivery: {
     mode: 'online' | 'async'
     requiresAuditApproval: boolean
     queueName?: string
     statusUrl?: string
     estimatedReadyAt?: string
+  }
+  notification?: {
+    required: boolean
+    channel: 'in_app' | 'email_digest'
+    recipientReauthRequired: boolean
+    payloadIncludesDownloadUrl: boolean
+    scheduledAt?: string
   }
   blockingReasons: string[]
   asyncReasons: string[]
@@ -738,6 +756,12 @@ export interface ExportJobView {
 export interface GetExportJobRequest {
   actor: ActorContext
   exportId: string
+}
+
+export interface ProcessExportJobRequest {
+  actor: ActorContext
+  exportId: string
+  workerId: string
 }
 
 export interface CreateShareRequest {

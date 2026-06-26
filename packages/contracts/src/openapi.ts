@@ -280,6 +280,18 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/sharing/exports/{exportId}/process': {
+      post: {
+        summary: '异步导出 worker 完成任务',
+        description: '由受信任 worker 将 queued 导出推进为 completed，返回对象存储制品清单、水印状态、短期下载预览和不含下载链接的通知计划。',
+        parameters: [{ name: 'exportId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: jsonResponse('异步导出已处理', { $ref: '#/components/schemas/ExportJobEnvelope' }),
+          400: errorResponse('任务状态不可处理'),
+          404: errorResponse('导出任务不存在或不可见'),
+        },
+      },
+    },
     '/v1/sharing/shares': {
       post: {
         summary: '创建分享引用',
@@ -966,6 +978,21 @@ export const openApiDocument = {
               signedUrlPreview: { type: 'string' },
             },
           },
+          artifact: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['objectKey', 'contentType', 'fileName', 'sizeBytes', 'checksumSha256', 'watermarkApplied', 'storageClass', 'expiresAt'],
+            properties: {
+              objectKey: { type: 'string', minLength: 1 },
+              contentType: { type: 'string', minLength: 1 },
+              fileName: { type: 'string', minLength: 1 },
+              sizeBytes: { type: 'integer', minimum: 1 },
+              checksumSha256: { type: 'string', minLength: 1 },
+              watermarkApplied: { type: 'boolean' },
+              storageClass: { enum: ['standard', 'governed-temporary'] },
+              expiresAt: { type: 'string' },
+            },
+          },
           delivery: {
             type: 'object',
             additionalProperties: false,
@@ -976,6 +1003,18 @@ export const openApiDocument = {
               queueName: { type: 'string' },
               statusUrl: { type: 'string' },
               estimatedReadyAt: { type: 'string' },
+            },
+          },
+          notification: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['required', 'channel', 'recipientReauthRequired', 'payloadIncludesDownloadUrl'],
+            properties: {
+              required: { type: 'boolean' },
+              channel: { enum: ['in_app', 'email_digest'] },
+              recipientReauthRequired: { type: 'boolean' },
+              payloadIncludesDownloadUrl: { type: 'boolean' },
+              scheduledAt: { type: 'string' },
             },
           },
           blockingReasons: { type: 'array', items: { type: 'string' } },

@@ -57,6 +57,7 @@ describe('ChatBI local BFF router', () => {
         '/v1/operations/slo/budget-evaluations': expect.any(Object),
         '/v1/results/{runId}': expect.any(Object),
         '/v1/sharing/exports/{exportId}': expect.any(Object),
+        '/v1/sharing/exports/{exportId}/process': expect.any(Object),
         '/v1/runs/{runId}/clarify': expect.any(Object),
         '/v1/runs/{runId}/events': expect.any(Object),
       },

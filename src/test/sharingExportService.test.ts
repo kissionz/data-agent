@@ -96,11 +96,18 @@ describe('Sharing export service', () => {
     if (!response.ok) return
     expect(response.data.status).toBe('queued')
     expect(response.data.download.available).toBe(false)
+    expect(response.data.artifact).toBeUndefined()
     expect(response.data.delivery).toMatchObject({
       mode: 'async',
       requiresAuditApproval: true,
       queueName: 'governed-export-large-result',
       statusUrl: `/v1/sharing/exports/${response.data.id}`,
+    })
+    expect(response.data.notification).toMatchObject({
+      required: true,
+      channel: 'in_app',
+      recipientReauthRequired: true,
+      payloadIncludesDownloadUrl: false,
     })
     expect(response.data.asyncReasons).toEqual(expect.arrayContaining([
       '导出超过 100000 行在线上限。',
@@ -121,6 +128,41 @@ describe('Sharing export service', () => {
     })
     expect(status.data.audit).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'export.status_viewed' }),
+    ]))
+
+    const processed = service.processQueuedExport({
+      actor,
+      exportId: response.data.id,
+      workerId: 'worker_export_01',
+    })
+    expect(processed.ok).toBe(true)
+    if (!processed.ok) return
+    expect(processed.data).toMatchObject({
+      id: response.data.id,
+      status: 'completed',
+      download: {
+        available: true,
+        signedUrlPreview: expect.stringContaining('signature=redacted'),
+      },
+      artifact: {
+        objectKey: `exports/tenant_demo/workspace_sales/${response.data.id}/asset_revenue_trend-${response.data.id}.xlsx`,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        fileName: `asset_revenue_trend-${response.data.id}.xlsx`,
+        sizeBytes: 60 * 1024 * 1024,
+        watermarkApplied: true,
+        storageClass: 'governed-temporary',
+      },
+      notification: {
+        required: true,
+        channel: 'email_digest',
+        recipientReauthRequired: true,
+        payloadIncludesDownloadUrl: false,
+      },
+    })
+    expect(processed.data.artifact?.checksumSha256).toMatch(/^sha256:/)
+    expect(JSON.stringify(processed.data.notification)).not.toMatch(/download\.local|signature/i)
+    expect(processed.data.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'export.processed' }),
     ]))
   })
 
@@ -245,6 +287,27 @@ describe('Sharing export service', () => {
         id: exportId,
         status: 'queued',
         delivery: { mode: 'async' },
+      },
+    })
+    const processed = router.handle({
+      method: 'POST',
+      path: `/v1/sharing/exports/${exportId}/process`,
+      headers: actorHeaders,
+      body: { worker_id: 'worker_export_01' },
+    })
+    expect(processed.status).toBe(200)
+    expect(processed.body).toMatchObject({
+      ok: true,
+      data: {
+        id: exportId,
+        status: 'completed',
+        artifact: {
+          objectKey: expect.stringContaining(`/${exportId}/`),
+          watermarkApplied: true,
+        },
+        notification: {
+          payloadIncludesDownloadUrl: false,
+        },
       },
     })
 

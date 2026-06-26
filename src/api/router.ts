@@ -438,6 +438,17 @@ export function createChatBiBffRouter(
         return withCors(respond(httpStatusForSharingEnvelope(envelope), envelope))
       }
 
+      const exportProcessMatch = path.match(/^\/v1\/sharing\/exports\/([^/]+)\/process$/)
+      if (method === 'POST' && exportProcessMatch) {
+        const body = bodyObject(request)
+        const envelope = sharing.processQueuedExport({
+          actor: actorFrom(request),
+          exportId: decodeURIComponent(exportProcessMatch[1]),
+          workerId: String(body.workerId ?? body.worker_id ?? 'worker_local'),
+        })
+        return withCors(respond(httpStatusForSharingEnvelope(envelope), envelope))
+      }
+
       const exportJobMatch = path.match(/^\/v1\/sharing\/exports\/([^/]+)$/)
       if (method === 'GET' && exportJobMatch) {
         const envelope = sharing.getExportJob({

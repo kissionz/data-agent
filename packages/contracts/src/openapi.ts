@@ -53,6 +53,18 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/feedback': {
+      post: {
+        summary: '提交答案反馈或问题上报',
+        description: '反馈关联 run/request/trace/语义版本并重新校验运行访问范围；备注和正确答案先脱敏，不携带生产结果明细。',
+        responses: {
+          200: jsonResponse('反馈已进入处理队列', { $ref: '#/components/schemas/FeedbackEnvelope' }),
+          400: errorResponse('反馈缺少链路字段、原因标签或格式无效'),
+          403: errorResponse('无权为该运行提交反馈'),
+          404: errorResponse('运行不存在或不可见'),
+        },
+      },
+    },
     '/v1/identity/context': {
       get: {
         summary: '获取当前身份、租户、工作空间和策略上下文',
@@ -832,6 +844,82 @@ export const openApiDocument = {
             properties: {
               ok: { const: true },
               data: { $ref: '#/components/schemas/ExportJobView' },
+              requestId: { type: 'string', minLength: 1 },
+              traceId: { type: 'string', minLength: 1 },
+            },
+          },
+          { $ref: '#/components/schemas/ErrorEnvelope' },
+        ],
+      },
+      FeedbackView: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'contractVersion',
+          'id',
+          'status',
+          'vote',
+          'reasonTags',
+          'sensitiveDataRedacted',
+          'linkage',
+          'accessReauthorized',
+          'productionResultIncluded',
+          'candidateDatasetEligible',
+          'audit',
+        ],
+        properties: {
+          contractVersion: { const: CONTRACT_VERSION },
+          id: { type: 'string', minLength: 1 },
+          status: { const: 'new' },
+          vote: { enum: ['helpful', 'unhelpful'] },
+          reasonTags: {
+            type: 'array',
+            uniqueItems: true,
+            items: {
+              enum: [
+                'wrong_number',
+                'wrong_metric',
+                'wrong_filter',
+                'misleading_chart',
+                'stale_data',
+                'incomplete_answer',
+                'permission_issue',
+                'other',
+              ],
+            },
+          },
+          sanitizedNote: { type: 'string', maxLength: 1000 },
+          sanitizedCorrectedAnswer: { type: 'string', maxLength: 1000 },
+          sensitiveDataRedacted: { type: 'boolean' },
+          linkage: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['runId', 'conversationId', 'requestId', 'traceId', 'semanticVersion', 'tenantId', 'workspaceId'],
+            properties: {
+              runId: { type: 'string' },
+              conversationId: { type: 'string' },
+              requestId: { type: 'string' },
+              traceId: { type: 'string' },
+              semanticVersion: { type: 'string' },
+              tenantId: { type: 'string' },
+              workspaceId: { type: 'string' },
+            },
+          },
+          accessReauthorized: { const: true },
+          productionResultIncluded: { const: false },
+          candidateDatasetEligible: { type: 'boolean' },
+          audit: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        },
+      },
+      FeedbackEnvelope: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok', 'data', 'requestId', 'traceId'],
+            properties: {
+              ok: { const: true },
+              data: { $ref: '#/components/schemas/FeedbackView' },
               requestId: { type: 'string', minLength: 1 },
               traceId: { type: 'string', minLength: 1 },
             },

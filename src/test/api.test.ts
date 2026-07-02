@@ -47,6 +47,7 @@ describe('ChatBI local BFF router', () => {
       openapi: '3.1.0',
       paths: {
         '/v1/questions': expect.any(Object),
+        '/v1/feedback': expect.any(Object),
         '/v1/developer/service-accounts': expect.any(Object),
         '/v1/developer/embed-tokens': expect.any(Object),
         '/v1/developer/api-keys/{keyId}/rotate': expect.any(Object),
@@ -91,6 +92,9 @@ describe('ChatBI local BFF router', () => {
             additionalProperties: false,
           }),
           ExportJobView: expect.objectContaining({
+            additionalProperties: false,
+          }),
+          FeedbackView: expect.objectContaining({
             additionalProperties: false,
           }),
         },

@@ -2,6 +2,7 @@ import type { DeveloperScope, EmbedTokenView } from './api'
 
 export type DeveloperSdkEndpoint =
   | 'questions.submit'
+  | 'feedback.submit'
   | 'runs.read'
   | 'runs.events'
   | 'results.page'
@@ -15,6 +16,10 @@ export type DeveloperSdkEndpoint =
 export type DeveloperEndpointRequestInput =
   | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
       endpoint: 'questions.submit'
+      body: unknown
+    })
+  | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
+      endpoint: 'feedback.submit'
       body: unknown
     })
   | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
@@ -81,6 +86,7 @@ export interface EmbedFrameConfig {
 
 const endpointScopes: Record<DeveloperSdkEndpoint, DeveloperScope[]> = {
   'questions.submit': ['questions:write'],
+  'feedback.submit': ['feedback:write'],
   'runs.read': ['runs:read'],
   'runs.events': ['runs:read'],
   'results.page': ['runs:read'],
@@ -130,6 +136,13 @@ export function createDeveloperEndpointRequest(input: DeveloperEndpointRequestIn
         ...baseEndpointInput(input),
         method: 'POST',
         path: '/v1/questions',
+        body: input.body,
+      })
+    case 'feedback.submit':
+      return createDeveloperSdkRequest({
+        ...baseEndpointInput(input),
+        method: 'POST',
+        path: '/v1/feedback',
         body: input.body,
       })
     case 'runs.read':

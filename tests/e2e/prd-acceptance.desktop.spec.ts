@@ -41,6 +41,24 @@ test('csv export downloads a governed file with watermark and audit metadata', a
   await expect(page.getByRole('status').filter({ hasText: '导出已重新鉴权' })).toBeVisible()
 })
 
+test('negative feedback is structured, chain-linked and redacted before issue reporting', async ({ page }) => {
+  await page.getByRole('button', { name: '结果无帮助' }).click()
+  const form = page.getByRole('form', { name: '帮助我们定位问题' })
+  await expect(form).toBeVisible()
+  await expect(form.getByRole('button', { name: '提交反馈' })).toBeDisabled()
+
+  await form.getByText('数字不正确').click()
+  await form.getByLabel('补充说明（可选）').fill('请联系 13800138000 复核这个数字')
+  await form.getByLabel('正确答案（可选）').fill('正确结果是 1,420 万元')
+  await form.getByText('上报为问题，进入人工处理队列').click()
+  await form.getByRole('button', { name: '提交反馈' }).click()
+
+  const receipt = page.getByRole('status').filter({ hasText: '问题已上报' })
+  await expect(receipt).toContainText('不包含生产结果明细')
+  await expect(receipt).toContainText('敏感文本已脱敏')
+  await expect(page.getByRole('status').filter({ hasText: '反馈已关联完整运行链路并进入问题处理队列' })).toBeVisible()
+})
+
 test('ambiguous question requires clarification before executing a query', async ({ page }) => {
   await page.getByLabel('输入分析问题').fill('最近销售情况怎么样')
   await page.getByRole('button', { name: '开始分析' }).click()

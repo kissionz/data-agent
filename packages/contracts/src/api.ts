@@ -606,6 +606,67 @@ export interface GetReplayRunRequest {
   runId: string
 }
 
+export type FeedbackVote = 'helpful' | 'unhelpful'
+
+export type FeedbackReasonTag =
+  | 'wrong_number'
+  | 'wrong_metric'
+  | 'wrong_filter'
+  | 'misleading_chart'
+  | 'stale_data'
+  | 'incomplete_answer'
+  | 'permission_issue'
+  | 'other'
+
+export interface FeedbackAuditEvent {
+  id: string
+  at: string
+  type: 'feedback.received' | 'feedback.issue_reported'
+  actorUserId: string
+  tenantId: string
+  workspaceId: string
+  runId: string
+  summary: string
+}
+
+export interface SubmitFeedbackRequest {
+  actor: ActorContext
+  runId: string
+  conversationId: string
+  requestId: string
+  traceId: string
+  semanticVersion: string
+  vote: FeedbackVote
+  reasonTags: FeedbackReasonTag[]
+  note?: string
+  correctedAnswer?: string
+  reportIssue: boolean
+}
+
+export interface FeedbackView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  status: 'new'
+  vote: FeedbackVote
+  reasonTags: FeedbackReasonTag[]
+  sanitizedNote?: string
+  sanitizedCorrectedAnswer?: string
+  sensitiveDataRedacted: boolean
+  linkage: {
+    runId: string
+    conversationId: string
+    requestId: string
+    traceId: string
+    semanticVersion: string
+    tenantId: string
+    workspaceId: string
+  }
+  accessReauthorized: true
+  productionResultIncluded: false
+  candidateDatasetEligible: boolean
+  audit: FeedbackAuditEvent[]
+}
+
 export type GoldenSampleStatus = 'new' | 'triaged' | 'in_review' | 'resolved' | 'rejected' | 'candidate_dataset' | 'golden_approved'
 
 export interface GoldenSampleView {
@@ -1216,6 +1277,7 @@ export interface PerformanceBudgetDecisionView {
 
 export type DeveloperScope =
   | 'questions:write'
+  | 'feedback:write'
   | 'runs:read'
   | 'semantic:read'
   | 'assets:read'

@@ -144,6 +144,7 @@ function authenticateBearer(
 function scopesForRequest(method: string, path: string): DeveloperScope[] {
   const normalizedMethod = method.toUpperCase()
   if (normalizedMethod === 'POST' && path === '/v1/questions') return ['questions:write']
+  if (normalizedMethod === 'POST' && path === '/v1/feedback') return ['feedback:write']
   if (normalizedMethod === 'GET' && /^\/v1\/runs\/[^/]+(?:\/events)?$/.test(path)) return ['runs:read']
   if (normalizedMethod === 'POST' && /^\/v1\/runs\/[^/]+\/(?:clarify|cancel)$/.test(path)) return ['questions:write']
   if (normalizedMethod === 'GET' && path.startsWith('/v1/semantic')) return ['semantic:read']

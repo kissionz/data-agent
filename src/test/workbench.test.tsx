@@ -27,6 +27,26 @@ describe('Workbench UI', () => {
     expect(screen.getByText(/trace_id/)).toBeInTheDocument()
   })
 
+  it('collects structured negative feedback with an optional corrected answer and issue report', () => {
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: '结果无帮助' }))
+    const form = screen.getByRole('form', { name: '帮助我们定位问题' })
+    expect(within(form).getByText(/会关联当前 Run、请求链路和语义版本/)).toBeInTheDocument()
+    expect(within(form).getByRole('button', { name: '提交反馈' })).toBeDisabled()
+
+    fireEvent.click(within(form).getByText('数字不正确'))
+    fireEvent.change(within(form).getByLabelText('正确答案（可选）'), {
+      target: { value: '正确结果是 1,420 万元' },
+    })
+    fireEvent.click(within(form).getByText('上报为问题，进入人工处理队列'))
+    fireEvent.click(within(form).getByRole('button', { name: '提交反馈' }))
+
+    expect(screen.getByText('问题已上报')).toBeInTheDocument()
+    expect(screen.getByText(/不包含生产结果明细/)).toBeInTheDocument()
+    expect(screen.getByText(/反馈已关联完整运行链路并进入问题处理队列/)).toBeInTheDocument()
+  })
+
   it('keeps ambiguous questions in clarification state until a candidate is selected', () => {
     vi.useFakeTimers()
     render(<App />)

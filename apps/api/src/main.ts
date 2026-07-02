@@ -28,6 +28,7 @@ const server = createNodeBffServer({
     dataSources: runtime.router.dataSources,
     developer: runtime.router.developer,
     evaluation: runtime.router.evaluation,
+    feedback: runtime.router.feedback,
     identity: runtime.router.identity,
     modelOps: runtime.router.modelOps,
     semantic: runtime.router.semantic,

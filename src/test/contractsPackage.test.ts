@@ -156,6 +156,7 @@ describe('@insightflow/contracts package entry', () => {
       },
     })
     expect(requiredScopesForEndpoint('exports.status')).toEqual(['exports:read'])
+    expect(requiredScopesForEndpoint('feedback.submit')).toEqual(['feedback:write'])
     expect(requiredScopesForEndpoint('results.page')).toEqual(['runs:read'])
     expect(requiredScopesForEndpoint('embed.issue')).toEqual(['embed:issue'])
   })

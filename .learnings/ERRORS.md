@@ -414,3 +414,40 @@ Use `pnpm approve-builds` directly when the local CLI version supports it.
 - **Notes**: Switched to the version-matched local CLI approval flow.
 
 ---
+## [ERR-20260702-001] npm start
+
+**Logged**: 2026-07-02T16:21:47+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: config
+
+### Summary
+
+The repository has no `npm start` script; the Vite development server uses `npm run dev`.
+
+### Error
+
+```text
+npm error Missing script: "start"
+```
+
+### Context
+
+- Attempted to start the local UI for browser verification.
+- `package.json` defines `dev`, `build`, `test`, `test:e2e`, `test:watch`, and `preview`.
+
+### Suggested Fix
+
+Use `npm run dev` for interactive browser verification or `npm run preview` after a production build.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: package.json
+
+### Resolution
+
+- **Resolved**: 2026-07-02T16:22:00+08:00
+- **Notes**: Switched browser verification to the existing Vite `dev` script.
+
+---

@@ -4,6 +4,7 @@ import {
   createDataSourceApplicationService,
   createDeveloperAccessApplicationService,
   createEvaluationApplicationService,
+  createFeedbackApplicationService,
   createIdentityPolicyApplicationService,
   createModelOpsApplicationService,
   createSemanticGovernanceApplicationService,
@@ -13,6 +14,7 @@ import {
   httpStatusForDataSourceEnvelope,
   httpStatusForDeveloperAccessEnvelope,
   httpStatusForEvaluationEnvelope,
+  httpStatusForFeedbackEnvelope,
   httpStatusForIdentityEnvelope,
   httpStatusForModelOpsEnvelope,
   httpStatusForSemanticEnvelope,
@@ -23,6 +25,7 @@ import {
   type DataSourceApplicationService,
   type DeveloperAccessApplicationService,
   type EvaluationApplicationService,
+  type FeedbackApplicationService,
   type IdentityPolicyApplicationService,
   type ModelOpsApplicationService,
   type SemanticGovernanceApplicationService,
@@ -71,6 +74,7 @@ export interface ChatBiBffRouter {
   dataSources: DataSourceApplicationService
   developer: DeveloperAccessApplicationService
   evaluation: EvaluationApplicationService
+  feedback: FeedbackApplicationService
   identity: IdentityPolicyApplicationService
   modelOps: ModelOpsApplicationService
   semantic: SemanticGovernanceApplicationService
@@ -101,6 +105,7 @@ export function createChatBiBffRouter(
   dataSources: DataSourceApplicationService = createDataSourceApplicationService(),
   developer: DeveloperAccessApplicationService = createDeveloperAccessApplicationService(),
   evaluation: EvaluationApplicationService = createEvaluationApplicationService(),
+  feedback: FeedbackApplicationService = createFeedbackApplicationService(),
   identity: IdentityPolicyApplicationService = createIdentityPolicyApplicationService(),
   modelOps: ModelOpsApplicationService = createModelOpsApplicationService(),
   semantic: SemanticGovernanceApplicationService = createSemanticGovernanceApplicationService(),
@@ -224,6 +229,7 @@ export function createChatBiBffRouter(
     dataSources,
     developer,
     evaluation,
+    feedback,
     identity,
     modelOps,
     semantic,
@@ -393,6 +399,32 @@ export function createChatBiBffRouter(
       if (method === 'POST' && path === '/v1/questions') {
         const envelope = service.submitQuestion(questionRequest(request))
         return withCors(respond(envelopeStatus(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/feedback') {
+        const body = bodyObject(request)
+        const actor = actorFrom(request)
+        const runId = String(body.runId ?? body.run_id ?? '')
+        const conversationId = String(body.conversationId ?? body.conversation_id ?? '')
+        const run = service.getRun({ actor, runId, conversationId })
+        if (!run.ok) return withCors(respond(envelopeStatus(run), run))
+        const reasonTagsInput = body.reasonTags ?? body.reason_tags
+        const envelope = feedback.submitFeedback({
+          actor,
+          runId,
+          conversationId,
+          requestId: run.data.requestId,
+          traceId: run.data.traceId,
+          semanticVersion: run.data.semanticVersion,
+          vote: (body.vote ?? 'helpful') as never,
+          reasonTags: Array.isArray(reasonTagsInput) ? reasonTagsInput.map(String) as never : [],
+          note: body.note === undefined ? undefined : String(body.note),
+          correctedAnswer: body.correctedAnswer === undefined && body.corrected_answer === undefined
+            ? undefined
+            : String(body.correctedAnswer ?? body.corrected_answer),
+          reportIssue: Boolean(body.reportIssue ?? body.report_issue),
+        })
+        return withCors(respond(httpStatusForFeedbackEnvelope(envelope), envelope))
       }
 
       const resultMatch = path.match(/^\/v1\/results\/([^/]+)$/)

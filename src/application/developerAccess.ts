@@ -43,6 +43,7 @@ export interface DeveloperAccessApplicationOptions {
 
 const allowedScopes: DeveloperScope[] = [
   'questions:write',
+  'feedback:write',
   'runs:read',
   'semantic:read',
   'assets:read',

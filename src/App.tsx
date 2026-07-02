@@ -40,8 +40,18 @@ import type { SemanticDimension as UiDimension, SemanticMetric as UiMetric } fro
 import { OperationsCenter } from './features/operations'
 import { DataSourceCenter } from './features/data-sources'
 import { CollaborationHub } from './features/collaboration'
-import { createChatBiApplicationService, createSharingExportApplicationService } from './application'
-import type { ActorContext, PublicRunView } from './contracts'
+import {
+  createChatBiApplicationService,
+  createFeedbackApplicationService,
+  createSharingExportApplicationService,
+} from './application'
+import type {
+  ActorContext,
+  FeedbackReasonTag,
+  FeedbackView,
+  PublicRunView,
+  SubmitFeedbackRequest,
+} from './contracts'
 
 type Page = 'workbench' | 'semantic' | 'dataSources' | 'collaboration' | 'operations'
 type RunStatus = 'waiting_input' | 'understanding' | 'querying' | 'completed' | 'needs_clarification' | 'failed'
@@ -200,12 +210,14 @@ function SessionRow({ title, meta, active }: { title: string; meta: string; acti
 function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions: () => void; onOpenContext: () => void; resetKey: number }) {
   const serviceRef = useRef(createChatBiApplicationService(() => '2026-06-23T09:00:00+08:00'))
   const sharingRef = useRef(createSharingExportApplicationService({ now: () => '2026-06-23T09:00:00+08:00' }))
+  const feedbackServiceRef = useRef(createFeedbackApplicationService({ now: () => '2026-06-23T09:00:00+08:00' }))
   const [question, setQuestion] = useState('')
   const [submittedQuestion, setSubmittedQuestion] = useState('过去 12 个完整自然月净收入趋势')
   const [status, setStatus] = useState<RunStatus>('completed')
   const [runView, setRunView] = useState<PublicRunView | null>(null)
   const [resultView, setResultView] = useState<ResultView>('chart')
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null)
+  const [feedbackReceipt, setFeedbackReceipt] = useState<FeedbackView | null>(null)
   const [runNotice, setRunNotice] = useState('')
   const timerRef = useRef<number[]>([])
   const previousResetKeyRef = useRef(resetKey)
@@ -254,6 +266,7 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
     setQuestion('')
     setSubmittedQuestion(clean)
     setFeedback(null)
+    setFeedbackReceipt(null)
     setRunView(null)
     setRunNotice('')
     setStatus('understanding')
@@ -372,6 +385,32 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
     window.setTimeout(() => URL.revokeObjectURL(url), 0)
   }
 
+  const submitFeedback = (
+    draft: Pick<SubmitFeedbackRequest, 'vote' | 'reasonTags' | 'note' | 'correctedAnswer' | 'reportIssue'>,
+  ) => {
+    const response = feedbackServiceRef.current.submitFeedback({
+      actor: demoActor,
+      runId: runView?.runId ?? 'run_demo_revenue',
+      conversationId: runView?.conversationId ?? 'conversation_workbench',
+      requestId: runView?.requestId ?? 'req_demo_revenue',
+      traceId: runView?.traceId ?? 'trace_demo_revenue',
+      semanticVersion: runView?.semanticVersion ?? demoActor.semanticVersion,
+      ...draft,
+    })
+    if (!response.ok) {
+      setRunNotice(`反馈未提交：${response.error.message}`)
+      return false
+    }
+    setFeedback(draft.vote === 'helpful' ? 'up' : 'down')
+    setFeedbackReceipt(response.data)
+    setRunNotice(
+      draft.reportIssue
+        ? '反馈已关联完整运行链路并进入问题处理队列，备注中的敏感信息会先脱敏。'
+        : '反馈已关联完整运行链路，不会附带生产结果明细。',
+    )
+    return true
+  }
+
   const active = status === 'understanding' || status === 'querying'
   return (
     <main className="workspace">
@@ -406,7 +445,8 @@ function Workbench({ onOpenSessions, onOpenContext, resetKey }: { onOpenSessions
                 onView={setResultView}
                 onExport={exportCsv}
                 feedback={feedback}
-                onFeedback={setFeedback}
+                feedbackReceipt={feedbackReceipt}
+                onFeedback={submitFeedback}
                 onFollowup={(value) => runQuestion(value)}
               />
             )}
@@ -507,15 +547,41 @@ function PermissionFailure({ requestId, onRetry }: { requestId?: string; onRetry
   )
 }
 
-function AnswerResult({ runView, view, onView, onExport, feedback, onFeedback, onFollowup }: {
+const feedbackReasonLabels: Array<{ id: FeedbackReasonTag; label: string }> = [
+  { id: 'wrong_number', label: '数字不正确' },
+  { id: 'wrong_metric', label: '指标口径不对' },
+  { id: 'wrong_filter', label: '筛选或时间不对' },
+  { id: 'misleading_chart', label: '图表表达有误' },
+  { id: 'stale_data', label: '数据不够新' },
+  { id: 'incomplete_answer', label: '回答不完整' },
+  { id: 'permission_issue', label: '权限范围异常' },
+  { id: 'other', label: '其他问题' },
+]
+
+function AnswerResult({ runView, view, onView, onExport, feedback, feedbackReceipt, onFeedback, onFollowup }: {
   runView: PublicRunView | null
   view: ResultView
   onView: (view: ResultView) => void
   onExport: () => void
   feedback: 'up' | 'down' | null
-  onFeedback: (value: 'up' | 'down') => void
+  feedbackReceipt: FeedbackView | null
+  onFeedback: (
+    draft: Pick<SubmitFeedbackRequest, 'vote' | 'reasonTags' | 'note' | 'correctedAnswer' | 'reportIssue'>,
+  ) => boolean
   onFollowup: (value: string) => void
 }) {
+  const [feedbackExpanded, setFeedbackExpanded] = useState(false)
+  const [selectedReasons, setSelectedReasons] = useState<FeedbackReasonTag[]>([])
+  const [feedbackNote, setFeedbackNote] = useState('')
+  const [correctedAnswer, setCorrectedAnswer] = useState('')
+  const [reportIssue, setReportIssue] = useState(false)
+  const feedbackFormRef = useRef<HTMLFormElement | null>(null)
+  useEffect(() => {
+    if (!feedbackExpanded) return
+    window.requestAnimationFrame(() => {
+      feedbackFormRef.current?.scrollIntoView({ block: 'nearest', behavior: 'auto' })
+    })
+  }, [feedbackExpanded])
   const headline = runView?.result?.answer.headline ?? '净收入全年保持增长，四季度增速进一步扩大'
   const summary = runView?.result?.answer.summary ?? '过去 12 个完整自然月净收入合计 1.35 亿元。12 月达到 1,486 万元，较 1 月增长 79.9%。'
   const freshness = runView?.result?.freshnessAt ?? '2026-06-22 08:12'
@@ -577,10 +643,106 @@ function AnswerResult({ runView, view, onView, onExport, feedback, onFeedback, o
         <span>数据更新于 {freshness} · 语义版本 {semanticVersion}</span>
         <div>
           <span>{feedback ? '感谢反馈' : '这个结果有帮助吗？'}</span>
-          <button className={feedback === 'up' ? 'icon-button selected' : 'icon-button'} onClick={() => onFeedback('up')} aria-label="结果有帮助"><IconThumbUp size={16} /></button>
-          <button className={feedback === 'down' ? 'icon-button selected' : 'icon-button'} onClick={() => onFeedback('down')} aria-label="结果无帮助"><IconThumbDown size={16} /></button>
+          <button
+            className={feedback === 'up' ? 'icon-button selected' : 'icon-button'}
+            onClick={() => {
+              setFeedbackExpanded(false)
+              onFeedback({ vote: 'helpful', reasonTags: [], reportIssue: false })
+            }}
+            aria-label="结果有帮助"
+          >
+            <IconThumbUp size={16} />
+          </button>
+          <button
+            className={feedback === 'down' ? 'icon-button selected' : 'icon-button'}
+            onClick={() => setFeedbackExpanded(true)}
+            aria-expanded={feedbackExpanded}
+            aria-controls="answer-feedback-form"
+            aria-label="结果无帮助"
+          >
+            <IconThumbDown size={16} />
+          </button>
         </div>
       </footer>
+
+      {feedbackExpanded && (
+        <form
+          ref={feedbackFormRef}
+          id="answer-feedback-form"
+          className="feedback-form"
+          aria-labelledby="feedback-form-title"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const submitted = onFeedback({
+              vote: 'unhelpful',
+              reasonTags: selectedReasons,
+              note: feedbackNote,
+              correctedAnswer,
+              reportIssue,
+            })
+            if (submitted) setFeedbackExpanded(false)
+          }}
+        >
+          <div className="feedback-form__header">
+            <div>
+              <h3 id="feedback-form-title">帮助我们定位问题</h3>
+              <p>反馈会关联当前 Run、请求链路和语义版本，文本中的手机号、邮箱和证件号会先脱敏。</p>
+            </div>
+            <button className="icon-button" type="button" onClick={() => setFeedbackExpanded(false)} aria-label="关闭反馈表单">
+              <IconX size={17} />
+            </button>
+          </div>
+          <fieldset>
+            <legend>哪里需要改进？</legend>
+            <div className="feedback-reasons">
+              {feedbackReasonLabels.map((reason) => (
+                <label key={reason.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedReasons.includes(reason.id)}
+                    onChange={() => setSelectedReasons((current) => (
+                      current.includes(reason.id)
+                        ? current.filter((item) => item !== reason.id)
+                        : [...current, reason.id]
+                    ))}
+                  />
+                  <span>{reason.label}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <div className="feedback-form__fields">
+            <label>
+              <span>补充说明（可选）</span>
+              <textarea value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} maxLength={1000} rows={3} placeholder="说明错误发生在哪里，不要粘贴未授权明细" />
+            </label>
+            <label>
+              <span>正确答案（可选）</span>
+              <textarea value={correctedAnswer} onChange={(event) => setCorrectedAnswer(event.target.value)} maxLength={1000} rows={3} placeholder="填写可供分析师复核的正确结论" />
+            </label>
+          </div>
+          <div className="feedback-form__footer">
+            <label className="feedback-report">
+              <input type="checkbox" checked={reportIssue} onChange={(event) => setReportIssue(event.target.checked)} />
+              <span>上报为问题，进入人工处理队列</span>
+            </label>
+            <button className="primary-button" type="submit" disabled={selectedReasons.length === 0}>提交反馈</button>
+          </div>
+        </form>
+      )}
+
+      {feedbackReceipt && (
+        <div className="feedback-receipt" role="status">
+          <IconCheck size={18} aria-hidden="true" />
+          <div>
+            <strong>{feedbackReceipt.audit[0]?.type === 'feedback.issue_reported' ? '问题已上报' : '反馈已记录'}</strong>
+            <span>
+              已重新校验当前运行权限并关联 trace_id；不包含生产结果明细
+              {feedbackReceipt.sensitiveDataRedacted ? '，敏感文本已脱敏' : ''}。
+            </span>
+          </div>
+        </div>
+      )}
     </article>
   )
 }

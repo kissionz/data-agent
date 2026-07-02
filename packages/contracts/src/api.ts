@@ -535,7 +535,14 @@ export interface DataSourceConnectionTestResult {
 export interface EvaluationAuditEvent {
   id: string
   at: string
-  type: 'evaluation.gate_evaluated' | 'evaluation.replay_listed' | 'evaluation.replay_viewed' | 'evaluation.release_blocked'
+  type:
+    | 'evaluation.gate_evaluated'
+    | 'evaluation.replay_listed'
+    | 'evaluation.replay_viewed'
+    | 'evaluation.release_blocked'
+    | 'evaluation.sample_ingested'
+    | 'evaluation.golden_approved'
+    | 'evaluation.regression_scheduled'
   actorUserId: string
   tenantId: string
   workspaceId: string
@@ -597,6 +604,70 @@ export interface ListReplayRunsRequest {
 export interface GetReplayRunRequest {
   actor: ActorContext
   runId: string
+}
+
+export type GoldenSampleStatus = 'new' | 'triaged' | 'in_review' | 'resolved' | 'rejected' | 'candidate_dataset' | 'golden_approved'
+
+export interface GoldenSampleView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  sourceRunId: string
+  status: GoldenSampleStatus
+  domain: string
+  sanitizedQuestion: string
+  expectedIntent: AnalysisIR['intent']
+  expectedMetricIds: string[]
+  expectedDimensionIds: string[]
+  semanticVersion: string
+  tags: string[]
+  qualityGates: {
+    desensitized: boolean
+    deduplicated: boolean
+    humanLabeled: boolean
+    productionCredentialsRemoved: true
+  }
+  approvedBy?: string
+  audit: EvaluationAuditEvent[]
+}
+
+export interface IngestGoldenSampleRequest {
+  actor: ActorContext
+  sourceRunId: string
+  sanitizedQuestion: string
+  domain: string
+  expectedIntent: AnalysisIR['intent']
+  expectedMetricIds: string[]
+  expectedDimensionIds: string[]
+  semanticVersion: string
+  tags: string[]
+  desensitized: boolean
+  deduplicated: boolean
+  humanLabeled: boolean
+}
+
+export interface ApproveGoldenSampleRequest {
+  actor: ActorContext
+  sampleId: string
+  note: string
+}
+
+export interface ScheduleRegressionRunRequest {
+  actor: ActorContext
+  candidateVersion: string
+  sampleIds?: string[]
+}
+
+export interface RegressionRunPlanView {
+  contractVersion: typeof CONTRACT_VERSION
+  id: string
+  candidateVersion: string
+  status: 'queued'
+  sampleIds: string[]
+  sampleCount: number
+  stages: Array<'retrieval' | 'planner' | 'compiler' | 'query_gateway' | 'answer_grounding'>
+  usesProductionCredentials: false
+  releaseGateLinked: true
+  audit: EvaluationAuditEvent[]
 }
 
 export interface EvaluateReleaseGateRequest {

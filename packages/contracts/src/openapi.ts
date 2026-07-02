@@ -419,6 +419,40 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/evaluation/golden-samples': {
+      post: {
+        summary: '接收黄金集候选样本',
+        description: '线上样本必须先脱敏、去重并人工标注；通过后进入 candidate_dataset，不能直接进入 golden_approved。',
+        responses: {
+          200: { description: '样本已进入黄金集候选集' },
+          400: { description: '样本未通过脱敏/去重/人工标注门禁' },
+          403: { description: '角色无权管理黄金集' },
+        },
+      },
+    },
+    '/v1/evaluation/golden-samples/{sampleId}/approve': {
+      post: {
+        summary: '审批黄金集样本',
+        description: '将 candidate_dataset 样本审批为 golden_approved，供批量回归和发布门禁使用。',
+        parameters: [{ name: 'sampleId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: { description: '样本已审批进入黄金集' },
+          400: { description: '样本状态不可审批' },
+          403: { description: '角色无权审批' },
+        },
+      },
+    },
+    '/v1/evaluation/regression-runs': {
+      post: {
+        summary: '调度候选版本批量回归',
+        description: '对已审批黄金集样本调度 retrieval/planner/compiler/query/grounding 链路回归；回归计划不使用生产凭据，并联动发布门禁。',
+        responses: {
+          200: { description: '批量回归计划已排队' },
+          400: { description: '缺少已审批黄金集样本' },
+          403: { description: '角色无权调度回归' },
+        },
+      },
+    },
     '/v1/evaluation/replays': {
       get: {
         summary: '列出失败回放样本',

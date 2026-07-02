@@ -564,6 +564,50 @@ export function createChatBiBffRouter(
         return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
       }
 
+      if (method === 'POST' && path === '/v1/evaluation/golden-samples') {
+        const body = bodyObject(request)
+        const metricIdsInput = body.expectedMetricIds ?? body.expected_metric_ids
+        const dimensionIdsInput = body.expectedDimensionIds ?? body.expected_dimension_ids
+        const tagsInput = body.tags
+        const envelope = evaluation.ingestGoldenSample({
+          actor: actorFrom(request),
+          sourceRunId: String(body.sourceRunId ?? body.source_run_id ?? ''),
+          sanitizedQuestion: String(body.sanitizedQuestion ?? body.sanitized_question ?? ''),
+          domain: String(body.domain ?? ''),
+          expectedIntent: (body.expectedIntent ?? body.expected_intent ?? 'trend') as never,
+          expectedMetricIds: Array.isArray(metricIdsInput) ? metricIdsInput.map(String) : [],
+          expectedDimensionIds: Array.isArray(dimensionIdsInput) ? dimensionIdsInput.map(String) : [],
+          semanticVersion: String(body.semanticVersion ?? body.semantic_version ?? actorFrom(request).semanticVersion),
+          tags: Array.isArray(tagsInput) ? tagsInput.map(String) : [],
+          desensitized: Boolean(body.desensitized),
+          deduplicated: Boolean(body.deduplicated),
+          humanLabeled: Boolean(body.humanLabeled ?? body.human_labeled),
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
+      }
+
+      const goldenApproveMatch = path.match(/^\/v1\/evaluation\/golden-samples\/([^/]+)\/approve$/)
+      if (goldenApproveMatch && method === 'POST') {
+        const body = bodyObject(request)
+        const envelope = evaluation.approveGoldenSample({
+          actor: actorFrom(request),
+          sampleId: decodeURIComponent(goldenApproveMatch[1]),
+          note: String(body.note ?? ''),
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
+      }
+
+      if (method === 'POST' && path === '/v1/evaluation/regression-runs') {
+        const body = bodyObject(request)
+        const sampleIdsInput = body.sampleIds ?? body.sample_ids
+        const envelope = evaluation.scheduleRegressionRun({
+          actor: actorFrom(request),
+          candidateVersion: String(body.candidateVersion ?? body.candidate_version ?? 'planner-3.3-rc2'),
+          sampleIds: Array.isArray(sampleIdsInput) ? sampleIdsInput.map(String) : undefined,
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
+      }
+
       if (method === 'GET' && path === '/v1/evaluation/replays') {
         const envelope = evaluation.listReplayRuns({
           actor: actorFrom(request),

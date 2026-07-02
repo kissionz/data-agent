@@ -86,6 +86,93 @@ describe('Evaluation service', () => {
     expect(denied.error).toMatchObject({ code: 'SEMANTIC_NOT_FOUND' })
   })
 
+  it('guards golden sample promotion and schedules regression only for approved samples', () => {
+    const service = createEvaluationApplicationService({ now: () => '2026-06-24T10:32:00+08:00' })
+    const unsafe = service.ingestGoldenSample({
+      actor: opsActor,
+      sourceRunId: 'RUN-28419',
+      sanitizedQuestion: '最近销售情况怎么样？',
+      domain: 'sales',
+      expectedIntent: 'trend',
+      expectedMetricIds: ['net_revenue'],
+      expectedDimensionIds: ['order_date'],
+      semanticVersion: opsActor.semanticVersion,
+      tags: ['clarification', 'time_ambiguity'],
+      desensitized: true,
+      deduplicated: false,
+      humanLabeled: true,
+    })
+    expect(unsafe.ok).toBe(false)
+    if (unsafe.ok) return
+    expect(unsafe.error).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      message: '线上样本必须先脱敏、去重并人工标注，不能直接进入候选集',
+    })
+
+    const regressionWithoutSamples = service.scheduleRegressionRun({
+      actor: opsActor,
+      candidateVersion: 'planner-3.3-rc2',
+    })
+    expect(regressionWithoutSamples.ok).toBe(false)
+
+    const ingested = service.ingestGoldenSample({
+      actor: opsActor,
+      sourceRunId: 'RUN-28419',
+      sanitizedQuestion: '最近销售情况怎么样？',
+      domain: 'sales',
+      expectedIntent: 'trend',
+      expectedMetricIds: ['net_revenue'],
+      expectedDimensionIds: ['order_date'],
+      semanticVersion: opsActor.semanticVersion,
+      tags: ['clarification', 'time_ambiguity'],
+      desensitized: true,
+      deduplicated: true,
+      humanLabeled: true,
+    })
+    expect(ingested.ok).toBe(true)
+    if (!ingested.ok) return
+    expect(ingested.data).toMatchObject({
+      status: 'candidate_dataset',
+      qualityGates: {
+        desensitized: true,
+        deduplicated: true,
+        humanLabeled: true,
+        productionCredentialsRemoved: true,
+      },
+    })
+    expect(ingested.data.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'evaluation.sample_ingested' }),
+    ]))
+
+    const approved = service.approveGoldenSample({
+      actor: opsActor,
+      sampleId: ingested.data.id,
+      note: '人工标注复核通过',
+    })
+    expect(approved.ok).toBe(true)
+    if (!approved.ok) return
+    expect(approved.data).toMatchObject({
+      status: 'golden_approved',
+      approvedBy: 'user_ops',
+    })
+
+    const regression = service.scheduleRegressionRun({
+      actor: opsActor,
+      candidateVersion: 'planner-3.3-rc2',
+    })
+    expect(regression.ok).toBe(true)
+    if (!regression.ok) return
+    expect(regression.data).toMatchObject({
+      status: 'queued',
+      candidateVersion: 'planner-3.3-rc2',
+      sampleIds: [ingested.data.id],
+      sampleCount: 1,
+      usesProductionCredentials: false,
+      releaseGateLinked: true,
+      stages: ['retrieval', 'planner', 'compiler', 'query_gateway', 'answer_grounding'],
+    })
+  })
+
   it('exposes gate and replay contracts through the BFF', () => {
     const router = createChatBiBffRouter()
     const gate = router.handle({
@@ -131,6 +218,55 @@ describe('Evaluation service', () => {
         replayPlan: {
           canUseProductionCredentials: false,
         },
+      },
+    })
+
+    const sample = router.handle({
+      method: 'POST',
+      path: '/v1/evaluation/golden-samples',
+      headers: opsHeaders,
+      body: {
+        source_run_id: 'RUN-28419',
+        sanitized_question: '最近销售情况怎么样？',
+        domain: 'sales',
+        expected_intent: 'trend',
+        expected_metric_ids: ['net_revenue'],
+        expected_dimension_ids: ['order_date'],
+        semantic_version: opsActor.semanticVersion,
+        tags: ['clarification'],
+        desensitized: true,
+        deduplicated: true,
+        human_labeled: true,
+      },
+    })
+    expect(sample.status).toBe(200)
+    const sampleId = (sample.body as { data: { id: string } }).data.id
+
+    const approved = router.handle({
+      method: 'POST',
+      path: `/v1/evaluation/golden-samples/${sampleId}/approve`,
+      headers: opsHeaders,
+      body: { note: '通过' },
+    })
+    expect(approved.status).toBe(200)
+    expect(approved.body).toMatchObject({
+      ok: true,
+      data: { id: sampleId, status: 'golden_approved' },
+    })
+
+    const regression = router.handle({
+      method: 'POST',
+      path: '/v1/evaluation/regression-runs',
+      headers: opsHeaders,
+      body: { candidate_version: 'planner-3.3-rc2' },
+    })
+    expect(regression.status).toBe(200)
+    expect(regression.body).toMatchObject({
+      ok: true,
+      data: {
+        status: 'queued',
+        usesProductionCredentials: false,
+        releaseGateLinked: true,
       },
     })
   })

@@ -4,20 +4,28 @@ import {
   httpStatusForError,
   validateActor,
   type ApiEnvelope,
+  type ApproveGoldenSampleRequest,
   type EvaluationAuditEvent,
   type EvaluationGateMetricView,
   type EvaluationGateReport,
   type EvaluateReleaseGateRequest,
   type GetReplayRunRequest,
+  type GoldenSampleView,
+  type IngestGoldenSampleRequest,
   type ListReplayRunsRequest,
   type PublicApiError,
+  type RegressionRunPlanView,
   type ReplayRunView,
+  type ScheduleRegressionRunRequest,
 } from '../contracts'
 
 export interface EvaluationApplicationService {
   evaluateReleaseGate(request: EvaluateReleaseGateRequest): ApiEnvelope<EvaluationGateReport>
   listReplayRuns(request: ListReplayRunsRequest): ApiEnvelope<{ items: ReplayRunView[]; total: number }>
   getReplayRun(request: GetReplayRunRequest): ApiEnvelope<ReplayRunView>
+  ingestGoldenSample(request: IngestGoldenSampleRequest): ApiEnvelope<GoldenSampleView>
+  approveGoldenSample(request: ApproveGoldenSampleRequest): ApiEnvelope<GoldenSampleView>
+  scheduleRegressionRun(request: ScheduleRegressionRunRequest): ApiEnvelope<RegressionRunPlanView>
 }
 
 export interface EvaluationApplicationOptions {
@@ -30,6 +38,7 @@ export function createEvaluationApplicationService(options: EvaluationApplicatio
   const now = options.now ?? (() => new Date().toISOString())
   let sequence = 0
   const auditEvents: EvaluationAuditEvent[] = []
+  const goldenSamples = new Map<string, GoldenSampleView>()
 
   function nextId(prefix: string) {
     sequence += 1
@@ -74,6 +83,18 @@ export function createEvaluationApplicationService(options: EvaluationApplicatio
     }
     auditEvents.push(event)
     return event
+  }
+
+  function canManageEvaluation(request: { actor: ListReplayRunsRequest['actor'] }) {
+    return request.actor.roles.some((role) => ['platform_ops', 'analyst', 'metric_admin'].includes(role))
+  }
+
+  function sampleAudit(sampleId: string) {
+    return auditEvents.filter((event) => event.summary.includes(sampleId))
+  }
+
+  function visibleApprovedSamples() {
+    return [...goldenSamples.values()].filter((sample) => sample.status === 'golden_approved')
   }
 
   function metrics(): EvaluationGateMetricView[] {
@@ -165,6 +186,113 @@ export function createEvaluationApplicationService(options: EvaluationApplicatio
       if (!run || !canSeeReplay(run, { actor: request.actor })) return failure(notFound(request.runId))
       audit('evaluation.replay_viewed', request, `用户查看回放 ${run.id}，不会使用生产凭据。`)
       return success(replayView(run))
+    },
+
+    ingestGoldenSample(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      if (!canManageEvaluation(request)) return failure({
+        code: 'PERMISSION_DENIED',
+        message: '无权管理黄金集样本',
+        retryable: false,
+        debugReference: 'evaluation_sample_role',
+      })
+      if (!request.desensitized || !request.deduplicated || !request.humanLabeled) return failure({
+        code: 'VALIDATION_FAILED',
+        message: '线上样本必须先脱敏、去重并人工标注，不能直接进入候选集',
+        retryable: true,
+        debugReference: `golden_gate_${request.sourceRunId}`,
+      })
+      const id = nextId('golden_sample')
+      audit('evaluation.sample_ingested', request, `黄金集样本 ${id} 已进入候选集，来源 ${request.sourceRunId}。`)
+      const sample: GoldenSampleView = {
+        contractVersion: CONTRACT_VERSION,
+        id,
+        sourceRunId: request.sourceRunId,
+        status: 'candidate_dataset',
+        domain: request.domain,
+        sanitizedQuestion: request.sanitizedQuestion,
+        expectedIntent: request.expectedIntent,
+        expectedMetricIds: request.expectedMetricIds,
+        expectedDimensionIds: request.expectedDimensionIds,
+        semanticVersion: request.semanticVersion,
+        tags: request.tags,
+        qualityGates: {
+          desensitized: request.desensitized,
+          deduplicated: request.deduplicated,
+          humanLabeled: request.humanLabeled,
+          productionCredentialsRemoved: true,
+        },
+        audit: sampleAudit(id),
+      }
+      goldenSamples.set(id, sample)
+      return success({
+        ...sample,
+        audit: sampleAudit(id),
+      })
+    },
+
+    approveGoldenSample(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      if (!canManageEvaluation(request)) return failure({
+        code: 'PERMISSION_DENIED',
+        message: '无权审批黄金集样本',
+        retryable: false,
+        debugReference: 'evaluation_approve_role',
+      })
+      const sample = goldenSamples.get(request.sampleId)
+      if (!sample) return failure(notFound(request.sampleId))
+      if (sample.status !== 'candidate_dataset') return failure({
+        code: 'VALIDATION_FAILED',
+        message: '只有候选集样本可以审批进入黄金集',
+        retryable: true,
+        debugReference: `golden_status_${sample.status}`,
+      })
+      audit('evaluation.golden_approved', request, `黄金集样本 ${sample.id} 已审批通过：${request.note || '无备注'}。`)
+      const approved: GoldenSampleView = {
+        ...sample,
+        status: 'golden_approved',
+        approvedBy: request.actor.userId,
+        audit: sampleAudit(sample.id),
+      }
+      goldenSamples.set(sample.id, approved)
+      return success(approved)
+    },
+
+    scheduleRegressionRun(request) {
+      const invalid = invalidActor(request)
+      if (invalid) return invalid
+      if (!canManageEvaluation(request)) return failure({
+        code: 'PERMISSION_DENIED',
+        message: '无权调度批量回归',
+        retryable: false,
+        debugReference: 'evaluation_regression_role',
+      })
+      const approved = visibleApprovedSamples()
+      const sampleIds = request.sampleIds && request.sampleIds.length > 0
+        ? request.sampleIds.filter((sampleId) => approved.some((sample) => sample.id === sampleId))
+        : approved.map((sample) => sample.id)
+      if (sampleIds.length === 0) return failure({
+        code: 'VALIDATION_FAILED',
+        message: '批量回归至少需要一个已审批黄金集样本',
+        retryable: true,
+        debugReference: 'regression_empty_samples',
+      })
+      const id = nextId('regression')
+      audit('evaluation.regression_scheduled', request, `批量回归 ${id} 已排队，候选版本 ${request.candidateVersion}，样本 ${sampleIds.length} 条。`)
+      return success({
+        contractVersion: CONTRACT_VERSION,
+        id,
+        candidateVersion: request.candidateVersion,
+        status: 'queued',
+        sampleIds,
+        sampleCount: sampleIds.length,
+        stages: ['retrieval', 'planner', 'compiler', 'query_gateway', 'answer_grounding'],
+        usesProductionCredentials: false,
+        releaseGateLinked: true,
+        audit: auditEvents.filter((event) => event.summary.includes(id)),
+      })
     },
   }
 }

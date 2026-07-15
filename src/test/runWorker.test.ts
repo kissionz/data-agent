@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createRunWorker } from '../application/runWorker'
 import { createInMemoryRunJobQueue } from '../persistence/jobMemory'
-import type { RunJobLease } from '../persistence/jobPorts'
+import type { RunJobLease, RunJobQueue, SynchronousRunJobQueue } from '../persistence/jobPorts'
 
 interface Payload { question: string }
 interface Result { rows: number }
@@ -11,7 +11,7 @@ const t1 = '2026-07-15T09:00:01.000Z'
 const t2 = '2026-07-15T09:00:02.000Z'
 const t3 = '2026-07-15T09:00:03.000Z'
 
-function enqueue(queue: ReturnType<typeof createInMemoryRunJobQueue<Payload, Result>>, runId = 'run_1', maxAttempts = 3) {
+function enqueue(queue: SynchronousRunJobQueue<Payload, Result>, runId = 'run_1', maxAttempts = 3) {
   return queue.enqueue({
     runId,
     tenantId: 'tenant_demo',
@@ -208,9 +208,9 @@ describe('run worker', () => {
       leaseMs: 5_000,
       now: () => t0,
       handler: {
-        execute(payload, context) {
+        async execute(payload, context) {
           expect(payload.question).toContain('净收入')
-          expect(context.isLeaseCurrent(t1)).toBe(true)
+          await expect(context.isLeaseCurrent(t1)).resolves.toBe(true)
           return { type: 'completed', result: { rows: 12 }, resultFingerprint: 'fixture_result', at: t1 }
         },
       },
@@ -221,11 +221,14 @@ describe('run worker', () => {
   })
 
   it('cannot publish a handler result after cancellation wins the race', async () => {
-    const queue = createInMemoryRunJobQueue<Payload, Result>()
-    enqueue(queue)
+    const memory = createInMemoryRunJobQueue<Payload, Result>()
+    enqueue(memory)
+    const queue = asynchronousQueue(memory)
     let releaseHandler!: () => void
+    let markHandlerStarted!: () => void
     let workerSignal: AbortSignal | undefined
     const waiting = new Promise<void>((resolve) => { releaseHandler = resolve })
+    const handlerStarted = new Promise<void>((resolve) => { markHandlerStarted = resolve })
     const worker = createRunWorker({
       queue,
       workerId: 'worker_async',
@@ -234,6 +237,7 @@ describe('run worker', () => {
       handler: {
         async execute(_payload, context) {
           workerSignal = context.signal
+          markHandlerStarted()
           await waiting
           return { type: 'completed', result: { rows: 12 }, resultFingerprint: 'late_result', at: t2 }
         },
@@ -241,13 +245,293 @@ describe('run worker', () => {
     })
 
     const cycle = worker.runOnce()
-    await Promise.resolve()
-    expect(queue.cancel('run_1', t1)).toMatchObject({ ok: true, job: { status: 'cancelled' } })
+    await handlerStarted
+    await expect(queue.cancel('run_1', t1)).resolves.toMatchObject({ ok: true, job: { status: 'cancelled' } })
     expect(workerSignal?.aborted).toBe(true)
     releaseHandler()
 
     await expect(cycle).resolves.toEqual({ status: 'cancelled', runId: 'run_1', attempt: 1 })
-    expect(queue.getJob('run_1')).toMatchObject({ status: 'cancelled' })
-    expect(queue.getJob('run_1')?.result).toBeUndefined()
+    await expect(queue.getJob('run_1')).resolves.toMatchObject({ status: 'cancelled' })
+    expect((await queue.getJob('run_1'))?.result).toBeUndefined()
+  })
+
+  it('awaits every operation supplied by an asynchronous production-shaped queue', async () => {
+    const memory = createInMemoryRunJobQueue<Payload, Result>()
+    const queue = asynchronousQueue(memory)
+    await queue.enqueue({
+      runId: 'run_async',
+      tenantId: 'tenant_demo',
+      workspaceId: 'workspace_sales',
+      payloadFingerprint: 'fingerprint_async',
+      payload: { question: '过去 12 个月净收入趋势' },
+      enqueuedAt: t0,
+    })
+    const worker = createRunWorker({
+      queue,
+      workerId: 'pg_worker_shape',
+      leaseMs: 5_000,
+      now: () => t0,
+      handler: {
+        async execute(_payload, context) {
+          await expect(context.isLeaseCurrent(t1)).resolves.toBe(true)
+          await expect(context.renew(t1, 5_000)).resolves.toBe(true)
+          return { type: 'completed', result: { rows: 12 }, resultFingerprint: 'async_result', at: t2 }
+        },
+      },
+    })
+
+    await expect(worker.runOnce('run_async')).resolves.toEqual({
+      status: 'completed',
+      runId: 'run_async',
+      attempt: 1,
+    })
+    await expect(queue.getJob('run_async')).resolves.toMatchObject({
+      status: 'completed',
+      resultFingerprint: 'async_result',
+    })
+  })
+
+  it('preserves lease fencing through an asynchronous queue boundary', async () => {
+    const memory = createInMemoryRunJobQueue<Payload, Result>()
+    enqueue(memory, 'run_async_fence')
+    const queue = asynchronousQueue(memory)
+    const oldLease = await queue.claimNext({
+      workerId: 'worker_old',
+      runId: 'run_async_fence',
+      now: t0,
+      leaseMs: 1_000,
+    })
+    const currentLease = await queue.claimNext({
+      workerId: 'worker_current',
+      runId: 'run_async_fence',
+      now: t1,
+      leaseMs: 5_000,
+    })
+    if (!oldLease || !currentLease) throw new Error('expected both lease generations')
+
+    await expect(queue.complete({
+      ...identity(oldLease),
+      completedAt: t2,
+      resultFingerprint: 'stale_result',
+      result: { rows: 1 },
+    })).resolves.toMatchObject({ ok: false, reason: 'stale_lease' })
+    await expect(queue.complete({
+      ...identity(currentLease),
+      completedAt: t2,
+      resultFingerprint: 'current_result',
+      result: { rows: 12 },
+    })).resolves.toMatchObject({ ok: true, applied: true })
+  })
+
+  it('automatically renews a long-running handler and clears the heartbeat before completion', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date(t0))
+      const memory = createInMemoryRunJobQueue<Payload, Result>()
+      enqueue(memory, 'run_heartbeat')
+      const base = asynchronousQueue(memory)
+      const renewLease = vi.fn(base.renewLease)
+      const queue: RunJobQueue<Payload, Result> = { ...base, renewLease }
+      let markStarted!: () => void
+      const started = new Promise<void>((resolve) => { markStarted = resolve })
+      const worker = createRunWorker({
+        queue,
+        workerId: 'worker_heartbeat',
+        leaseMs: 600,
+        now: () => new Date(Date.now()).toISOString(),
+        handler: {
+          async execute() {
+            markStarted()
+            await new Promise<void>((resolve) => setTimeout(resolve, 1_000))
+            return {
+              type: 'completed',
+              result: { rows: 12 },
+              resultFingerprint: 'heartbeat_result',
+              at: new Date(Date.now()).toISOString(),
+            }
+          },
+        },
+      })
+
+      const cycle = worker.runOnce('run_heartbeat')
+      await started
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expect(cycle).resolves.toEqual({ status: 'completed', runId: 'run_heartbeat', attempt: 1 })
+      expect(renewLease.mock.calls.length).toBeGreaterThanOrEqual(4)
+      const callsAfterCompletion = renewLease.mock.calls.length
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(renewLease).toHaveBeenCalledTimes(callsAfterCompletion)
+      await expect(queue.getJob('run_heartbeat')).resolves.toMatchObject({
+        status: 'completed',
+        resultFingerprint: 'heartbeat_result',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['failure', 'exception'] as const)(
+    'aborts and fences terminal publication when heartbeat renewal ends in %s',
+    async (mode) => {
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(new Date(t0))
+        const memory = createInMemoryRunJobQueue<Payload, Result>()
+        enqueue(memory, `run_renew_${mode}`)
+        const base = asynchronousQueue(memory)
+        const complete = vi.fn(base.complete)
+        const onCommitted = vi.fn()
+        const queue: RunJobQueue<Payload, Result> = {
+          ...base,
+          complete,
+          async renewLease() {
+            if (mode === 'exception') throw new Error('database heartbeat unavailable')
+            const job = await base.getJob(`run_renew_${mode}`)
+            return { ok: false, reason: 'stale_lease', ...(job ? { job } : {}) }
+          },
+        }
+        let workerSignal: AbortSignal | undefined
+        let markStarted!: () => void
+        const started = new Promise<void>((resolve) => { markStarted = resolve })
+        const worker = createRunWorker({
+          queue,
+          workerId: `worker_renew_${mode}`,
+          leaseMs: 500,
+          heartbeatMs: 100,
+          now: () => new Date(Date.now()).toISOString(),
+          onCommitted,
+          handler: {
+            execute(_payload, context) {
+              workerSignal = context.signal
+              markStarted()
+              return new Promise((resolve) => {
+                context.signal.addEventListener('abort', () => resolve({
+                  type: 'completed',
+                  result: { rows: 99 },
+                  resultFingerprint: 'must_not_publish',
+                  at: new Date(Date.now()).toISOString(),
+                }), { once: true })
+              })
+            },
+          },
+        })
+
+        const cycle = worker.runOnce(`run_renew_${mode}`)
+        await started
+        await vi.advanceTimersByTimeAsync(100)
+
+        expect(workerSignal?.aborted).toBe(true)
+        await expect(cycle).resolves.toEqual({
+          status: 'lost_lease',
+          runId: `run_renew_${mode}`,
+          attempt: 1,
+        })
+        expect(complete).not.toHaveBeenCalled()
+        expect(onCommitted).not.toHaveBeenCalled()
+        await expect(queue.getJob(`run_renew_${mode}`)).resolves.toMatchObject({ status: 'leased' })
+        expect((await queue.getJob(`run_renew_${mode}`))?.result).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it('never overlaps heartbeat renewals when the queue is slow', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date(t0))
+      const memory = createInMemoryRunJobQueue<Payload, Result>()
+      enqueue(memory, 'run_slow_heartbeat')
+      const base = asynchronousQueue(memory)
+      const pendingRenewals: Array<() => void> = []
+      let activeRenewals = 0
+      let maxActiveRenewals = 0
+      const renewLease = vi.fn((input: Parameters<SynchronousRunJobQueue<Payload, Result>['renewLease']>[0]) => {
+        activeRenewals += 1
+        maxActiveRenewals = Math.max(maxActiveRenewals, activeRenewals)
+        return new Promise<Awaited<ReturnType<RunJobQueue<Payload, Result>['renewLease']>>>((resolve) => {
+          pendingRenewals.push(() => {
+            activeRenewals -= 1
+            resolve(memory.renewLease(input))
+          })
+        })
+      })
+      const queue: RunJobQueue<Payload, Result> = { ...base, renewLease }
+      const handlerGate = deferred<void>()
+      let markStarted!: () => void
+      const started = new Promise<void>((resolve) => { markStarted = resolve })
+      const worker = createRunWorker({
+        queue,
+        workerId: 'worker_slow_heartbeat',
+        leaseMs: 500,
+        heartbeatMs: 100,
+        now: () => new Date(Date.now()).toISOString(),
+        handler: {
+          async execute() {
+            markStarted()
+            await handlerGate.promise
+            return {
+              type: 'completed',
+              result: { rows: 12 },
+              resultFingerprint: 'slow_heartbeat_result',
+              at: new Date(Date.now()).toISOString(),
+            }
+          },
+        },
+      })
+
+      const cycle = worker.runOnce('run_slow_heartbeat')
+      await started
+      await vi.advanceTimersByTimeAsync(400)
+      expect(renewLease).toHaveBeenCalledTimes(1)
+      expect(maxActiveRenewals).toBe(1)
+
+      pendingRenewals.shift()?.()
+      await vi.advanceTimersByTimeAsync(100)
+      expect(renewLease).toHaveBeenCalledTimes(2)
+      expect(maxActiveRenewals).toBe(1)
+      pendingRenewals.shift()?.()
+      await vi.advanceTimersByTimeAsync(0)
+      handlerGate.resolve()
+
+      await expect(cycle).resolves.toEqual({
+        status: 'completed',
+        runId: 'run_slow_heartbeat',
+        attempt: 1,
+      })
+      expect(maxActiveRenewals).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function asynchronousQueue<TPayload, TResult>(
+  queue: SynchronousRunJobQueue<TPayload, TResult>,
+): RunJobQueue<TPayload, TResult> {
+  return {
+    async enqueue(input) { return queue.enqueue(input) },
+    async claimNext(input) { return queue.claimNext(input) },
+    async renewLease(input) { return queue.renewLease(input) },
+    async cancel(runId, cancelledAt) { return queue.cancel(runId, cancelledAt) },
+    async complete(input) { return queue.complete(input) },
+    async fail(input) { return queue.fail(input) },
+    async retry(input) { return queue.retry(input) },
+    async getJob(runId) { return queue.getJob(runId) },
+    async isLeaseCurrent(lease, now) { return queue.isLeaseCurrent(lease, now) },
+    async onCancelled(runId, listener) {
+      const unsubscribe = queue.onCancelled(runId, listener)
+      return async () => unsubscribe()
+    },
+  }
+}

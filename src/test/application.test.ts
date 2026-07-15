@@ -142,6 +142,46 @@ describe('ChatBI application service', () => {
     expect(second.requestId).toBe(first.requestId)
   })
 
+  it('rejects reusing an idempotency key for a different request in the same scope', () => {
+    const service = createChatBiApplicationService(() => '2026-06-23T09:00:00+08:00')
+    const first = service.submitQuestion(request('过去 12 个月净收入趋势', { idempotencyKey: 'same_key_changed' }))
+    const changed = service.submitQuestion(request('过去 12 个月净收入区域贡献', { idempotencyKey: 'same_key_changed' }))
+
+    expect(first.ok).toBe(true)
+    expect(changed).toMatchObject({
+      ok: false,
+      error: {
+        code: 'VALIDATION_FAILED',
+        message: '同一幂等键不能用于不同的问题或访问上下文',
+      },
+    })
+  })
+
+  it('scopes idempotency by tenant, workspace and conversation and avoids ids colliding across service instances', () => {
+    const persistence = createInMemoryChatBiPersistence()
+    const firstService = createChatBiApplicationService({ persistence, now: () => '2026-06-23T09:00:00+08:00' })
+    const secondService = createChatBiApplicationService({ persistence, now: () => '2026-06-23T09:00:00+08:00' })
+    const first = firstService.submitQuestion(request('查看其他事业部数据', {
+      idempotencyKey: 'shared_external_key',
+      conversationId: 'conversation_scope_a',
+    }))
+    const second = secondService.submitQuestion(request('查看其他事业部数据', {
+      idempotencyKey: 'shared_external_key',
+      conversationId: 'conversation_scope_b',
+      actor: {
+        ...actor,
+        tenantId: 'tenant_other',
+        workspaceId: 'workspace_other',
+      },
+    }))
+
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error('expected isolated runs')
+    expect(second.data.runId).not.toBe(first.data.runId)
+    expect(second.data.requestId).not.toBe(first.data.requestId)
+  })
+
   it('paginates completed result rows without exposing raw SQL or credentials', () => {
     const service = createChatBiApplicationService(() => '2026-06-23T09:00:00+08:00')
     const created = service.submitQuestion(request('过去 12 个月净收入趋势', { conversationId: 'conversation_result_pages' }))

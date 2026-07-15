@@ -1,6 +1,6 @@
 import { attachRun, transitionRun, type RunError, type RunResult } from '../domain'
 import { createInMemoryRunJobQueue } from '../persistence/jobMemory'
-import type { RunJobQueue } from '../persistence/jobPorts'
+import type { RunJobQueue, SynchronousRunJobQueue } from '../persistence/jobPorts'
 import type { ChatBiPersistence, StoredRunRecord } from '../persistence/ports'
 import {
   applyQueryAdapterOutcome,
@@ -34,13 +34,23 @@ export interface QueryExecutionDispatcher {
   runOnce(runId?: string): Promise<RunWorkerCycleResult>
 }
 
+export interface DurableQueryExecutionDispatcher {
+  enqueue(input: EnqueueQueryRunInput): Promise<{ ok: true; created: boolean } | { ok: false; reason: string }>
+  cancel(runId: string, cancelledAt: string): Promise<'cancelled' | 'already_cancelled' | 'not_found' | 'terminal_conflict'>
+  runOnce(runId?: string): Promise<RunWorkerCycleResult>
+}
+
 export interface QueryExecutionCoordinatorOptions {
   adapter: QueryAdapter
   persistence: ChatBiPersistence
-  queue?: RunJobQueue<QueryRunJobPayload, QueryRunJobPublication>
+  queue?: SynchronousRunJobQueue<QueryRunJobPayload, QueryRunJobPublication>
   workerId?: string
   leaseMs?: number
   now?: () => string
+}
+
+export interface DurableQueryExecutionCoordinatorOptions extends Omit<QueryExecutionCoordinatorOptions, 'queue'> {
+  queue: RunJobQueue<QueryRunJobPayload, QueryRunJobPublication>
 }
 
 export function createQueryExecutionCoordinator(
@@ -49,8 +59,57 @@ export function createQueryExecutionCoordinator(
   const queue = options.queue ?? createInMemoryRunJobQueue<QueryRunJobPayload, QueryRunJobPublication>()
   const now = options.now ?? (() => new Date().toISOString())
   const leaseMs = options.leaseMs ?? 30_000
+  const worker = createQueryWorker(options, queue, now, leaseMs)
 
-  const worker = createRunWorker<QueryRunJobPayload, QueryRunJobPublication>({
+  return {
+    enqueue(input) {
+      const result = queue.enqueue(toQueueInput(input))
+      return result.ok
+        ? { ok: true, created: result.created }
+        : { ok: false, reason: result.reason }
+    },
+    cancel(runId, cancelledAt) {
+      const result = queue.cancel(runId, cancelledAt)
+      if (!result.ok) return result.reason
+      return result.applied ? 'cancelled' : 'already_cancelled'
+    },
+    runOnce(runId) {
+      return worker.runOnce(runId)
+    },
+  }
+}
+
+export function createDurableQueryExecutionCoordinator(
+  options: DurableQueryExecutionCoordinatorOptions,
+): DurableQueryExecutionDispatcher {
+  const now = options.now ?? (() => new Date().toISOString())
+  const leaseMs = options.leaseMs ?? 30_000
+  const worker = createQueryWorker(options, options.queue, now, leaseMs)
+  return {
+    async enqueue(input) {
+      const result = await options.queue.enqueue(toQueueInput(input))
+      return result.ok
+        ? { ok: true, created: result.created }
+        : { ok: false, reason: result.reason }
+    },
+    async cancel(runId, cancelledAt) {
+      const result = await options.queue.cancel(runId, cancelledAt)
+      if (!result.ok) return result.reason
+      return result.applied ? 'cancelled' : 'already_cancelled'
+    },
+    runOnce(runId) {
+      return worker.runOnce(runId)
+    },
+  }
+}
+
+function createQueryWorker(
+  options: Omit<QueryExecutionCoordinatorOptions, 'queue'>,
+  queue: RunJobQueue<QueryRunJobPayload, QueryRunJobPublication>,
+  now: () => string,
+  leaseMs: number,
+) {
+  return createRunWorker<QueryRunJobPayload, QueryRunJobPublication>({
     queue,
     workerId: options.workerId ?? 'query-worker-1',
     leaseMs,
@@ -107,35 +166,22 @@ export function createQueryExecutionCoordinator(
       publishCommittedOutcome(options.persistence, commit.lease.payload, commit.outcome)
     },
   })
+}
 
+function toQueueInput(input: EnqueueQueryRunInput) {
   return {
-    enqueue(input) {
-      const result = queue.enqueue({
-        runId: input.runId,
-        tenantId: input.actor.tenantId,
-        workspaceId: input.actor.workspaceId,
-        payloadFingerprint: `${input.plan.sqlFingerprint}:${input.actor.tenantId}:${input.actor.workspaceId}`,
-        payload: {
-          runId: input.runId,
-          actor: input.actor,
-          plan: input.plan,
-          summary: input.summary,
-          resultId: input.resultId,
-        },
-        enqueuedAt: input.enqueuedAt,
-      })
-      return result.ok
-        ? { ok: true, created: result.created }
-        : { ok: false, reason: result.reason }
+    runId: input.runId,
+    tenantId: input.actor.tenantId,
+    workspaceId: input.actor.workspaceId,
+    payloadFingerprint: `${input.plan.sqlFingerprint}:${input.actor.tenantId}:${input.actor.workspaceId}`,
+    payload: {
+      runId: input.runId,
+      actor: input.actor,
+      plan: input.plan,
+      summary: input.summary,
+      resultId: input.resultId,
     },
-    cancel(runId, cancelledAt) {
-      const result = queue.cancel(runId, cancelledAt)
-      if (!result.ok) return result.reason
-      return result.applied ? 'cancelled' : 'already_cancelled'
-    },
-    runOnce(runId) {
-      return worker.runOnce(runId)
-    },
+    enqueuedAt: input.enqueuedAt,
   }
 }
 

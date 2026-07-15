@@ -12,7 +12,7 @@ import type {
   RunJobFailure,
   RunJobLease,
   RunJobMutationResult,
-  RunJobQueue,
+  SynchronousRunJobQueue,
   RunJobView,
 } from './jobPorts'
 
@@ -44,7 +44,7 @@ export interface InMemoryRunJobQueueOptions {
 
 export function createInMemoryRunJobQueue<TPayload = unknown, TResult = unknown>(
   options: InMemoryRunJobQueueOptions = {},
-): RunJobQueue<TPayload, TResult> {
+): SynchronousRunJobQueue<TPayload, TResult> {
   const jobs = new Map<string, StoredRunJob<TPayload, TResult>>()
   const cancellationListeners = new Map<string, Set<() => void>>()
   let tokenSequence = 0

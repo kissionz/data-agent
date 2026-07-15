@@ -603,3 +603,41 @@ Restart or repair Docker Desktop/containerd, verify a trivial container can star
 - Related Files: docker-compose.postgres.yml, tests/integration/postgresQueryAdapter.integration.test.ts
 
 ---
+
+## [ERR-20260715-005] Vitest test collection option unavailable
+
+**Logged**: 2026-07-15T19:13:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+Vitest 3.2.6 does not support the attempted `--list` option for collection-only verification.
+
+### Error
+
+```text
+CACError: Unknown option `--list`
+```
+
+### Context
+
+- Attempted to collect the real PostgreSQL integration files without connecting to a database.
+- TypeScript build already imports and checks those files, while adapter unit suites provide the executable no-database boundary.
+
+### Suggested Fix
+
+Use `tsc -b` to verify real integration files load and typecheck, and run the dedicated adapter unit tests when PostgreSQL is unavailable. Run the integration files normally only when the database gate is available.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: vitest.integration.config.ts, tests/integration/postgresRunJobQueue.integration.test.ts, tests/integration/postgresResultEventStore.integration.test.ts
+
+### Resolution
+
+- **Resolved**: 2026-07-15T19:13:00+08:00
+- **Notes**: Kept the unsupported command out of the validation gate; build and 25 adapter unit tests pass.
+
+---

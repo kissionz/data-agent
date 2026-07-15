@@ -14,5 +14,7 @@ services:
       retries: 20
     volumes:
       - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/001-chatbi.sql:ro
+      - ./scripts/postgres/control-plane.sql:/docker-entrypoint-initdb.d/002-control-plane.sql:ro
+      - ./scripts/postgres/result-event-store.sql:/docker-entrypoint-initdb.d/003-result-event-store.sql:ro
     tmpfs:
       - /var/lib/postgresql/data

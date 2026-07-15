@@ -1,5 +1,6 @@
 import type {
   LeaseMutationInput,
+  MaybePromise,
   RunJobFailure,
   RunJobLease,
   RunJobQueue,
@@ -17,8 +18,8 @@ export interface RunWorkerContext {
   fence: number
   leaseExpiresAt: string
   signal: AbortSignal
-  isLeaseCurrent(now: string): boolean
-  renew(now: string, leaseMs: number): boolean
+  isLeaseCurrent(now: string): Promise<boolean>
+  renew(now: string, leaseMs: number): Promise<boolean>
 }
 
 export interface RunWorkerHandler<TPayload, TResult> {
@@ -33,10 +34,11 @@ export interface RunWorkerOptions<TPayload, TResult> {
   handler: RunWorkerHandler<TPayload, TResult>
   workerId: string
   leaseMs: number
+  heartbeatMs?: number
   now?: () => string
   classifyThrownError?: (error: unknown, at: string) => RunWorkerHandlerResult<TResult>
-  /** Runs synchronously after the fenced queue mutation wins. */
-  onCommitted?: (commit: RunWorkerCommit<TPayload, TResult>) => void
+  /** Runs after the fenced queue mutation wins; may publish through an async repository. */
+  onCommitted?: (commit: RunWorkerCommit<TPayload, TResult>) => MaybePromise<void>
 }
 
 export interface RunWorkerCommit<TPayload, TResult> {
@@ -57,10 +59,11 @@ export type RunWorkerCycleResult =
  */
 export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPayload, TResult>) {
   const now = options.now ?? (() => new Date().toISOString())
+  const heartbeatMs = resolveHeartbeatMs(options.leaseMs, options.heartbeatMs)
 
   async function runOnce(runId?: string): Promise<RunWorkerCycleResult> {
     const claimedAt = now()
-    const lease = options.queue.claimNext({
+    const lease = await options.queue.claimNext({
       workerId: options.workerId,
       now: claimedAt,
       leaseMs: options.leaseMs,
@@ -70,21 +73,87 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
 
     const identity = leaseIdentity(lease)
     const cancellation = new AbortController()
-    const unsubscribeCancellation = options.queue.onCancelled(lease.runId, () => cancellation.abort())
+    const unsubscribeCancellation = await options.queue.onCancelled(lease.runId, () => cancellation.abort())
+    let heartbeatStopped = false
+    let heartbeatTimer: ReturnType<typeof setTimeout> | undefined
+    let heartbeatInFlight: Promise<void> | undefined
+    let renewInFlight: Promise<boolean> | undefined
+    let leaseLost = false
+
+    function clearHeartbeatTimer() {
+      if (heartbeatTimer === undefined) return
+      clearTimeout(heartbeatTimer)
+      heartbeatTimer = undefined
+    }
+
+    function markLeaseLost() {
+      if (leaseLost) return
+      leaseLost = true
+      clearHeartbeatTimer()
+      cancellation.abort()
+    }
+
+    function renewLease(at: string, leaseMs: number): Promise<boolean> {
+      if (leaseLost) return Promise.resolve(false)
+      if (renewInFlight) return renewInFlight
+      const operation = (async () => {
+        try {
+          const renewed = await options.queue.renewLease({ ...identity, now: at, leaseMs })
+          if (!renewed.ok) {
+            markLeaseLost()
+            return false
+          }
+          return true
+        } catch {
+          markLeaseLost()
+          return false
+        }
+      })()
+      renewInFlight = operation
+      void operation.finally(() => {
+        if (renewInFlight === operation) renewInFlight = undefined
+      })
+      return operation
+    }
+
+    function scheduleHeartbeat() {
+      if (heartbeatStopped || leaseLost) return
+      heartbeatTimer = setTimeout(() => {
+        heartbeatTimer = undefined
+        const heartbeat = (async () => {
+          const renewed = await renewLease(now(), options.leaseMs)
+          if (renewed && !heartbeatStopped && !leaseLost) scheduleHeartbeat()
+        })()
+        heartbeatInFlight = heartbeat
+        void heartbeat.finally(() => {
+          if (heartbeatInFlight === heartbeat) heartbeatInFlight = undefined
+        })
+      }, heartbeatMs)
+      ;(heartbeatTimer as unknown as { unref?: () => void }).unref?.()
+    }
+
+    async function stopHeartbeat() {
+      heartbeatStopped = true
+      clearHeartbeatTimer()
+      const pending = [heartbeatInFlight, renewInFlight].filter(Boolean) as Promise<unknown>[]
+      if (pending.length > 0) await Promise.all(pending)
+    }
+
     const context: RunWorkerContext = {
       attempt: lease.attempt,
       maxAttempts: lease.maxAttempts,
       fence: lease.fence,
       leaseExpiresAt: lease.leaseExpiresAt,
       signal: cancellation.signal,
-      isLeaseCurrent(at) {
-        return options.queue.isLeaseCurrent(identity, at)
+      async isLeaseCurrent(at) {
+        return await options.queue.isLeaseCurrent(identity, at)
       },
-      renew(at, leaseMs) {
-        return options.queue.renewLease({ ...identity, now: at, leaseMs }).ok
+      async renew(at, leaseMs) {
+        return await renewLease(at, leaseMs)
       },
     }
 
+    scheduleHeartbeat()
     let outcome: RunWorkerHandlerResult<TResult>
     try {
       outcome = await options.handler.execute(lease.payload, context)
@@ -100,38 +169,41 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
         },
       }
     } finally {
-      unsubscribeCancellation()
+      await stopHeartbeat()
+      await unsubscribeCancellation()
     }
 
+    if (leaseLost) return await leaseLossResult(options.queue, lease)
+
     const mutation = outcome.type === 'completed'
-      ? options.queue.complete({
+      ? await options.queue.complete({
           ...identity,
           completedAt: outcome.at,
           result: outcome.result,
           resultFingerprint: outcome.resultFingerprint,
         })
       : outcome.type === 'retry'
-        ? options.queue.retry({
+        ? await options.queue.retry({
             ...identity,
             failedAt: outcome.failedAt,
             availableAt: outcome.availableAt,
             failure: outcome.failure,
           })
-        : options.queue.fail({
+        : await options.queue.fail({
             ...identity,
             failedAt: outcome.failedAt,
             failure: outcome.failure,
           })
 
     if (mutation.ok) {
-      if (mutation.applied) options.onCommitted?.({ lease, outcome, job: mutation.job })
+      if (mutation.applied) await options.onCommitted?.({ lease, outcome, job: mutation.job })
       return {
         status: outcome.type === 'retry' ? 'retry_scheduled' : outcome.type,
         runId: lease.runId,
         attempt: lease.attempt,
       }
     }
-    const current = options.queue.getJob(lease.runId)
+    const current = await options.queue.getJob(lease.runId)
     return {
       status: current?.status === 'cancelled' ? 'cancelled' : 'lost_lease',
       runId: lease.runId,
@@ -140,6 +212,34 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
   }
 
   return { runOnce }
+}
+
+async function leaseLossResult<TPayload, TResult>(
+  queue: RunJobQueue<TPayload, TResult>,
+  lease: RunJobLease<TPayload>,
+): Promise<RunWorkerCycleResult> {
+  try {
+    const current = await queue.getJob(lease.runId)
+    return {
+      status: current?.status === 'cancelled' ? 'cancelled' : 'lost_lease',
+      runId: lease.runId,
+      attempt: lease.attempt,
+    }
+  } catch {
+    return { status: 'lost_lease', runId: lease.runId, attempt: lease.attempt }
+  }
+}
+
+function resolveHeartbeatMs(leaseMs: number, configured?: number) {
+  if (!Number.isInteger(leaseMs) || leaseMs < 2) throw new Error('leaseMs must be an integer greater than one')
+  if (configured !== undefined) {
+    if (!Number.isInteger(configured) || configured < 1 || configured >= leaseMs) {
+      throw new Error('heartbeatMs must be a positive integer smaller than leaseMs')
+    }
+    return configured
+  }
+  const minimumHeartbeatMs = 100
+  return Math.min(Math.max(minimumHeartbeatMs, Math.floor(leaseMs / 3)), leaseMs - 1)
 }
 
 function leaseIdentity<TPayload>(lease: RunJobLease<TPayload>): LeaseMutationInput {

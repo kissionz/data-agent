@@ -6,6 +6,9 @@ export type RunJobStatus =
   | 'failed'
   | 'cancelled'
 
+export type MaybePromise<T> = T | Promise<T>
+export type RunJobCancellationSubscription = () => MaybePromise<void>
+
 export type RunJobAttemptOutcome =
   | 'completed'
   | 'failed'
@@ -146,6 +149,26 @@ export interface RenewRunJobLeaseInput extends LeaseMutationInput {
  * Lease tokens are only returned from claim and must never enter PublicRunView.
  */
 export interface RunJobQueue<TPayload = unknown, TResult = unknown> {
+  enqueue(input: EnqueueRunJobInput<TPayload>): MaybePromise<EnqueueRunJobResult<TPayload, TResult>>
+  claimNext(input: ClaimRunJobInput): MaybePromise<RunJobLease<TPayload> | undefined>
+  renewLease(input: RenewRunJobLeaseInput): MaybePromise<RunJobMutationResult<TPayload, TResult>>
+  cancel(runId: string, cancelledAt: string): MaybePromise<CancelRunJobResult<TPayload, TResult>>
+  complete(input: CompleteRunJobInput<TResult>): MaybePromise<RunJobMutationResult<TPayload, TResult>>
+  fail(input: FailRunJobInput): MaybePromise<RunJobMutationResult<TPayload, TResult>>
+  retry(input: RetryRunJobInput): MaybePromise<RunJobMutationResult<TPayload, TResult>>
+  getJob(runId: string): MaybePromise<RunJobView<TPayload, TResult> | undefined>
+  isLeaseCurrent(lease: LeaseMutationInput, now: string): MaybePromise<boolean>
+  /**
+   * Fires when the job becomes cancelled; registration after cancellation must
+   * fire immediately. Durable adapters may implement this with notify + read,
+   * polling, or another at-least-once observation mechanism.
+   */
+  onCancelled(runId: string, listener: () => void): MaybePromise<RunJobCancellationSubscription>
+}
+
+/** Keeps local/browser fixtures source-compatible while production adapters await the base port. */
+export interface SynchronousRunJobQueue<TPayload = unknown, TResult = unknown>
+  extends RunJobQueue<TPayload, TResult> {
   enqueue(input: EnqueueRunJobInput<TPayload>): EnqueueRunJobResult<TPayload, TResult>
   claimNext(input: ClaimRunJobInput): RunJobLease<TPayload> | undefined
   renewLease(input: RenewRunJobLeaseInput): RunJobMutationResult<TPayload, TResult>
@@ -155,5 +178,5 @@ export interface RunJobQueue<TPayload = unknown, TResult = unknown> {
   retry(input: RetryRunJobInput): RunJobMutationResult<TPayload, TResult>
   getJob(runId: string): RunJobView<TPayload, TResult> | undefined
   isLeaseCurrent(lease: LeaseMutationInput, now: string): boolean
-  onCancelled(runId: string, listener: () => void): () => void
+  onCancelled(runId: string, listener: () => void): RunJobCancellationSubscription
 }

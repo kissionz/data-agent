@@ -14,6 +14,7 @@ import type { ChatBiPersistence, StoredRunRecord } from '../persistence/ports'
 import { compileAnalysisQuery, createQueuedQueryExecution, executeReadOnlyQuery, markQueryExecutionCancelled } from '../query'
 import type { QueryExecutionDispatcher } from './queryExecutionCoordinator'
 import { createRetrievalPlanningTrace, refreshClarificationCandidateVersions } from './retrievalPlanning'
+import { stableHash } from '../query/hash'
 import {
   ANALYSIS_IR_VERSION,
   CONTRACT_VERSION,
@@ -57,11 +58,23 @@ export function createChatBiApplicationService(
     ? createInMemoryChatBiPersistence()
     : nowOrOptions.persistence ?? createInMemoryChatBiPersistence()
   const queryDispatcher = typeof nowOrOptions === 'function' ? undefined : nowOrOptions.queryDispatcher
+  const instanceId = createInstanceId()
   let sequence = 0
 
   function nextId(prefix: string) {
     sequence += 1
-    return `${prefix}_${String(sequence).padStart(4, '0')}`
+    return `${prefix}_${instanceId}_${String(sequence).padStart(6, '0')}`
+  }
+
+  function idempotencyScope(request: SubmitQuestionRequest) {
+    // Keep the identity exact: a short non-cryptographic hash would allow two
+    // different tenant scopes to collide and incorrectly suppress a request.
+    return `idem:${JSON.stringify([
+      request.actor.tenantId,
+      request.actor.workspaceId,
+      request.conversationId,
+      request.idempotencyKey,
+    ])}`
   }
 
   function ensureConversation(request: SubmitQuestionRequest): Conversation {
@@ -264,10 +277,37 @@ export function createChatBiApplicationService(
       const validation = validateSubmitQuestionRequest(request)
       if (validation) return { ok: false, requestId, traceId, error: validation }
 
-      const existingRunId = persistence.getRunIdByIdempotencyKey(request.idempotencyKey)
+      const scopedIdempotencyKey = idempotencyScope(request)
+      const existingRunId = persistence.getRunIdByIdempotencyKey(scopedIdempotencyKey)
       if (existingRunId) {
         const existing = persistence.getRun(existingRunId)
-        if (existing) return view(existing)
+        if (existing) {
+          const existingConversation = persistence.getConversation(existing.run.conversationId)
+          const sameRequest = existing.run.tenantId === request.actor.tenantId
+            && existing.run.workspaceId === request.actor.workspaceId
+            && existing.run.conversationId === request.conversationId
+            && existing.run.question === request.question.trim()
+            && existing.run.mode === request.mode
+            && existing.run.semanticVersion === request.actor.semanticVersion
+            && existingConversation?.businessDomainId === request.actor.businessDomainId
+          if (sameRequest) return view(existing)
+          return errorEnvelope(
+            requestId,
+            traceId,
+            'VALIDATION_FAILED',
+            '同一幂等键不能用于不同的问题或访问上下文',
+            `idempotency_${stableHash([scopedIdempotencyKey])}`,
+          )
+        }
+      }
+
+      const existingConversation = persistence.getConversation(request.conversationId)
+      if (existingConversation && (
+        existingConversation.tenantId !== request.actor.tenantId
+        || existingConversation.workspaceId !== request.actor.workspaceId
+        || existingConversation.businessDomainId !== request.actor.businessDomainId
+      )) {
+        return boundaryError(request.actor, requestId, traceId)
       }
 
       const conversation = ensureConversation(request)
@@ -321,7 +361,7 @@ export function createChatBiApplicationService(
           planner: trace.planner,
           audit: [...auditEvents, audit('security.denied', request.actor, run.id, '权限校验拒绝，未执行查询。')],
         }
-        persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
+        persistence.saveIdempotencyKey(scopedIdempotencyKey, run.id)
         return persist(stored)
       }
 
@@ -348,7 +388,7 @@ export function createChatBiApplicationService(
           planner: trace.planner,
           audit: [...auditEvents, audit('planner.ir_created', request.actor, run.id, '预算门禁阻断，未执行查询。')],
         }
-        persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
+        persistence.saveIdempotencyKey(scopedIdempotencyKey, run.id)
         return persist(stored)
       }
 
@@ -398,7 +438,7 @@ export function createChatBiApplicationService(
             audit('planner.clarification_required', request.actor, run.id, '关键指标口径多义，等待用户澄清。'),
           ],
         }
-        persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
+        persistence.saveIdempotencyKey(scopedIdempotencyKey, run.id)
         return persist(stored)
       }
 
@@ -433,7 +473,7 @@ export function createChatBiApplicationService(
           retrieval: trace.retrieval,
           planner: trace.planner,
         }
-        persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
+        persistence.saveIdempotencyKey(scopedIdempotencyKey, run.id)
         const response = persist(stored)
         const enqueued = queryDispatcher.enqueue({
           runId: run.id,
@@ -482,7 +522,7 @@ export function createChatBiApplicationService(
         retrieval: trace.retrieval,
         planner: trace.planner,
       }
-      persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
+      persistence.saveIdempotencyKey(scopedIdempotencyKey, run.id)
       return persist(stored)
     },
 
@@ -720,4 +760,11 @@ export function createChatBiApplicationService(
       }
     },
   }
+}
+
+function createInstanceId() {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  if (uuid) return uuid.replaceAll('-', '').slice(0, 16)
+  const fallback = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`
+  return fallback.slice(0, 16)
 }

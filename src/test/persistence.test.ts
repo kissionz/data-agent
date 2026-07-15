@@ -82,7 +82,7 @@ describe('ChatBI persistence ports', () => {
     })
 
     expect(first.ok && second.ok && first.data.runId === second.data.runId).toBe(true)
-    expect(persistence.getRunIdByIdempotencyKey('same_persistent_key')).toBe(first.ok ? first.data.runId : undefined)
+    expect(persistence.getRunIdByIdempotencyKey('same_persistent_key')).toBeUndefined()
   })
 
   it('returns cloned records so callers cannot mutate stored state by reference', () => {
@@ -164,7 +164,14 @@ describe('ChatBI persistence ports', () => {
     expect(loaded.ok).toBe(true)
     if (!loaded.ok) throw new Error('expected loaded file run')
     expect(loaded.data.runId).toBe(created.data.runId)
-    expect(secondPersistence.getRunIdByIdempotencyKey('file_persisted_run')).toBe(created.data.runId)
+    const retried = secondService.submitQuestion({
+      idempotencyKey: 'file_persisted_run',
+      conversationId: 'conversation_file_persisted',
+      question: '过去 12 个月净收入趋势',
+      mode: 'trusted',
+      actor,
+    })
+    expect(retried.ok && retried.data.runId).toBe(created.data.runId)
     expect(secondPersistence.listAuditEvents(created.data.runId).map((event) => event.type)).toContain('result.ready')
   })
 
@@ -259,7 +266,14 @@ describe('ChatBI persistence ports', () => {
     expect(loaded.ok).toBe(true)
     if (!loaded.ok) throw new Error('expected loaded sql run')
     expect(loaded.data.runId).toBe(created.data.runId)
-    expect(secondPersistence.getRunIdByIdempotencyKey('sql_persisted_run')).toBe(created.data.runId)
+    const retried = secondService.submitQuestion({
+      idempotencyKey: 'sql_persisted_run',
+      conversationId: 'conversation_sql_persisted',
+      question: '过去 12 个月净收入趋势',
+      mode: 'trusted',
+      actor,
+    })
+    expect(retried.ok && retried.data.runId).toBe(created.data.runId)
     expect(client.auditEvents.get(created.data.runId)).toHaveLength(8)
     expect(secondPersistence.listAuditEvents(created.data.runId).map((event) => event.type)).toEqual([
       'question.accepted',

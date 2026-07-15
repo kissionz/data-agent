@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createChatBiApplicationService, createQueryExecutionCoordinator } from '../application'
+import {
+  createChatBiApplicationService,
+  createDurableQueryExecutionCoordinator,
+  createQueryExecutionCoordinator,
+  type EnqueueQueryRunInput,
+  type QueryExecutionDispatcher,
+  type QueryRunJobPayload,
+  type QueryRunJobPublication,
+} from '../application'
 import type { ActorContext } from '../contracts'
-import { createInMemoryChatBiPersistence } from '../persistence'
+import { createInMemoryChatBiPersistence, createInMemoryRunJobQueue } from '../persistence'
+import type { RunJobQueue, SynchronousRunJobQueue } from '../persistence'
 import type { QueryAdapter, QueryAdapterOutcome } from '../query'
 
 const at = '2026-07-15T12:00:00.000Z'
@@ -137,10 +146,13 @@ describe('queued PostgreSQL query execution coordinator', () => {
 
   it('propagates idempotent cancellation to the active adapter and never publishes late rows', async () => {
     let observedSignal: AbortSignal | undefined
+    let markAdapterStarted!: () => void
+    const adapterStarted = new Promise<void>((resolve) => { markAdapterStarted = resolve })
     const { service, dispatcher } = createHarness({
       dialect: 'postgresql',
       runReadOnly: (_input, signal) => new Promise((_resolve, reject) => {
         observedSignal = signal
+        markAdapterStarted()
         signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), {
           code: 'QUERY_CANCELLED',
           retryable: false,
@@ -151,7 +163,7 @@ describe('queued PostgreSQL query execution coordinator', () => {
     const created = submit(service, 'cancel')
     if (!created.ok) throw new Error('expected queued run')
     const cycle = dispatcher.runOnce(created.data.runId)
-    await Promise.resolve()
+    await adapterStarted
     const first = service.cancelRun({
       runId: created.data.runId,
       conversationId: created.data.conversationId,
@@ -180,4 +192,89 @@ describe('queued PostgreSQL query execution coordinator', () => {
       },
     })
   })
+
+  it('runs enqueue, execution and cancellation through a production-shaped asynchronous queue', async () => {
+    const persistence = createInMemoryChatBiPersistence()
+    const captured = new Map<string, EnqueueQueryRunInput>()
+    const captureDispatcher: QueryExecutionDispatcher = {
+      enqueue(input) {
+        captured.set(input.runId, input)
+        return { ok: true, created: true }
+      },
+      cancel() {
+        return 'not_found'
+      },
+      async runOnce() {
+        return { status: 'idle' }
+      },
+    }
+    const service = createChatBiApplicationService({ persistence, queryDispatcher: captureDispatcher, now: () => at })
+    const memoryQueue = createInMemoryRunJobQueue<QueryRunJobPayload, QueryRunJobPublication>()
+    const queue = productionShapedAsyncQueue(memoryQueue)
+    const runReadOnly = vi.fn(async () => executedOutcome())
+    const durable = createDurableQueryExecutionCoordinator({
+      adapter: { dialect: 'postgresql', runReadOnly },
+      persistence,
+      queue,
+      now: () => at,
+    })
+
+    const success = submit(service, 'durable_success')
+    if (!success.ok) throw new Error('expected durable success run preparation')
+    const successInput = captured.get(success.data.runId)
+    if (!successInput) throw new Error('expected captured durable enqueue payload')
+    await expect(durable.enqueue(successInput)).resolves.toEqual({ ok: true, created: true })
+    await expect(durable.enqueue(successInput)).resolves.toEqual({ ok: true, created: false })
+    await expect(durable.runOnce(success.data.runId)).resolves.toEqual({
+      status: 'completed',
+      runId: success.data.runId,
+      attempt: 1,
+    })
+    expect(service.getRun({
+      runId: success.data.runId,
+      conversationId: success.data.conversationId,
+      actor,
+    })).toMatchObject({
+      ok: true,
+      data: {
+        displayStatus: 'completed',
+        executedQuery: true,
+        result: { rows: [{ values: { net_revenue: 128000 } }] },
+      },
+    })
+
+    const cancelled = submit(service, 'durable_cancel')
+    if (!cancelled.ok) throw new Error('expected durable cancel run preparation')
+    const cancelInput = captured.get(cancelled.data.runId)
+    if (!cancelInput) throw new Error('expected captured cancellation payload')
+    await expect(durable.enqueue(cancelInput)).resolves.toEqual({ ok: true, created: true })
+    await expect(durable.cancel(cancelled.data.runId, at)).resolves.toBe('cancelled')
+    await expect(durable.cancel(cancelled.data.runId, at)).resolves.toBe('already_cancelled')
+    await expect(durable.runOnce(cancelled.data.runId)).resolves.toEqual({ status: 'idle' })
+    await expect(queue.getJob(cancelled.data.runId)).resolves.toMatchObject({
+      status: 'cancelled',
+      attempt: 0,
+    })
+    expect(runReadOnly).toHaveBeenCalledTimes(1)
+  })
 })
+
+function productionShapedAsyncQueue<TPayload, TResult>(
+  queue: SynchronousRunJobQueue<TPayload, TResult>,
+): RunJobQueue<TPayload, TResult> {
+  return {
+    async enqueue(input) { return queue.enqueue(input) },
+    async claimNext(input) { return queue.claimNext(input) },
+    async renewLease(input) { return queue.renewLease(input) },
+    async cancel(runId, cancelledAt) { return queue.cancel(runId, cancelledAt) },
+    async complete(input) { return queue.complete(input) },
+    async fail(input) { return queue.fail(input) },
+    async retry(input) { return queue.retry(input) },
+    async getJob(runId) { return queue.getJob(runId) },
+    async isLeaseCurrent(lease, now) { return queue.isLeaseCurrent(lease, now) },
+    async onCancelled(runId, listener) {
+      const unsubscribe = queue.onCancelled(runId, listener)
+      return async () => unsubscribe()
+    },
+  }
+}

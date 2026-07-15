@@ -68,6 +68,22 @@ export function compileAnalysisQuery(input: CompileQueryInput): CompiledQueryPla
   return {
     ir,
     dialect,
+    dataSourceId: semanticPlan.dataSourceId,
+    outputColumns: [
+      ...semanticPlan.dimensions.map((dimension) => ({
+        id: dimension.id,
+        label: dimension.label,
+        type: dimension.resultType,
+        role: 'dimension' as const,
+      })),
+      ...semanticPlan.metrics.map((metric) => ({
+        id: metric.id,
+        label: metric.label,
+        type: metric.resultType,
+        unit: metric.unit,
+        role: 'metric' as const,
+      })),
+    ],
     ast,
     sql,
     parameters,
@@ -90,7 +106,7 @@ export function compileAnalysisQuery(input: CompileQueryInput): CompiledQueryPla
 }
 
 function assertLocallyExecutableDialect(dialect: QueryDialect) {
-  if (dialect !== 'postgresql' && dialect !== 'snowflake') {
+  if (dialect !== 'postgresql') {
     throw new Error(`Dialect plugin is declared but not locally executable: ${dialect}`)
   }
 }

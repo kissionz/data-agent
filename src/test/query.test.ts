@@ -173,13 +173,14 @@ describe('deterministic SQL compiler and query gateway', () => {
 
     expect(capabilities).toEqual(expect.arrayContaining([
       expect.objectContaining({ dialect: 'postgresql', status: 'local_supported', parameterStyle: 'numbered' }),
-      expect.objectContaining({ dialect: 'snowflake', status: 'local_supported', parameterStyle: 'numbered' }),
+      expect.objectContaining({ dialect: 'snowflake', status: 'plugin_declared', parameterStyle: 'numbered' }),
       expect.objectContaining({ dialect: 'mysql', status: 'plugin_declared', parameterStyle: 'question_mark' }),
       expect.objectContaining({ dialect: 'clickhouse', status: 'plugin_declared' }),
       expect.objectContaining({ dialect: 'starrocks', status: 'plugin_declared' }),
       expect.objectContaining({ dialect: 'trino', status: 'plugin_declared' }),
       expect.objectContaining({ dialect: 'bigquery', status: 'plugin_declared', parameterStyle: 'named' }),
     ]))
+    expect(() => compileAnalysisQuery({ ir: ir(), actor, dialect: 'snowflake' })).toThrow('not locally executable')
     expect(() => compileAnalysisQuery({ ir: ir(), actor, dialect: 'bigquery' })).toThrow('not locally executable')
   })
 

@@ -34,7 +34,7 @@ export interface ResultCellReference {
 export interface DeterministicFact {
   id: string
   label: string
-  value: string | number
+  value: string | number | boolean
   formattedValue: string
   references: ResultCellReference[]
 }
@@ -44,19 +44,19 @@ export interface DeterministicAnswer {
   summary: string
   facts: DeterministicFact[]
   semanticVersion: string
-  generatedFrom: 'fixture_result'
+  generatedFrom: 'fixture_result' | 'query_result'
 }
 
 export interface ResultColumn {
   id: string
   label: string
-  type: 'string' | 'number' | 'date' | 'currency' | 'percentage'
+  type: 'string' | 'number' | 'boolean' | 'date' | 'currency' | 'percentage'
   unit?: string
 }
 
 export interface ResultRow {
   key: string
-  values: Record<string, string | number | null>
+  values: Record<string, string | number | boolean | null>
 }
 
 export type ResultChartType = 'line' | 'bar' | 'table'

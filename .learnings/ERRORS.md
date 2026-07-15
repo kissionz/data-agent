@@ -38,6 +38,46 @@ When using filesystem-backed Codex skills from this workspace, run helper script
 
 ---
 
+## [ERR-20260715-003] pnpm store mismatch in managed sandbox
+
+**Logged**: 2026-07-15T20:40:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+Running `corepack pnpm add` inside the managed sandbox selected the workspace-local pnpm store, while the existing `node_modules` links use the user's pnpm v11 store.
+
+### Error
+
+```text
+ERR_PNPM_UNEXPECTED_STORE
+node_modules is linked from /Users/kissionz/Library/pnpm/store/v11
+pnpm wants to use /Users/kissionz/Documents/data-agent/.pnpm-store/v11
+```
+
+### Context
+
+- The dependency change was required for the Node-only PostgreSQL adapter.
+- Network access and writes to the existing user-level store require an escalated command.
+
+### Suggested Fix
+
+Use the existing store explicitly: `corepack pnpm --store-dir /Users/kissionz/Library/pnpm/store/v11 ...`, with the required approval for network/store access.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: package.json, pnpm-lock.yaml
+
+### Resolution
+
+- **Resolved**: 2026-07-15T20:41:00+08:00
+- **Notes**: Installed `pg`, `@types/pg`, `@types/node`, and `tsx` through the existing pnpm v11 store.
+
+---
+
 ## [ERR-20260623-006] npm start script assumption
 
 **Logged**: 2026-06-23T15:24:06+08:00
@@ -526,5 +566,40 @@ Initialize the scoped demo seed set inside every entry point that may address a 
 
 - **Resolved**: 2026-07-15T18:18:00+08:00
 - **Notes**: Added scoped seed initialization before the approval lookup and retained the direct-entry regression test.
+
+---
+
+## [ERR-20260715-004] Docker Desktop container start hangs
+
+**Logged**: 2026-07-15T20:49:00+08:00
+**Priority**: medium
+**Status**: open
+**Area**: tests
+
+### Summary
+
+Docker Desktop responds to `docker info`, can pull and inspect the arm64 PostgreSQL image, but cannot start any container.
+
+### Error
+
+```text
+containers remain in Created
+Post .../containers/<id>/start: failed to start containers
+```
+
+### Context
+
+- `docker compose ... up -d --wait` stalled before the health check.
+- A mount-free `docker run --rm postgres:16-alpine postgres --version` also stalled, proving the issue is not the Compose bind mount, init SQL, architecture, or PostgreSQL process.
+- The real integration suite correctly fails closed with `QUERY_UNAVAILABLE` while the database is unreachable.
+
+### Suggested Fix
+
+Restart or repair Docker Desktop/containerd, verify a trivial container can start, then run the documented Compose and `test:integration:postgres` commands unchanged.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: docker-compose.postgres.yml, tests/integration/postgresQueryAdapter.integration.test.ts
 
 ---

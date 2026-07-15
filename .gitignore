@@ -11,3 +11,6 @@ test-results/
 .impeccable/
 .data/
 chatbi-local-store.json
+.env
+.env.*
+!.env.example

@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: chatbi_test
+      POSTGRES_USER: chatbi_admin
+      POSTGRES_PASSWORD: chatbi_admin
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatbi_admin -d chatbi_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/001-chatbi.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data

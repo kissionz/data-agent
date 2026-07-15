@@ -45,9 +45,10 @@ export const openApiDocument = {
     '/v1/questions': {
       post: {
         summary: '提交自然语言问题',
-        description: '返回 PublicRunView。当前本地实现同步返回最终 mock 状态，生产可改为 202 + SSE。',
+        description: '返回 PublicRunView。本地 fixture 模式可同步返回终态；生产 PostgreSQL worker 模式返回 202/querying，客户端通过 Run GET 或 SSE 获取后续状态。',
         responses: {
           200: jsonResponse('问题已处理或进入澄清/失败状态', { $ref: '#/components/schemas/PublicRunEnvelope' }),
+          202: jsonResponse('问题已进入受治理的异步查询队列', { $ref: '#/components/schemas/PublicRunEnvelope' }),
           400: errorResponse('请求契约无效'),
           409: errorResponse('会话已有活动 Run'),
         },
@@ -1394,7 +1395,7 @@ export const openApiDocument = {
               propagatedAt: { type: 'string' },
             },
           },
-          status: { enum: ['executed', 'blocked', 'cancelled'] },
+          status: { enum: ['queued', 'running', 'executed', 'blocked', 'cancelled'] },
         },
       },
       ResultPageView: {

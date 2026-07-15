@@ -401,7 +401,8 @@ export function createChatBiBffRouter(
 
       if (method === 'POST' && path === '/v1/questions') {
         const envelope = service.submitQuestion(questionRequest(request))
-        return withCors(respond(envelopeStatus(envelope), envelope))
+        const successStatus = envelope.ok && envelope.data.displayStatus === 'querying' ? 202 : 200
+        return withCors(respond(envelopeStatus(envelope, successStatus), envelope))
       }
 
       if (method === 'POST' && path === '/v1/feedback') {

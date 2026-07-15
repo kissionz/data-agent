@@ -1,7 +1,7 @@
 import type { QueryDialect, QueryDialectCapability, QueryExecutionSummary } from '../contracts'
 import { stableHash } from './hash'
 import { assertReadOnlySql } from './compiler'
-import type { ExecuteQueryInput, QueryGatewayExecution } from './types'
+import type { ExecuteQueryInput, QueryAdapterOutcome, QueryGatewayExecution } from './types'
 
 const CANCELLATION_TARGETS: QueryExecutionSummary['cancellation']['propagationTargets'] = [
   'planner',
@@ -11,6 +11,17 @@ const CANCELLATION_TARGETS: QueryExecutionSummary['cancellation']['propagationTa
 ]
 
 export function executeReadOnlyQuery(input: ExecuteQueryInput): QueryGatewayExecution {
+  return createQueryExecution(input, 'executed')
+}
+
+export function createQueuedQueryExecution(input: ExecuteQueryInput): QueryGatewayExecution {
+  return createQueryExecution(input, 'queued')
+}
+
+function createQueryExecution(
+  input: ExecuteQueryInput,
+  status: QueryGatewayExecution['summary']['status'],
+): QueryGatewayExecution {
   const { plan, actor } = input
   if (plan.ir.semanticVersion !== actor.semanticVersion) throw new Error('Query semantic version does not match actor context')
   if (plan.estimatedRows > plan.budget.maxRows) throw new Error('Query row estimate exceeds budget')
@@ -33,11 +44,40 @@ export function executeReadOnlyQuery(input: ExecuteQueryInput): QueryGatewayExec
     maxRows: plan.budget.maxRows,
     appliedGuards: [...plan.appliedGuards, 'cancellation_token'],
     cancellation,
-    status: 'executed',
+    status,
   }
   return {
     summary,
     rows: [],
+  }
+}
+
+export function markQueryExecutionRunning(summary: QueryExecutionSummary): QueryExecutionSummary {
+  return { ...summary, status: 'running' }
+}
+
+export function applyQueryAdapterOutcome(
+  summary: QueryExecutionSummary,
+  outcome: QueryAdapterOutcome,
+): QueryExecutionSummary {
+  const completed = outcome.status === 'executed'
+  return {
+    ...summary,
+    estimatedRows: outcome.explain.estimatedRows,
+    estimatedScanBytes: outcome.explain.estimatedScanBytes,
+    explain: {
+      available: true,
+      estimatedRows: outcome.explain.estimatedRows,
+      estimatedScanBytes: outcome.explain.estimatedScanBytes,
+      costUnits: outcome.explain.costUnits,
+      budgetStatus: outcome.status === 'blocked' ? 'blocked' : 'within_budget',
+      checkedAt: outcome.explain.checkedAt,
+      redacted: true,
+    },
+    cancellation: completed || outcome.status === 'blocked'
+      ? { ...summary.cancellation, status: 'not_required' }
+      : summary.cancellation,
+    status: outcome.status,
   }
 }
 
@@ -53,11 +93,11 @@ export function listQueryDialectCapabilities(): QueryDialectCapability[] {
     },
     {
       dialect: 'snowflake',
-      status: 'local_supported',
+      status: 'plugin_declared',
       parameterStyle: 'numbered',
       explainSupported: true,
       cancellationSupported: true,
-      notes: ['本地 compiler/gateway 保留 Snowflake 方言标识；生产 adapter 需替换参数绑定与 warehouse cost。'],
+      notes: ['Snowflake adapter 尚未接入；生产实现需提供绑定参数、warehouse cost 归一化和取消协议。'],
     },
     ...(['mysql', 'clickhouse', 'starrocks', 'trino', 'bigquery'] as QueryDialect[]).map((dialect) => ({
       dialect,

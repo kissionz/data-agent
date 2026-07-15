@@ -1,4 +1,4 @@
-import type { ActorContext, AnalysisIR, FilterIR } from '../contracts'
+import type { ActorContext, AnalysisIR, FilterIR, ResultColumn } from '../contracts'
 
 export type SemanticObjectLifecycle = 'draft' | 'review' | 'certified' | 'deprecated' | 'offline'
 export type JoinRisk = 'low' | 'medium' | 'high'
@@ -11,7 +11,10 @@ export interface CatalogMetric {
   businessDomainId: string
   semanticVersion: string
   lifecycle: SemanticObjectLifecycle
+  resultType: ResultColumn['type']
+  unit?: string
   expression: string
+  dataSourceId: string
   sourceTable: string
   supportedGrains: AnalysisIR['timeRange']['grain'][]
   compatibleDimensions: string[]
@@ -25,6 +28,7 @@ export interface CatalogDimension {
   businessDomainId: string
   semanticVersion: string
   lifecycle: SemanticObjectLifecycle
+  resultType: ResultColumn['type']
   expression: string
   groupExpression: string
   filterExpression: string
@@ -44,12 +48,18 @@ export interface JoinEdge {
 
 export interface ResolvedSemanticMetric {
   id: string
+  label: string
+  resultType: ResultColumn['type']
+  unit?: string
   expression: string
+  dataSourceId: string
   sourceTable: string
 }
 
 export interface ResolvedSemanticDimension {
   id: string
+  label: string
+  resultType: ResultColumn['type']
   expression: string
   groupExpression: string
   filterExpression: string
@@ -57,6 +67,7 @@ export interface ResolvedSemanticDimension {
 
 export interface ResolvedSemanticPlan {
   semanticVersion: string
+  dataSourceId: string
   metrics: ResolvedSemanticMetric[]
   dimensions: ResolvedSemanticDimension[]
   filterDimensions: ResolvedSemanticDimension[]
@@ -107,26 +118,38 @@ class LocalSemanticCatalog implements SemanticCatalog {
     })
     const filterDimensions = ir.filters.flatMap((filter) => resolveFilterDimension(filter, dimensions, actor, ir.semanticVersion, this))
     const sourceTable = metrics[0]?.sourceTable
+    const dataSourceId = metrics[0]?.dataSourceId
     if (!sourceTable) throw new Error('At least one governed metric is required')
+    if (!dataSourceId) throw new Error('Governed metric must declare a data source')
     if (metrics.some((metric) => metric.sourceTable !== sourceTable)) throw new Error('Cross-source metric plans are not supported in trusted mode')
+    if (metrics.some((metric) => metric.dataSourceId !== dataSourceId)) throw new Error('Cross-data-source metric plans are not supported in trusted mode')
     const joins = dimensions
       .filter((dimension) => dimension.requiresJoin)
       .map((dimension) => resolveJoin(sourceTable, dimension.requiresJoin!))
     return {
       semanticVersion: ir.semanticVersion,
+      dataSourceId,
       metrics: metrics.map((metric) => ({
         id: metric.id,
+        label: metric.name,
+        resultType: metric.resultType,
+        unit: metric.unit,
         expression: metric.expression,
+        dataSourceId: metric.dataSourceId,
         sourceTable: metric.sourceTable,
       })),
       dimensions: dimensions.map((dimension) => ({
         id: dimension.id,
+        label: dimension.name,
+        resultType: dimension.resultType,
         expression: dimension.expression,
         groupExpression: dimension.groupExpression,
         filterExpression: dimension.filterExpression,
       })),
       filterDimensions: uniqueById(filterDimensions).map((dimension) => ({
         id: dimension.id,
+        label: dimension.name,
+        resultType: dimension.resultType,
         expression: dimension.expression,
         groupExpression: dimension.groupExpression,
         filterExpression: dimension.filterExpression,
@@ -195,7 +218,10 @@ export const catalogMetrics: CatalogMetric[] = [
     businessDomainId: 'sales',
     semanticVersion: 'sales-semantic-2026.06.1',
     lifecycle: 'certified',
+    resultType: 'currency',
+    unit: 'CNY',
     expression: 'SUM(f.net_revenue)',
+    dataSourceId: 'warehouse_sales',
     sourceTable: 'semantic_sales.dwd_order_settlement',
     supportedGrains: ['day', 'month', 'quarter', 'year'],
     compatibleDimensions: ['order_date', 'region', 'product_line'],
@@ -208,7 +234,9 @@ export const catalogMetrics: CatalogMetric[] = [
     businessDomainId: 'sales',
     semanticVersion: 'sales-semantic-2026.06.1',
     lifecycle: 'certified',
+    resultType: 'number',
     expression: 'COUNT(DISTINCT f.completed_order_id)',
+    dataSourceId: 'warehouse_sales',
     sourceTable: 'semantic_sales.dwd_order_settlement',
     supportedGrains: ['day', 'week', 'month', 'quarter', 'year'],
     compatibleDimensions: ['order_date', 'region', 'product_line'],
@@ -221,7 +249,9 @@ export const catalogMetrics: CatalogMetric[] = [
     businessDomainId: 'sales',
     semanticVersion: 'sales-semantic-2026.06.1',
     lifecycle: 'draft',
+    resultType: 'percentage',
     expression: 'SUM(f.refund_order_count)::decimal / NULLIF(SUM(f.paid_order_count), 0)',
+    dataSourceId: 'warehouse_sales',
     sourceTable: 'semantic_sales.dwd_order_settlement',
     supportedGrains: ['day', 'month'],
     compatibleDimensions: ['order_date', 'region'],
@@ -237,6 +267,7 @@ export const catalogDimensions: CatalogDimension[] = [
     businessDomainId: 'sales',
     semanticVersion: 'sales-semantic-2026.06.1',
     lifecycle: 'certified',
+    resultType: 'date',
     expression: "DATE_TRUNC('month', f.order_date)",
     groupExpression: "DATE_TRUNC('month', f.order_date)",
     filterExpression: 'f.order_date',
@@ -249,6 +280,7 @@ export const catalogDimensions: CatalogDimension[] = [
     businessDomainId: 'sales',
     semanticVersion: 'sales-semantic-2026.06.1',
     lifecycle: 'certified',
+    resultType: 'string',
     expression: 'r.region_name',
     groupExpression: 'r.region_name',
     filterExpression: 'r.region_name',
@@ -262,6 +294,7 @@ export const catalogDimensions: CatalogDimension[] = [
     businessDomainId: 'sales',
     semanticVersion: 'sales-semantic-2026.06.1',
     lifecycle: 'review',
+    resultType: 'string',
     expression: 'p.product_line_name',
     groupExpression: 'p.product_line_name',
     filterExpression: 'p.product_line_name',

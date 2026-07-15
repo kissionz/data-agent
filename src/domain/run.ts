@@ -34,7 +34,7 @@ export interface ResultCellReference {
 export interface DeterministicFact {
   id: string
   label: string
-  value: string | number
+  value: string | number | boolean
   formattedValue: string
   references: ResultCellReference[]
 }
@@ -44,19 +44,19 @@ export interface DeterministicAnswer {
   summary: string
   facts: DeterministicFact[]
   semanticVersion: string
-  generatedFrom: 'fixture_result'
+  generatedFrom: 'fixture_result' | 'query_result'
 }
 
 export interface ResultColumn {
   id: string
   label: string
-  type: 'string' | 'number' | 'date' | 'currency' | 'percentage'
+  type: 'string' | 'number' | 'boolean' | 'date' | 'currency' | 'percentage'
   unit?: string
 }
 
 export interface ResultRow {
   key: string
-  values: Record<string, string | number | null>
+  values: Record<string, string | number | boolean | null>
 }
 
 export type ResultChartType = 'line' | 'bar' | 'table'
@@ -366,7 +366,7 @@ export function validateResultGrounding(result: RunResult): ResultGroundingRepor
       continue
     }
 
-    const directlyReferencedValues: Array<string | number | null> = []
+    const directlyReferencedValues: Array<string | number | boolean | null> = []
     let hasTransformReference = false
 
     for (const reference of fact.references) {
@@ -408,7 +408,10 @@ export function validateResultGrounding(result: RunResult): ResultGroundingRepor
   }
 }
 
-function cellValueMatchesFactValue(cellValue: string | number | null, factValue: string | number): boolean {
+function cellValueMatchesFactValue(
+  cellValue: string | number | boolean | null,
+  factValue: string | number | boolean,
+): boolean {
   if (cellValue === null) return false
   if (typeof cellValue === 'number' && typeof factValue === 'number') return Object.is(cellValue, factValue)
   return String(cellValue).trim() === String(factValue).trim()
@@ -430,7 +433,9 @@ function evaluateChartSafety(result: RunResult): ResultGroundingReport['chartSaf
   }
 
   if (dateColumn) {
-    const values = result.rows.map((row) => row.values[dateColumn.id]).filter((value): value is string | number => value !== null)
+    const values = result.rows
+      .map((row) => row.values[dateColumn.id])
+      .filter((value): value is string | number | boolean => value !== null)
     const sorted = values.every((value, index) => index === 0 || String(values[index - 1]) <= String(value))
     if (!sorted) warnings.push(`Date axis ${dateColumn.id} is not sorted ascending before charting.`)
     return {

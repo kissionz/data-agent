@@ -76,6 +76,16 @@ pnpm build
 
 构建脚本会先执行 TypeScript 项目检查，再执行 Vite 生产构建。`test:e2e` 使用 Playwright 启动本地 Vite 服务，并通过本机 Google Chrome 跑桌面和移动关键路径验收。
 
+PostgreSQL 真实查询纵向链路使用独立集成门禁，不让默认单测依赖外部数据库：
+
+```bash
+docker compose -f docker-compose.postgres.yml up -d --wait
+npm run test:integration:postgres
+docker compose -f docker-compose.postgres.yml down
+```
+
+该门禁覆盖真实参数绑定、租户/工作区/业务域隔离、JSON EXPLAIN 预算阻断、数据库只读角色、statement timeout 和三秒内取消传播。
+
 ## 本地 API 契约
 
 当前 API 处于本地 BFF/router 阶段，核心代码位于：

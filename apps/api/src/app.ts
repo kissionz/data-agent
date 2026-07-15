@@ -1,9 +1,16 @@
-import { createChatBiApplicationService, httpStatusForDeveloperAccessEnvelope } from '../../../src/application'
+import {
+  createChatBiApplicationService,
+  createQueryExecutionCoordinator,
+  httpStatusForDeveloperAccessEnvelope,
+  type QueryExecutionDispatcher,
+} from '../../../src/application'
 import { createChatBiBffRouter, type ChatBiBffRouter, type HttpRequestLike, type HttpResponseLike } from '../../../src/api'
 import type { DeveloperScope } from '../../../src/contracts'
 import { createFileChatBiPersistence } from '../../../src/persistence/file'
 import { createInMemoryChatBiPersistence } from '../../../src/persistence/memory'
 import type { ChatBiPersistence } from '../../../src/persistence/ports'
+import type { QueryAdapter } from '../../../src/query'
+import { createPostgresPool, createPostgresQueryAdapter } from './adapters/postgresQueryAdapter'
 import { createApiRuntimeConfig, type ApiRuntimeConfig, type ApiRuntimeConfigInput } from './config'
 
 export interface ApiRuntime {
@@ -11,6 +18,17 @@ export interface ApiRuntime {
   router: ChatBiBffRouter
   handle(request: HttpRequestLike): HttpResponseLike
   readiness(): ApiReadiness
+  checkReadiness(): Promise<ApiReadiness>
+  runQueryWorkerOnce(): Promise<{ status: string }>
+  close(): Promise<void>
+}
+
+export interface ApiRuntimeDependencies {
+  queryAdapter?: QueryAdapter & {
+    readiness?(): Promise<{ ok: true }>
+    close?(): Promise<void>
+  }
+  resolveQueryCredential?: (credentialRef: string) => string
 }
 
 export interface ApiReadiness {
@@ -21,6 +39,7 @@ export interface ApiReadiness {
     persistence: 'ok'
     router: 'ok'
     auth: ApiRuntimeConfig['authMode']
+    query: 'fixture' | 'checking' | 'ok' | 'failed'
   }
 }
 
@@ -32,21 +51,26 @@ const requiredActorHeaders = [
   'x-semantic-version',
 ]
 
-export function createApiRuntime(input: ApiRuntimeConfigInput = {}): ApiRuntime {
+export function createApiRuntime(
+  input: ApiRuntimeConfigInput = {},
+  dependencies: ApiRuntimeDependencies = {},
+): ApiRuntime {
   const config = createApiRuntimeConfig(input)
   const persistence = createPersistence(config)
-  const service = createChatBiApplicationService({ persistence })
+  const query = createQueryRuntime(config, persistence, dependencies)
+  const service = createChatBiApplicationService({ persistence, queryDispatcher: query.dispatcher })
   const router = createChatBiBffRouter(service)
 
   function readiness(): ApiReadiness {
     return {
-      ok: true,
+      ok: query.status() !== 'failed' && query.status() !== 'checking',
       service: config.serviceName,
       environment: config.environment,
       checks: {
         persistence: 'ok',
         router: 'ok',
         auth: config.authMode,
+        query: query.status(),
       },
     }
   }
@@ -55,10 +79,21 @@ export function createApiRuntime(input: ApiRuntimeConfigInput = {}): ApiRuntime 
     config,
     router,
     readiness,
+    async checkReadiness() {
+      await query.checkReadiness()
+      return readiness()
+    },
+    runQueryWorkerOnce() {
+      return query.dispatcher?.runOnce() ?? Promise.resolve({ status: 'idle' })
+    },
+    async close() {
+      await query.close()
+    },
     handle(request) {
       const path = normalizePath(request.path)
       if (request.method.toUpperCase() === 'GET' && path === '/readyz') {
-        return json(200, readiness(), config)
+        const snapshot = readiness()
+        return json(snapshot.ok ? 200 : 503, snapshot, config)
       }
       const authenticated = authenticateBearer(request, path, router, config)
       if (!authenticated.ok) return authenticated.response
@@ -83,6 +118,72 @@ export function createApiRuntime(input: ApiRuntimeConfigInput = {}): ApiRuntime 
       return withConfiguredCors(router.handle(effectiveRequest), config)
     },
   }
+}
+
+interface QueryRuntimeBoundary {
+  dispatcher?: QueryExecutionDispatcher
+  status(): ApiReadiness['checks']['query']
+  checkReadiness(): Promise<void>
+  close(): Promise<void>
+}
+
+function createQueryRuntime(
+  config: ApiRuntimeConfig,
+  persistence: ChatBiPersistence,
+  dependencies: ApiRuntimeDependencies,
+): QueryRuntimeBoundary {
+  if (config.query.mode === 'fixture') {
+    return {
+      status: () => 'fixture',
+      checkReadiness: async () => undefined,
+      close: async () => undefined,
+    }
+  }
+
+  const adapter = dependencies.queryAdapter ?? createConfiguredPostgresAdapter(config, dependencies)
+  const dispatcher = createQueryExecutionCoordinator({
+    adapter,
+    persistence,
+    leaseMs: config.query.leaseMs,
+  })
+  let currentStatus: ApiReadiness['checks']['query'] = 'checking'
+  async function checkReadiness() {
+    try {
+      if (adapter.readiness) await adapter.readiness()
+      currentStatus = 'ok'
+    } catch {
+      currentStatus = 'failed'
+    }
+  }
+  void checkReadiness()
+  return {
+    dispatcher,
+    status: () => currentStatus,
+    checkReadiness,
+    async close() {
+      await adapter.close?.()
+    },
+  }
+}
+
+function createConfiguredPostgresAdapter(config: ApiRuntimeConfig, dependencies: ApiRuntimeDependencies) {
+  const credentialRef = config.query.credentialRef!
+  const connectionString = dependencies.resolveQueryCredential?.(credentialRef)?.trim()
+  if (!connectionString) throw new Error(`No server-side query credential is available for reference: ${credentialRef}`)
+  const pool = createPostgresPool({
+    connectionString,
+    max: config.query.poolMax,
+    connectionTimeoutMillis: config.query.connectTimeoutMs,
+    idleTimeoutMillis: config.query.idleTimeoutMs,
+    ssl: config.query.sslMode === 'disable'
+      ? false
+      : { rejectUnauthorized: config.query.sslMode === 'verify-full' },
+  })
+  return createPostgresQueryAdapter({
+    pool,
+    dataSourceId: 'warehouse_sales',
+    maxStatementTimeoutMs: config.query.statementTimeoutMs,
+  })
 }
 
 function authenticateBearer(

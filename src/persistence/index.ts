@@ -1,4 +1,6 @@
 export * from './file'
+export * from './jobMemory'
+export * from './jobPorts'
 export * from './memory'
 export * from './ports'
 export * from './retention'

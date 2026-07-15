@@ -11,7 +11,8 @@ import { attachRun } from '../domain'
 import { emptyResult, partialTrendResult, trendResult } from '../mocks'
 import { createInMemoryChatBiPersistence } from '../persistence/memory'
 import type { ChatBiPersistence, StoredRunRecord } from '../persistence/ports'
-import { compileAnalysisQuery, executeReadOnlyQuery, markQueryExecutionCancelled } from '../query'
+import { compileAnalysisQuery, createQueuedQueryExecution, executeReadOnlyQuery, markQueryExecutionCancelled } from '../query'
+import type { QueryExecutionDispatcher } from './queryExecutionCoordinator'
 import { createRetrievalPlanningTrace, refreshClarificationCandidateVersions } from './retrievalPlanning'
 import {
   ANALYSIS_IR_VERSION,
@@ -45,6 +46,7 @@ export interface ChatBiApplicationService {
 export interface ChatBiApplicationOptions {
   now?: () => string
   persistence?: ChatBiPersistence
+  queryDispatcher?: QueryExecutionDispatcher
 }
 
 export function createChatBiApplicationService(
@@ -54,6 +56,7 @@ export function createChatBiApplicationService(
   const persistence = typeof nowOrOptions === 'function'
     ? createInMemoryChatBiPersistence()
     : nowOrOptions.persistence ?? createInMemoryChatBiPersistence()
+  const queryDispatcher = typeof nowOrOptions === 'function' ? undefined : nowOrOptions.queryDispatcher
   let sequence = 0
 
   function nextId(prefix: string) {
@@ -399,15 +402,64 @@ export function createChatBiApplicationService(
         return persist(stored)
       }
 
-      const analysisIr = makeIr(request, run.id, /区域|城市/.test(run.question) ? 'breakdown' : 'trend', { executedQuery: true })
+      const analysisIr = makeIr(request, run.id, /区域|城市/.test(run.question) ? 'breakdown' : 'trend', {
+        executedQuery: !queryDispatcher,
+      })
       const trace = createRetrievalPlanningTrace({
         question: run.question,
         actor: request.actor,
         requiresClarification: false,
       })
       const compiledPlan = compileAnalysisQuery({ ir: analysisIr, actor: request.actor })
-      const execution = executeReadOnlyQuery({ plan: compiledPlan, actor: request.actor })
+      const execution = queryDispatcher
+        ? createQueuedQueryExecution({ plan: compiledPlan, actor: request.actor })
+        : executeReadOnlyQuery({ plan: compiledPlan, actor: request.actor })
       run = transitionRun(run, { type: 'QUERY_STARTED', at: now() })
+      if (queryDispatcher) {
+        const stored: StoredRunRecord = {
+          run,
+          requestId,
+          traceId,
+          executedQuery: false,
+          analysisIr,
+          queryExecution: execution.summary,
+          audit: [
+            ...auditEvents,
+            audit('retrieval.performed', request.actor, run.id, '检索已按租户、工作区、业务域和语义版本过滤，实体链接完成。'),
+            audit('planner.plan_created', request.actor, run.id, 'Planner 已生成带预算、依赖和终止条件的多步计划。'),
+            audit('planner.ir_created', request.actor, run.id, 'Analysis IR 已创建并通过语义、权限和预算校验。'),
+            audit('compiler.plan_created', request.actor, run.id, `确定性 SQL 计划已创建，指纹 ${execution.summary.sqlFingerprint}。`),
+          ],
+          retrieval: trace.retrieval,
+          planner: trace.planner,
+        }
+        persistence.saveIdempotencyKey(request.idempotencyKey, run.id)
+        const response = persist(stored)
+        const enqueued = queryDispatcher.enqueue({
+          runId: run.id,
+          actor: request.actor,
+          plan: compiledPlan,
+          summary: execution.summary,
+          resultId: `result_${run.id}`,
+          enqueuedAt: now(),
+        })
+        if (enqueued.ok) return response
+        const failedRun = transitionRun(run, {
+          type: 'FAILED',
+          at: now(),
+          error: {
+            code: 'INTERNAL_ERROR',
+            userMessage: '查询任务暂时无法排队，请稍后重试',
+            retryable: true,
+            debugReference: `queue_${run.id}`,
+          },
+        })
+        return persist({
+          ...stored,
+          run: failedRun,
+          audit: [...stored.audit, audit('query.blocked', request.actor, run.id, '查询任务入队失败，未执行查询。')],
+        })
+      }
       const result = selectResult(run.question)
       run = transitionRun(run, { type: 'RESULT_READY', result, at: now() })
       const stored: StoredRunRecord = {
@@ -468,8 +520,6 @@ export function createChatBiApplicationService(
           candidateVersion: request.candidateVersion,
           at: now(),
         })
-        run = transitionRun(run, { type: 'QUERY_STARTED', at: now() })
-        run = transitionRun(run, { type: 'RESULT_READY', result: trendResult, at: now() })
         const analysisIr: AnalysisIR = {
           ...(stored.analysisIr ?? makeIr({
             idempotencyKey: `clarify_${request.runId}`,
@@ -488,18 +538,22 @@ export function createChatBiApplicationService(
           }],
           safety: {
             requiresClarification: false,
-            executedQuery: true,
+            executedQuery: !queryDispatcher,
             permissionChecked: true,
             budgetChecked: true,
           },
         }
         assertAnalysisIR(analysisIr)
         const compiledPlan = compileAnalysisQuery({ ir: analysisIr, actor: request.actor })
-        const execution = executeReadOnlyQuery({ plan: compiledPlan, actor: request.actor })
+        const execution = queryDispatcher
+          ? createQueuedQueryExecution({ plan: compiledPlan, actor: request.actor })
+          : executeReadOnlyQuery({ plan: compiledPlan, actor: request.actor })
+        run = transitionRun(run, { type: 'QUERY_STARTED', at: now() })
+        if (!queryDispatcher) run = transitionRun(run, { type: 'RESULT_READY', result: trendResult, at: now() })
         const nextStored: StoredRunRecord = {
           ...stored,
           run,
-          executedQuery: true,
+          executedQuery: !queryDispatcher,
           analysisIr,
           queryExecution: execution.summary,
           retrieval: stored.retrieval,
@@ -508,12 +562,39 @@ export function createChatBiApplicationService(
             ...stored.audit,
             audit('planner.ir_created', request.actor, run.id, '澄清结果已绑定到新版 Analysis IR。'),
             audit('compiler.plan_created', request.actor, run.id, `澄清后 SQL 计划已创建，指纹 ${execution.summary.sqlFingerprint}。`),
-            audit('query.started', request.actor, run.id, '澄清后查询开始执行，只读与预算门禁已生效。'),
-            audit('query.completed', request.actor, run.id, `澄清后查询完成，缓存键 ${execution.summary.cacheKey}。`),
-            audit('result.ready', request.actor, run.id, '答案已生成。'),
+            ...(queryDispatcher ? [] : [
+              audit('query.started', request.actor, run.id, '澄清后查询开始执行，只读与预算门禁已生效。'),
+              audit('query.completed', request.actor, run.id, `澄清后查询完成，缓存键 ${execution.summary.cacheKey}。`),
+              audit('result.ready', request.actor, run.id, '答案已生成。'),
+            ]),
           ],
         }
-        return persist(nextStored)
+        const response = persist(nextStored)
+        if (!queryDispatcher) return response
+        const enqueued = queryDispatcher.enqueue({
+          runId: run.id,
+          actor: request.actor,
+          plan: compiledPlan,
+          summary: execution.summary,
+          resultId: `result_${run.id}`,
+          enqueuedAt: now(),
+        })
+        if (enqueued.ok) return response
+        const failedRun = transitionRun(run, {
+          type: 'FAILED',
+          at: now(),
+          error: {
+            code: 'INTERNAL_ERROR',
+            userMessage: '查询任务暂时无法排队，请稍后重试',
+            retryable: true,
+            debugReference: `queue_${run.id}`,
+          },
+        })
+        return persist({
+          ...nextStored,
+          run: failedRun,
+          audit: [...nextStored.audit, audit('query.blocked', request.actor, run.id, '澄清后的查询任务入队失败。')],
+        })
       } catch (error) {
         return {
           ok: false,
@@ -532,7 +613,12 @@ export function createChatBiApplicationService(
     cancelRun(request) {
       const found = getStored(request.runId, request.conversationId, request.actor)
       if (found.envelope) return found.envelope
+      if (found.stored!.run.terminationReason === 'cancelled_by_user') return view(found.stored!)
       try {
+        if (queryDispatcher && found.stored!.run.displayStatus === 'querying') {
+          const cancellation = queryDispatcher.cancel(request.runId, now())
+          if (cancellation === 'terminal_conflict') throw new Error('查询已经完成，不能再取消')
+        }
         const run = transitionRun(found.stored!.run, { type: 'CANCELLED', at: now() })
         return persist({
           ...found.stored!,

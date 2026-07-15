@@ -121,7 +121,7 @@ export interface QueryExecutionSummary {
   maxRows: number
   appliedGuards: string[]
   cancellation: QueryCancellationPlan
-  status: 'executed' | 'blocked' | 'cancelled'
+  status: 'queued' | 'running' | 'executed' | 'blocked' | 'cancelled'
 }
 
 export interface AuditEvent {

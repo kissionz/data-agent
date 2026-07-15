@@ -1,4 +1,6 @@
 export * from './file'
+export * from './controlPlanePorts'
+export * from './controlPlaneMemory'
 export * from './jobMemory'
 export * from './jobPorts'
 export * from './memory'

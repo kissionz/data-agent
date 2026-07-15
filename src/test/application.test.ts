@@ -146,8 +146,18 @@ describe('ChatBI application service', () => {
     const service = createChatBiApplicationService(() => '2026-06-23T09:00:00+08:00')
     const first = service.submitQuestion(request('过去 12 个月净收入趋势', { idempotencyKey: 'same_key_changed' }))
     const changed = service.submitQuestion(request('过去 12 个月净收入区域贡献', { idempotencyKey: 'same_key_changed' }))
+    const actorFirst = service.submitQuestion(request('过去 12 个月净收入趋势', {
+      idempotencyKey: 'same_key_actor_changed',
+      conversationId: 'conversation_actor_changed',
+    }))
+    const changedActor = service.submitQuestion(request('过去 12 个月净收入趋势', {
+      idempotencyKey: 'same_key_actor_changed',
+      conversationId: 'conversation_actor_changed',
+      actor: { ...actor, roles: ['metric_admin'] },
+    }))
 
     expect(first.ok).toBe(true)
+    expect(actorFirst.ok).toBe(true)
     expect(changed).toMatchObject({
       ok: false,
       error: {
@@ -155,6 +165,7 @@ describe('ChatBI application service', () => {
         message: '同一幂等键不能用于不同的问题或访问上下文',
       },
     })
+    expect(changedActor).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED' } })
   })
 
   it('scopes idempotency by tenant, workspace and conversation and avoids ids colliding across service instances', () => {

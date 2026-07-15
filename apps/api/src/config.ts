@@ -26,6 +26,15 @@ export interface ApiRuntimeConfig {
     workerPollMs: number
     leaseMs: number
   }
+  controlPlane: {
+    credentialRef?: string
+    sslMode: ApiQuerySslMode
+    poolMax: number
+    connectTimeoutMs: number
+    idleTimeoutMs: number
+    cancellationPollMs: number
+    workerDrainMs: number
+  }
   cors: {
     allowOrigin: string
   }
@@ -47,6 +56,13 @@ export interface ApiRuntimeConfigInput {
   queryStatementTimeoutMs?: number | string
   queryWorkerPollMs?: number | string
   queryLeaseMs?: number | string
+  controlPlaneCredentialRef?: string
+  controlPlaneSslMode?: ApiQuerySslMode
+  controlPlanePoolMax?: number | string
+  controlPlaneConnectTimeoutMs?: number | string
+  controlPlaneIdleTimeoutMs?: number | string
+  controlPlaneCancellationPollMs?: number | string
+  controlPlaneWorkerDrainMs?: number | string
   corsAllowOrigin?: string
 }
 
@@ -58,13 +74,35 @@ export function createApiRuntimeConfig(input: ApiRuntimeConfigInput = {}): ApiRu
     throw new Error('API port must be an integer between 1 and 65535')
   }
   const queryMode = input.queryMode ?? 'fixture'
-  const queryCredentialRef = input.queryCredentialRef?.trim()
+  const queryCredentialRef = credentialReference(input.queryCredentialRef, 'query credential reference')
+  const controlPlaneCredentialRef = credentialReference(
+    input.controlPlaneCredentialRef,
+    'control-plane credential reference',
+  )
   if (queryMode === 'postgresql' && !queryCredentialRef) {
     throw new Error('PostgreSQL query mode requires a server-side credential reference')
+  }
+  if (queryMode === 'postgresql' && !controlPlaneCredentialRef) {
+    throw new Error('PostgreSQL query mode requires a server-side control-plane credential reference')
+  }
+  if (queryMode === 'postgresql'
+    && (environment === 'staging' || environment === 'production')
+    && queryCredentialRef === controlPlaneCredentialRef) {
+    throw new Error('Production query and control-plane credential references must be different')
   }
   const poolMax = positiveInteger(input.queryPoolMax, 4, 'query pool max')
   if (queryMode === 'postgresql' && poolMax < 2) {
     throw new Error('PostgreSQL query pool max must be at least 2 so cancellation can use a separate connection')
+  }
+  const controlPlanePoolMax = boundedInteger(
+    input.controlPlanePoolMax,
+    4,
+    'control-plane pool max',
+    1,
+    100,
+  )
+  if (queryMode === 'postgresql' && controlPlanePoolMax < 2) {
+    throw new Error('PostgreSQL control-plane pool max must be at least 2 for concurrent API transactions and worker commits')
   }
   return {
     serviceName: 'insightflow-chatbi-api',
@@ -89,6 +127,40 @@ export function createApiRuntimeConfig(input: ApiRuntimeConfigInput = {}): ApiRu
       workerPollMs: positiveInteger(input.queryWorkerPollMs, 250, 'query worker poll interval'),
       leaseMs: positiveInteger(input.queryLeaseMs, 30_000, 'query worker lease'),
     },
+    controlPlane: {
+      credentialRef: controlPlaneCredentialRef,
+      sslMode: input.controlPlaneSslMode
+        ?? (environment === 'staging' || environment === 'production' ? 'verify-full' : input.querySslMode ?? 'disable'),
+      poolMax: controlPlanePoolMax,
+      connectTimeoutMs: boundedInteger(
+        input.controlPlaneConnectTimeoutMs,
+        5_000,
+        'control-plane connect timeout',
+        1,
+        120_000,
+      ),
+      idleTimeoutMs: boundedInteger(
+        input.controlPlaneIdleTimeoutMs,
+        30_000,
+        'control-plane idle timeout',
+        1,
+        600_000,
+      ),
+      cancellationPollMs: boundedInteger(
+        input.controlPlaneCancellationPollMs,
+        250,
+        'control-plane cancellation poll interval',
+        25,
+        60_000,
+      ),
+      workerDrainMs: boundedInteger(
+        input.controlPlaneWorkerDrainMs,
+        30_000,
+        'control-plane worker drain timeout',
+        0,
+        300_000,
+      ),
+    },
     cors: {
       allowOrigin: input.corsAllowOrigin ?? '*',
     },
@@ -99,4 +171,27 @@ function positiveInteger(value: number | string | undefined, fallback: number, l
   const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : value ?? fallback
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label} must be a positive integer`)
   return parsed
+}
+
+function boundedInteger(
+  value: number | string | undefined,
+  fallback: number,
+  label: string,
+  minimum: number,
+  maximum: number,
+) {
+  const parsed = typeof value === 'string' ? Number(value) : value ?? fallback
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${label} must be an integer between ${minimum} and ${maximum}`)
+  }
+  return parsed
+}
+
+function credentialReference(value: string | undefined, label: string) {
+  const reference = value?.trim()
+  if (!reference) return undefined
+  if (/^(?:postgres|postgresql):\/\//i.test(reference)) {
+    throw new Error(`${label} must be an opaque server-side reference, not a database URL`)
+  }
+  return reference
 }

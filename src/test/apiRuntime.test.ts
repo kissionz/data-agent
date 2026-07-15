@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createApiRuntime, createApiRuntimeConfig } from '../../apps/api/src'
+import type { DurableQueryControlPlane, QueryRunJobPayload } from '../application'
+import { createInMemoryQueryControlPlane } from '../persistence'
 
 const actorHeaders = {
   'x-tenant-id': 'tenant_demo',
@@ -10,6 +12,96 @@ const actorHeaders = {
 }
 
 describe('apps/api runtime boundary', () => {
+  it('awaits authenticated atomic control-plane submission before returning 202', async () => {
+    const controlPlane = createInMemoryQueryControlPlane<QueryRunJobPayload>()
+    const cancelRun = vi.fn(async () => ({ ok: false as const, reason: 'not_found' as const }))
+    const durableControlPlane: DurableQueryControlPlane = {
+      ...controlPlane,
+      cancelRun,
+    }
+    const runtime = createApiRuntime({ environment: 'production' }, { queryControlPlane: durableControlPlane })
+
+    await expect(runtime.handleAsync({
+      method: 'POST',
+      path: '/v1/questions',
+      body: { conversation_id: 'conversation_async_unauthorized', question: '过去 12 个月净收入趋势' },
+    })).resolves.toMatchObject({ status: 401 })
+
+    const created = await runtime.handleAsync({
+      method: 'POST',
+      path: '/v1/questions',
+      headers: { ...actorHeaders, 'idempotency-key': 'runtime_atomic_submit' },
+      body: {
+        conversation_id: 'conversation_runtime_atomic',
+        question: '过去 12 个月净收入趋势',
+        mode: 'trusted',
+      },
+    })
+    expect(created).toMatchObject({
+      status: 202,
+      body: { ok: true, data: { displayStatus: 'querying', queryExecution: { status: 'queued' } } },
+    })
+    const data = (created.body as { data: { runId: string; conversationId: string } }).data
+    await expect(controlPlane.getJob({
+      tenantId: actorHeaders['x-tenant-id'],
+      workspaceId: actorHeaders['x-workspace-id'],
+      runId: data.runId,
+    })).resolves.toMatchObject({ runId: data.runId })
+
+    await expect(runtime.handleAsync({
+      method: 'GET',
+      path: `/v1/runs/${data.runId}`,
+      query: { conversation_id: data.conversationId },
+      headers: actorHeaders,
+    })).resolves.toMatchObject({ status: 200, body: { ok: true, data: { runId: data.runId } } })
+
+    await expect(runtime.handleAsync({
+      method: 'POST',
+      path: `/v1/runs/${data.runId}/cancel`,
+      headers: actorHeaders,
+      body: { conversation_id: data.conversationId },
+    })).resolves.toMatchObject({ status: 404, body: { ok: false, error: { code: 'SEMANTIC_NOT_FOUND' } } })
+    expect(cancelRun).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: actorHeaders['x-tenant-id'],
+      workspaceId: actorHeaders['x-workspace-id'],
+      runId: data.runId,
+      conversationId: data.conversationId,
+      event: expect.objectContaining({ eventId: `cancel_${data.runId}` }),
+    }))
+
+    for (const request of [
+      {
+        method: 'POST',
+        path: `/v1/runs/${data.runId}/clarify`,
+        headers: actorHeaders,
+        body: { conversation_id: data.conversationId, candidate_id: 'candidate_1' },
+      },
+      {
+        method: 'GET',
+        path: `/v1/runs/${data.runId}/events`,
+        headers: actorHeaders,
+      },
+      {
+        method: 'GET',
+        path: `/v1/results/${data.runId}/`,
+        headers: actorHeaders,
+        query: { conversation_id: data.conversationId },
+      },
+    ]) {
+      await expect(runtime.handleAsync(request)).resolves.toMatchObject({
+        status: 503,
+        body: { ok: false, error: { code: 'INTERNAL_ERROR', retryable: true } },
+      })
+    }
+    expect(runtime.handle({
+      method: 'GET',
+      path: `/v1/runs/${data.runId}`,
+      headers: actorHeaders,
+      query: { conversation_id: data.conversationId },
+    })).toMatchObject({ status: 503 })
+    await runtime.close()
+  })
+
   it('creates validated runtime config with production auth defaults', () => {
     const config = createApiRuntimeConfig({ environment: 'production', port: '9090', corsAllowOrigin: 'https://example.com' })
 
@@ -25,9 +117,10 @@ describe('apps/api runtime boundary', () => {
 
   it('keeps PostgreSQL credentials behind a server-side reference and validates cancellation capacity', () => {
     const config = createApiRuntimeConfig({
-      environment: 'production',
+      environment: 'test',
       queryMode: 'postgresql',
       queryCredentialRef: 'env:CHATBI_QUERY_DATABASE_URL',
+      controlPlaneCredentialRef: 'env:CHATBI_CONTROL_PLANE_DATABASE_URL',
       queryPoolMax: '4',
       queryStatementTimeoutMs: '12000',
     })
@@ -39,10 +132,13 @@ describe('apps/api runtime boundary', () => {
       statementTimeoutMs: 12_000,
     }))
     expect(JSON.stringify(config.query)).not.toContain('postgresql://')
+    expect(config.controlPlane.credentialRef).toBe('env:CHATBI_CONTROL_PLANE_DATABASE_URL')
+    expect(JSON.stringify(config.controlPlane)).not.toContain('postgresql://')
     expect(() => createApiRuntimeConfig({ queryMode: 'postgresql' })).toThrow('credential reference')
     expect(() => createApiRuntimeConfig({
       queryMode: 'postgresql',
       queryCredentialRef: 'env:CHATBI_QUERY_DATABASE_URL',
+      controlPlaneCredentialRef: 'env:CHATBI_CONTROL_PLANE_DATABASE_URL',
       queryPoolMax: 1,
     })).toThrow('at least 2')
   })
@@ -95,11 +191,12 @@ describe('apps/api runtime boundary', () => {
     expect(authorized.body).toMatchObject({ ok: true, data: { displayStatus: 'completed' } })
   })
 
-  it('runs the production PostgreSQL mode through the queued worker and real-result mapper', async () => {
+  it('runs the injected PostgreSQL adapter through the local queued worker and real-result mapper', async () => {
     const runtime = createApiRuntime({
-      environment: 'production',
+      environment: 'test',
       queryMode: 'postgresql',
       queryCredentialRef: 'env:CHATBI_QUERY_DATABASE_URL',
+      controlPlaneCredentialRef: 'env:CHATBI_CONTROL_PLANE_DATABASE_URL',
     }, {
       queryAdapter: {
         dialect: 'postgresql',
@@ -169,6 +266,7 @@ describe('apps/api runtime boundary', () => {
     const runtime = createApiRuntime({
       queryMode: 'postgresql',
       queryCredentialRef: 'env:CHATBI_QUERY_DATABASE_URL',
+      controlPlaneCredentialRef: 'env:CHATBI_CONTROL_PLANE_DATABASE_URL',
     }, {
       queryAdapter: {
         dialect: 'postgresql',

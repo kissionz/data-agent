@@ -1,6 +1,6 @@
-import { attachRun, transitionRun, type RunError, type RunResult } from '../domain'
+import { attachRun, transitionRun, type Conversation, type RunError, type RunResult } from '../domain'
 import { createInMemoryRunJobQueue } from '../persistence/jobMemory'
-import type { RunJobQueue, SynchronousRunJobQueue } from '../persistence/jobPorts'
+import type { EnqueueRunJobInput, RunJobQueue, SynchronousRunJobQueue } from '../persistence/jobPorts'
 import type { ChatBiPersistence, StoredRunRecord } from '../persistence/ports'
 import {
   applyQueryAdapterOutcome,
@@ -23,6 +23,12 @@ export interface QueryRunJobPayload {
 export type QueryRunJobPublication =
   | { type: 'executed'; result: RunResult; summary: QueryExecutionSummary }
   | { type: 'blocked'; summary: QueryExecutionSummary; reason: string }
+
+export interface QueryRunOutcomeProjection {
+  runRecord: StoredRunRecord
+  conversation?: Conversation
+  newAuditEvents: AuditEvent[]
+}
 
 export interface EnqueueQueryRunInput extends QueryRunJobPayload {
   enqueuedAt: string
@@ -63,7 +69,7 @@ export function createQueryExecutionCoordinator(
 
   return {
     enqueue(input) {
-      const result = queue.enqueue(toQueueInput(input))
+      const result = queue.enqueue(toQueryRunJobInput(input))
       return result.ok
         ? { ok: true, created: result.created }
         : { ok: false, reason: result.reason }
@@ -87,7 +93,7 @@ export function createDurableQueryExecutionCoordinator(
   const worker = createQueryWorker(options, options.queue, now, leaseMs)
   return {
     async enqueue(input) {
-      const result = await options.queue.enqueue(toQueueInput(input))
+      const result = await options.queue.enqueue(toQueryRunJobInput(input))
       return result.ok
         ? { ok: true, created: result.created }
         : { ok: false, reason: result.reason }
@@ -168,7 +174,9 @@ function createQueryWorker(
   })
 }
 
-function toQueueInput(input: EnqueueQueryRunInput) {
+export function toQueryRunJobInput(
+  input: EnqueueQueryRunInput,
+): EnqueueRunJobInput<QueryRunJobPayload> {
   return {
     runId: input.runId,
     tenantId: input.actor.tenantId,
@@ -202,61 +210,77 @@ function publishCommittedOutcome(
 ) {
   const stored = persistence.getRun(payload.runId)
   if (!stored || stored.run.displayStatus !== 'querying') return
-
-  if (outcome.type === 'retry') {
-    persistence.saveRun({
-      ...stored,
-      queryExecution: { ...(stored.queryExecution ?? payload.summary), status: 'queued' },
-    })
-    return
-  }
-
-  const at = outcome.type === 'completed' ? outcome.at : outcome.failedAt
-  if (outcome.type === 'completed' && outcome.result.type === 'executed') {
-    const run = transitionRun(stored.run, { type: 'RESULT_READY', result: outcome.result.result, at })
-    saveTerminal(persistence, {
-      ...stored,
-      run,
-      executedQuery: true,
-      queryExecution: outcome.result.summary,
-      audit: appendAudit(stored, payload.actor, 'query.completed', '真实只读查询完成，结果已通过字段与引用校验。', at)
-        .concat(auditEvent(stored, payload.actor, 'result.ready', '答案已从真实查询结果生成。', at, 1)),
-    })
-    return
-  }
-
-  const blockedPublication = outcome.type === 'completed' && outcome.result.type === 'blocked'
-    ? outcome.result
-    : undefined
-  const failure = blockedPublication
-    ? {
-        code: 'QUERY_TOO_EXPENSIVE' as const,
-        userMessage: '真实 EXPLAIN 估算超过工作空间预算，请缩短时间或增加筛选条件',
-        retryable: true,
-        debugReference: `budget_${payload.runId}`,
-        safeDetails: `预算门禁：${blockedPublication.reason}`,
-      }
-    : toRunError(outcome.type === 'failed' ? outcome.failure : undefined, payload.runId)
-  const run = transitionRun(stored.run, { type: 'FAILED', error: failure, at })
-  saveTerminal(persistence, {
-    ...stored,
-    run,
-    executedQuery: false,
-    queryExecution: blockedPublication ? blockedPublication.summary : stored.queryExecution,
-    audit: appendAudit(
-      stored,
-      payload.actor,
-      blockedPublication ? 'query.blocked' : 'query.completed',
-      blockedPublication ? '真实 EXPLAIN 预算门禁已阻断查询正文。' : '查询执行失败，已返回安全错误。',
-      at,
-    ),
-  })
+  const projected = projectQueryRunOutcome(
+    stored,
+    payload,
+    outcome,
+    persistence.getConversation(stored.run.conversationId),
+  )
+  persistence.saveRun(projected.runRecord)
+  if (projected.conversation) persistence.saveConversation(projected.conversation)
 }
 
-function saveTerminal(persistence: ChatBiPersistence, stored: StoredRunRecord) {
-  persistence.saveRun(stored)
-  const conversation = persistence.getConversation(stored.run.conversationId)
-  if (conversation) persistence.saveConversation(attachRun(conversation, stored.run))
+export function projectQueryRunOutcome(
+  stored: StoredRunRecord,
+  payload: QueryRunJobPayload,
+  outcome: RunWorkerHandlerResult<QueryRunJobPublication>,
+  conversation?: Conversation,
+): QueryRunOutcomeProjection {
+  if (stored.run.id !== payload.runId || stored.run.displayStatus !== 'querying') {
+    throw new Error('query outcome does not belong to an active querying Run')
+  }
+  let runRecord: StoredRunRecord
+  if (outcome.type === 'retry') {
+    runRecord = {
+      ...stored,
+      queryExecution: { ...(stored.queryExecution ?? payload.summary), status: 'queued' },
+    }
+  } else {
+    const at = outcome.type === 'completed' ? outcome.at : outcome.failedAt
+    if (outcome.type === 'completed' && outcome.result.type === 'executed') {
+      const run = transitionRun(stored.run, { type: 'RESULT_READY', result: outcome.result.result, at })
+      runRecord = {
+        ...stored,
+        run,
+        executedQuery: true,
+        queryExecution: outcome.result.summary,
+        audit: appendAudit(stored, payload.actor, 'query.completed', '真实只读查询完成，结果已通过字段与引用校验。', at)
+          .concat(auditEvent(stored, payload.actor, 'result.ready', '答案已从真实查询结果生成。', at, 1)),
+      }
+    } else {
+      const blockedPublication = outcome.type === 'completed' && outcome.result.type === 'blocked'
+        ? outcome.result
+        : undefined
+      const failure = blockedPublication
+        ? {
+            code: 'QUERY_TOO_EXPENSIVE' as const,
+            userMessage: '真实 EXPLAIN 估算超过工作空间预算，请缩短时间或增加筛选条件',
+            retryable: true,
+            debugReference: `budget_${payload.runId}`,
+            safeDetails: `预算门禁：${blockedPublication.reason}`,
+          }
+        : toRunError(outcome.type === 'failed' ? outcome.failure : undefined, payload.runId)
+      const run = transitionRun(stored.run, { type: 'FAILED', error: failure, at })
+      runRecord = {
+        ...stored,
+        run,
+        executedQuery: false,
+        queryExecution: blockedPublication ? blockedPublication.summary : stored.queryExecution,
+        audit: appendAudit(
+          stored,
+          payload.actor,
+          blockedPublication ? 'query.blocked' : 'query.completed',
+          blockedPublication ? '真实 EXPLAIN 预算门禁已阻断查询正文。' : '查询执行失败，已返回安全错误。',
+          at,
+        ),
+      }
+    }
+  }
+  return {
+    runRecord,
+    conversation: conversation ? attachRun(conversation, runRecord.run) : undefined,
+    newAuditEvents: runRecord.audit.slice(stored.audit.length),
+  }
 }
 
 function appendAudit(

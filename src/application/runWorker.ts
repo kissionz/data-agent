@@ -3,6 +3,7 @@ import type {
   MaybePromise,
   RunJobFailure,
   RunJobLease,
+  RunJobMutationResult,
   RunJobQueue,
   RunJobView,
 } from '../persistence/jobPorts'
@@ -37,14 +38,40 @@ export interface RunWorkerOptions<TPayload, TResult> {
   heartbeatMs?: number
   now?: () => string
   classifyThrownError?: (error: unknown, at: string) => RunWorkerHandlerResult<TResult>
-  /** Runs after the fenced queue mutation wins; may publish through an async repository. */
+  /**
+   * Durable transaction authority. When supplied it fully replaces the queue's
+   * complete/fail/retry mutation for this attempt.
+   */
+  commitAttempt?: (
+    input: RunWorkerCommitAttemptInput<TPayload, TResult>,
+  ) => MaybePromise<RunJobMutationResult<TPayload, TResult>>
+  /** Best-effort notification/cache hook after the durable mutation wins. */
   onCommitted?: (commit: RunWorkerCommit<TPayload, TResult>) => MaybePromise<void>
+  /** Best-effort telemetry for onCommitted failures; its own failures are swallowed. */
+  onPostCommitError?: (
+    error: unknown,
+    commit: RunWorkerCommit<TPayload, TResult>,
+  ) => MaybePromise<void>
+}
+
+export interface RunWorkerCommitAttemptInput<TPayload, TResult> {
+  lease: RunJobLease<TPayload>
+  outcome: RunWorkerHandlerResult<TResult>
 }
 
 export interface RunWorkerCommit<TPayload, TResult> {
   lease: RunJobLease<TPayload>
   outcome: RunWorkerHandlerResult<TResult>
   job: RunJobView<TPayload, TResult>
+}
+
+export class RunWorkerCommitAttemptError extends Error {
+  readonly code = 'RUN_WORKER_COMMIT_FAILED'
+
+  constructor(cause: unknown) {
+    super('Atomic run attempt commit failed.', { cause })
+    this.name = 'RunWorkerCommitAttemptError'
+  }
 }
 
 export type RunWorkerCycleResult =
@@ -175,40 +202,57 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
 
     if (leaseLost) return await leaseLossResult(options.queue, lease)
 
-    const mutation = outcome.type === 'completed'
-      ? await options.queue.complete({
-          ...identity,
-          completedAt: outcome.at,
-          result: outcome.result,
-          resultFingerprint: outcome.resultFingerprint,
-        })
-      : outcome.type === 'retry'
-        ? await options.queue.retry({
+    let mutation: RunJobMutationResult<TPayload, TResult>
+    if (options.commitAttempt) {
+      try {
+        mutation = await options.commitAttempt({ lease, outcome })
+      } catch (error) {
+        // Never fall back after an ambiguous durable commit; the hook must be
+        // idempotent so a supervisor can safely retry or reconcile the attempt.
+        throw new RunWorkerCommitAttemptError(error)
+      }
+    } else {
+      mutation = outcome.type === 'completed'
+        ? await options.queue.complete({
             ...identity,
-            failedAt: outcome.failedAt,
-            availableAt: outcome.availableAt,
-            failure: outcome.failure,
+            completedAt: outcome.at,
+            result: outcome.result,
+            resultFingerprint: outcome.resultFingerprint,
           })
-        : await options.queue.fail({
-            ...identity,
-            failedAt: outcome.failedAt,
-            failure: outcome.failure,
-          })
+        : outcome.type === 'retry'
+          ? await options.queue.retry({
+              ...identity,
+              failedAt: outcome.failedAt,
+              availableAt: outcome.availableAt,
+              failure: outcome.failure,
+            })
+          : await options.queue.fail({
+              ...identity,
+              failedAt: outcome.failedAt,
+              failure: outcome.failure,
+            })
+    }
 
     if (mutation.ok) {
-      if (mutation.applied) await options.onCommitted?.({ lease, outcome, job: mutation.job })
+      if (mutation.applied && options.onCommitted) {
+        const commit = { lease, outcome, job: mutation.job }
+        try {
+          await options.onCommitted(commit)
+        } catch (error) {
+          try {
+            await options.onPostCommitError?.(error, commit)
+          } catch {
+            // Durable state already won. Telemetry/cache failures cannot replay it.
+          }
+        }
+      }
       return {
         status: outcome.type === 'retry' ? 'retry_scheduled' : outcome.type,
         runId: lease.runId,
         attempt: lease.attempt,
       }
     }
-    const current = await options.queue.getJob(lease.runId)
-    return {
-      status: current?.status === 'cancelled' ? 'cancelled' : 'lost_lease',
-      runId: lease.runId,
-      attempt: lease.attempt,
-    }
+    return await leaseLossResult(options.queue, lease)
   }
 
   return { runOnce }

@@ -50,6 +50,64 @@ export interface ChatBiApplicationOptions {
   queryDispatcher?: QueryExecutionDispatcher
 }
 
+export function scopedQueryIdempotencyKey(request: SubmitQuestionRequest) {
+  return `idem:${JSON.stringify([
+    request.actor.tenantId,
+    request.actor.workspaceId,
+    request.conversationId,
+    request.idempotencyKey,
+  ])}`
+}
+
+export function queryRequestFingerprint(request: SubmitQuestionRequest) {
+  return JSON.stringify({
+    conversationId: request.conversationId,
+    question: request.question.trim(),
+    mode: request.mode,
+    actor: {
+      tenantId: request.actor.tenantId,
+      workspaceId: request.actor.workspaceId,
+      userId: request.actor.userId,
+      roles: [...request.actor.roles].sort(),
+      businessDomainId: request.actor.businessDomainId,
+      semanticVersion: request.actor.semanticVersion,
+      policyVersion: request.actor.policyVersion ?? null,
+      locale: request.actor.locale,
+      timezone: request.actor.timezone,
+    },
+  })
+}
+
+export function storedRunRecordToEnvelope(stored: StoredRunRecord): ApiEnvelope<PublicRunView> {
+  return {
+    ok: true,
+    requestId: stored.requestId,
+    traceId: stored.traceId,
+    data: {
+      contractVersion: CONTRACT_VERSION,
+      requestId: stored.requestId,
+      traceId: stored.traceId,
+      runId: stored.run.id,
+      conversationId: stored.run.conversationId,
+      question: stored.run.question,
+      displayStatus: stored.run.displayStatus,
+      mode: stored.run.mode,
+      semanticVersion: stored.run.semanticVersion,
+      version: stored.run.version,
+      executedQuery: stored.executedQuery,
+      analysisIr: stored.analysisIr,
+      queryExecution: stored.queryExecution,
+      retrieval: stored.retrieval,
+      planner: stored.planner,
+      clarification: stored.run.clarification,
+      result: stored.run.result,
+      error: stored.run.error ? toPublicError(stored.run.error) : undefined,
+      audit: stored.audit,
+      updatedAt: stored.run.updatedAt,
+    },
+  }
+}
+
 export function createChatBiApplicationService(
   nowOrOptions: (() => string) | ChatBiApplicationOptions = () => new Date().toISOString(),
 ): ChatBiApplicationService {
@@ -64,17 +122,6 @@ export function createChatBiApplicationService(
   function nextId(prefix: string) {
     sequence += 1
     return `${prefix}_${instanceId}_${String(sequence).padStart(6, '0')}`
-  }
-
-  function idempotencyScope(request: SubmitQuestionRequest) {
-    // Keep the identity exact: a short non-cryptographic hash would allow two
-    // different tenant scopes to collide and incorrectly suppress a request.
-    return `idem:${JSON.stringify([
-      request.actor.tenantId,
-      request.actor.workspaceId,
-      request.conversationId,
-      request.idempotencyKey,
-    ])}`
   }
 
   function ensureConversation(request: SubmitQuestionRequest): Conversation {
@@ -228,33 +275,7 @@ export function createChatBiApplicationService(
   }
 
   function view(stored: StoredRunRecord): ApiEnvelope<PublicRunView> {
-    return {
-      ok: true,
-      requestId: stored.requestId,
-      traceId: stored.traceId,
-      data: {
-        contractVersion: CONTRACT_VERSION,
-        requestId: stored.requestId,
-        traceId: stored.traceId,
-        runId: stored.run.id,
-        conversationId: stored.run.conversationId,
-        question: stored.run.question,
-        displayStatus: stored.run.displayStatus,
-        mode: stored.run.mode,
-        semanticVersion: stored.run.semanticVersion,
-        version: stored.run.version,
-        executedQuery: stored.executedQuery,
-        analysisIr: stored.analysisIr,
-        queryExecution: stored.queryExecution,
-        retrieval: stored.retrieval,
-        planner: stored.planner,
-        clarification: stored.run.clarification,
-        result: stored.run.result,
-        error: stored.run.error ? toPublicError(stored.run.error) : undefined,
-        audit: stored.audit,
-        updatedAt: stored.run.updatedAt,
-      },
-    }
+    return storedRunRecordToEnvelope(stored)
   }
 
   function parseResultCursor(cursor?: string): number | null {
@@ -277,19 +298,23 @@ export function createChatBiApplicationService(
       const validation = validateSubmitQuestionRequest(request)
       if (validation) return { ok: false, requestId, traceId, error: validation }
 
-      const scopedIdempotencyKey = idempotencyScope(request)
+      const scopedIdempotencyKey = scopedQueryIdempotencyKey(request)
+      const idempotencyFingerprint = queryRequestFingerprint(request)
       const existingRunId = persistence.getRunIdByIdempotencyKey(scopedIdempotencyKey)
       if (existingRunId) {
         const existing = persistence.getRun(existingRunId)
         if (existing) {
           const existingConversation = persistence.getConversation(existing.run.conversationId)
-          const sameRequest = existing.run.tenantId === request.actor.tenantId
+          const sameLegacyRequest = existing.run.tenantId === request.actor.tenantId
             && existing.run.workspaceId === request.actor.workspaceId
             && existing.run.conversationId === request.conversationId
             && existing.run.question === request.question.trim()
             && existing.run.mode === request.mode
             && existing.run.semanticVersion === request.actor.semanticVersion
             && existingConversation?.businessDomainId === request.actor.businessDomainId
+          const sameRequest = existing.idempotencyFingerprint
+            ? existing.idempotencyFingerprint === idempotencyFingerprint
+            : sameLegacyRequest
           if (sameRequest) return view(existing)
           return errorEnvelope(
             requestId,
@@ -354,6 +379,7 @@ export function createChatBiApplicationService(
         run = transitionRun(run, { type: 'FAILED', error, at: now() })
         const stored: StoredRunRecord = {
           run,
+          idempotencyFingerprint,
           requestId,
           traceId,
           executedQuery: false,
@@ -381,6 +407,7 @@ export function createChatBiApplicationService(
         run = transitionRun(run, { type: 'FAILED', error, at: now() })
         const stored: StoredRunRecord = {
           run,
+          idempotencyFingerprint,
           requestId,
           traceId,
           executedQuery: false,
@@ -425,6 +452,7 @@ export function createChatBiApplicationService(
         run = transitionRun(run, { type: 'CLARIFICATION_REQUIRED', clarification, at: now() })
         const stored: StoredRunRecord = {
           run,
+          idempotencyFingerprint,
           requestId,
           traceId,
           executedQuery: false,
@@ -458,6 +486,7 @@ export function createChatBiApplicationService(
       if (queryDispatcher) {
         const stored: StoredRunRecord = {
           run,
+          idempotencyFingerprint,
           requestId,
           traceId,
           executedQuery: false,
@@ -504,6 +533,7 @@ export function createChatBiApplicationService(
       run = transitionRun(run, { type: 'RESULT_READY', result, at: now() })
       const stored: StoredRunRecord = {
         run,
+        idempotencyFingerprint,
         requestId,
         traceId,
         executedQuery: true,

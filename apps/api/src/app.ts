@@ -1,25 +1,36 @@
 import {
   createChatBiApplicationService,
+  createDurableChatBiApplicationService,
   createQueryExecutionCoordinator,
   httpStatusForDeveloperAccessEnvelope,
+  type DurableQueryControlPlane,
   type QueryExecutionDispatcher,
 } from '../../../src/application'
 import { createChatBiBffRouter, type ChatBiBffRouter, type HttpRequestLike, type HttpResponseLike } from '../../../src/api'
-import type { DeveloperScope } from '../../../src/contracts'
+import { httpStatusForError, type ActorContext, type DeveloperScope, type SubmitQuestionRequest } from '../../../src/contracts'
 import { createFileChatBiPersistence } from '../../../src/persistence/file'
 import { createInMemoryChatBiPersistence } from '../../../src/persistence/memory'
 import type { ChatBiPersistence } from '../../../src/persistence/ports'
+import type { ResultPageStore, RunEventStore, StoredRunEvent } from '../../../src/persistence/resultPorts'
 import type { QueryAdapter } from '../../../src/query'
 import { createPostgresPool, createPostgresQueryAdapter } from './adapters/postgresQueryAdapter'
 import { createApiRuntimeConfig, type ApiRuntimeConfig, type ApiRuntimeConfigInput } from './config'
+import { createDurableQueryReadService } from './durableQueryReadService'
+import { createPostgresQueryRuntime, type PostgresQueryRuntime } from './postgresQueryRuntime'
+import type {
+  TransactionalResultManifestMetadata,
+  TransactionalResultPage,
+} from './transactionalQueryExecutionCoordinator'
 
 export interface ApiRuntime {
   config: ApiRuntimeConfig
   router: ChatBiBffRouter
   handle(request: HttpRequestLike): HttpResponseLike
+  handleAsync(request: HttpRequestLike): Promise<HttpResponseLike>
   readiness(): ApiReadiness
   checkReadiness(): Promise<ApiReadiness>
   runQueryWorkerOnce(): Promise<{ status: string }>
+  startQueryWorker(): void
   close(): Promise<void>
 }
 
@@ -29,6 +40,10 @@ export interface ApiRuntimeDependencies {
     close?(): Promise<void>
   }
   resolveQueryCredential?: (credentialRef: string) => string
+  queryControlPlane?: DurableQueryControlPlane
+  resultPageStore?: ResultPageStore<TransactionalResultPage, TransactionalResultManifestMetadata>
+  runEventStore?: RunEventStore
+  postgresRuntime?: PostgresQueryRuntime
 }
 
 export interface ApiReadiness {
@@ -40,6 +55,8 @@ export interface ApiReadiness {
     router: 'ok'
     auth: ApiRuntimeConfig['authMode']
     query: 'fixture' | 'checking' | 'ok' | 'failed'
+    controlPlane: 'not_configured' | 'checking' | 'ok' | 'failed'
+    worker: 'not_configured' | 'stopped' | 'running' | 'draining' | 'failed'
   }
 }
 
@@ -57,13 +74,29 @@ export function createApiRuntime(
 ): ApiRuntime {
   const config = createApiRuntimeConfig(input)
   const persistence = createPersistence(config)
-  const query = createQueryRuntime(config, persistence, dependencies)
+  const managedPostgres = config.query.mode === 'postgresql'
+    ? dependencies.postgresRuntime ?? createManagedPostgresRuntime(config, dependencies)
+    : undefined
+  const query = createQueryRuntime(config, persistence, dependencies, managedPostgres)
+  const queryControlPlane = dependencies.queryControlPlane ?? managedPostgres?.controlPlane
+  const resultPageStore = dependencies.resultPageStore ?? managedPostgres?.resultPageStore
+  const runEventStore = dependencies.runEventStore ?? managedPostgres?.runEventStore
   const service = createChatBiApplicationService({ persistence, queryDispatcher: query.dispatcher })
+  const durableService = queryControlPlane
+    ? createDurableChatBiApplicationService({ controlPlane: queryControlPlane })
+    : undefined
+  const durableReadService = queryControlPlane && resultPageStore && runEventStore
+    ? createDurableQueryReadService({
+        controlPlane: queryControlPlane,
+        resultPageStore,
+        runEventStore,
+      })
+    : undefined
   const router = createChatBiBffRouter(service)
 
   function readiness(): ApiReadiness {
     return {
-      ok: query.status() !== 'failed' && query.status() !== 'checking',
+      ok: query.isReady(),
       service: config.serviceName,
       environment: config.environment,
       checks: {
@@ -71,6 +104,8 @@ export function createApiRuntime(
         router: 'ok',
         auth: config.authMode,
         query: query.status(),
+        controlPlane: query.controlPlaneStatus(),
+        worker: query.workerStatus(),
       },
     }
   }
@@ -84,46 +119,215 @@ export function createApiRuntime(
       return readiness()
     },
     runQueryWorkerOnce() {
-      return query.dispatcher?.runOnce() ?? Promise.resolve({ status: 'idle' })
+      return query.runOnce()
+    },
+    startQueryWorker() {
+      query.start()
     },
     async close() {
       await query.close()
     },
-    handle(request) {
-      const path = normalizePath(request.path)
-      if (request.method.toUpperCase() === 'GET' && path === '/readyz') {
-        const snapshot = readiness()
-        return json(snapshot.ok ? 200 : 503, snapshot, config)
+    async handleAsync(request) {
+      const prepared = prepareRequest(request)
+      if (!prepared.ok) return prepared.response
+      const effectiveRequest = prepared.request
+      if (!durableService) return withConfiguredCors(router.handle(effectiveRequest), config)
+      const path = normalizePath(effectiveRequest.path)
+      const method = effectiveRequest.method.toUpperCase()
+      if (method === 'POST' && path === '/v1/questions') {
+        const envelope = await durableService.submitQuestion(questionRequest(effectiveRequest))
+        const status = envelope.ok
+          ? envelope.data.displayStatus === 'querying' ? 202 : 200
+          : httpStatusForError(envelope.error.code)
+        return withConfiguredCors(json(status, envelope, config), config)
       }
-      const authenticated = authenticateBearer(request, path, router, config)
-      if (!authenticated.ok) return authenticated.response
-      const effectiveRequest = authenticated.request
-      if (requiresActor(config, effectiveRequest, path)) {
-        const missing = requiredActorHeaders.filter((header) => !effectiveRequest.headers?.[header])
-        if (missing.length > 0) {
-          return json(401, {
-            ok: false,
-            requestId: 'req_auth_required',
-            traceId: 'trace_auth_required',
-            error: {
-              code: 'VALIDATION_FAILED',
-              message: '缺少认证上下文',
-              retryable: false,
-              debugReference: 'api_auth_headers',
-              missingHeaders: missing,
-            },
-          }, config)
-        }
+      const cancelMatch = path.match(/^\/v1\/runs\/([^/]+)\/cancel$/)
+      if (method === 'POST' && cancelMatch) {
+        const body = bodyObject(effectiveRequest)
+        const envelope = await durableService.cancelRun({
+          runId: decodeURIComponent(cancelMatch[1]),
+          conversationId: String(body.conversationId ?? body.conversation_id ?? ''),
+          actor: actorFrom(effectiveRequest),
+        })
+        return withConfiguredCors(json(envelope.ok ? 200 : httpStatusForError(envelope.error.code), envelope, config), config)
       }
+      const runMatch = path.match(/^\/v1\/runs\/([^/]+)$/)
+      if (method === 'GET' && runMatch) {
+        const envelope = await durableService.getRun({
+          runId: decodeURIComponent(runMatch[1]),
+          conversationId: effectiveRequest.query?.conversation_id || effectiveRequest.query?.conversationId || '',
+          actor: actorFrom(effectiveRequest),
+        })
+        return withConfiguredCors(json(envelope.ok ? 200 : httpStatusForError(envelope.error.code), envelope, config), config)
+      }
+      const resultMatch = path.match(/^\/v1\/results\/([^/]+)$/)
+      if (method === 'GET' && resultMatch) {
+        if (!durableReadService) return durableRouteUnavailable(config)
+        const rawLimit = effectiveRequest.query?.limit
+        const envelope = await durableReadService.getResultPage({
+          runId: decodeURIComponent(resultMatch[1]),
+          conversationId: effectiveRequest.query?.conversation_id || effectiveRequest.query?.conversationId || '',
+          cursor: effectiveRequest.query?.cursor,
+          limit: rawLimit === undefined ? undefined : Number(rawLimit),
+          actor: actorFrom(effectiveRequest),
+        })
+        return json(envelope.ok ? 200 : httpStatusForError(envelope.error.code), envelope, config)
+      }
+      const eventMatch = path.match(/^\/v1\/runs\/([^/]+)\/events$/)
+      if (method === 'GET' && eventMatch) {
+        if (!durableReadService) return durableRouteUnavailable(config)
+        const rawLimit = effectiveRequest.query?.limit
+        const envelope = await durableReadService.getRunEvents({
+          runId: decodeURIComponent(eventMatch[1]),
+          conversationId: effectiveRequest.query?.conversation_id || effectiveRequest.query?.conversationId || '',
+          actor: actorFrom(effectiveRequest),
+          afterSequence: effectiveRequest.headers?.['last-event-id']
+            || effectiveRequest.headers?.['Last-Event-ID']
+            || effectiveRequest.query?.last_event_id,
+          limit: rawLimit === undefined ? undefined : Number(rawLimit),
+        })
+        if (!envelope.ok) return json(httpStatusForError(envelope.error.code), envelope, config)
+        return withConfiguredCors({
+          status: 200,
+          headers: {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-store',
+            'connection': 'keep-alive',
+            'x-content-type-options': 'nosniff',
+          },
+          body: serializeDurableEvents(envelope.data.events),
+        }, config)
+      }
+      if (isUnsupportedDurableRoute(method, path)) return durableRouteUnavailable(config)
       return withConfiguredCors(router.handle(effectiveRequest), config)
     },
+    handle(request) {
+      const prepared = prepareRequest(request)
+      if (!prepared.ok) return prepared.response
+      if (durableService && isDurableQueryRoute(prepared.request.method, normalizePath(prepared.request.path))) {
+        return durableRouteUnavailable(config)
+      }
+      return withConfiguredCors(router.handle(prepared.request), config)
+    },
+  }
+
+  function prepareRequest(request: HttpRequestLike): { ok: true; request: HttpRequestLike } | { ok: false; response: HttpResponseLike } {
+    const path = normalizePath(request.path)
+    if (request.method.toUpperCase() === 'GET' && path === '/readyz') {
+      const snapshot = readiness()
+      return { ok: false, response: json(snapshot.ok ? 200 : 503, snapshot, config) }
+    }
+    const authenticated = authenticateBearer(request, path, router, config)
+    if (!authenticated.ok) return authenticated
+    const effectiveRequest = authenticated.request
+    if (requiresActor(config, effectiveRequest, path)) {
+      const missing = requiredActorHeaders.filter((header) => !effectiveRequest.headers?.[header])
+      if (missing.length > 0) {
+        return { ok: false, response: json(401, {
+          ok: false,
+          requestId: 'req_auth_required',
+          traceId: 'trace_auth_required',
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: '缺少认证上下文',
+            retryable: false,
+            debugReference: 'api_auth_headers',
+            missingHeaders: missing,
+          },
+        }, config) }
+      }
+    }
+    return { ok: true, request: effectiveRequest }
+  }
+}
+
+function bodyObject(request: HttpRequestLike): Record<string, unknown> {
+  return request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+    ? request.body as Record<string, unknown>
+    : {}
+}
+
+function isUnsupportedDurableRoute(method: string, path: string): boolean {
+  return method === 'POST' && /^\/v1\/runs\/[^/]+\/clarify$/.test(path)
+}
+
+function serializeDurableEvents(events: StoredRunEvent[]): string {
+  return events.map((stored) => {
+    const value = stored.event && typeof stored.event === 'object' && !Array.isArray(stored.event)
+      ? stored.event as Record<string, unknown>
+      : { payload: stored.event }
+    const rawEventName = typeof value.type === 'string' ? value.type : 'run.event'
+    const eventName = /^[A-Za-z0-9_.-]+$/.test(rawEventName) ? rawEventName : 'run.event'
+    const data = { ...value, sequence: stored.sequence, occurredAt: stored.occurredAt }
+    return [
+      `id: ${stored.sequence}`,
+      `event: ${eventName}`,
+      `data: ${JSON.stringify(data)}`,
+      '',
+    ].join('\n')
+  }).join('\n')
+}
+
+function isDurableQueryRoute(method: string, path: string): boolean {
+  const normalizedMethod = method.toUpperCase()
+  return (normalizedMethod === 'POST' && path === '/v1/questions')
+    || (normalizedMethod === 'GET' && /^\/v1\/runs\/[^/]+(?:\/events)?$/.test(path))
+    || (normalizedMethod === 'POST' && /^\/v1\/runs\/[^/]+\/(?:clarify|cancel)$/.test(path))
+    || (normalizedMethod === 'GET' && /^\/v1\/results\/[^/]+$/.test(path))
+}
+
+function durableRouteUnavailable(config: ApiRuntimeConfig): HttpResponseLike {
+  return json(503, {
+    ok: false,
+    requestId: 'req_durable_route_unavailable',
+    traceId: 'trace_durable_route_unavailable',
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: '该持久化查询操作尚未开放，请稍后重试',
+      retryable: true,
+      debugReference: 'durable_route_unavailable',
+    },
+  }, config)
+}
+
+function actorFrom(request: HttpRequestLike): ActorContext {
+  const headers = request.headers ?? {}
+  const roles = headers['x-user-roles']?.split(',').map((role) => role.trim()).filter(Boolean) as ActorContext['roles'] | undefined
+  return {
+    tenantId: headers['x-tenant-id'] || 'tenant_demo',
+    workspaceId: headers['x-workspace-id'] || 'workspace_sales',
+    userId: headers['x-user-id'] || 'user_lin',
+    roles: roles?.length ? roles : ['business_user'],
+    businessDomainId: headers['x-business-domain-id'] || 'sales',
+    semanticVersion: headers['x-semantic-version'] || 'sales-semantic-2026.06.1',
+    policyVersion: headers['x-policy-version'],
+    locale: 'zh-CN',
+    timezone: headers['x-timezone'] || 'Asia/Shanghai',
+  }
+}
+
+function questionRequest(request: HttpRequestLike): SubmitQuestionRequest {
+  const body = request.body && typeof request.body === 'object' && !Array.isArray(request.body)
+    ? request.body as Record<string, unknown>
+    : {}
+  return {
+    idempotencyKey: (request.headers?.['idempotency-key'] || body.idempotencyKey || body.idempotency_key || '') as string,
+    conversationId: (body.conversationId || body.conversation_id || '') as string,
+    question: (body.question || '') as string,
+    mode: (body.mode || 'trusted') as SubmitQuestionRequest['mode'],
+    actor: actorFrom(request),
   }
 }
 
 interface QueryRuntimeBoundary {
   dispatcher?: QueryExecutionDispatcher
   status(): ApiReadiness['checks']['query']
+  controlPlaneStatus(): ApiReadiness['checks']['controlPlane']
+  workerStatus(): ApiReadiness['checks']['worker']
+  isReady(): boolean
   checkReadiness(): Promise<void>
+  start(): void
+  runOnce(): Promise<{ status: string }>
   close(): Promise<void>
 }
 
@@ -131,13 +335,46 @@ function createQueryRuntime(
   config: ApiRuntimeConfig,
   persistence: ChatBiPersistence,
   dependencies: ApiRuntimeDependencies,
+  managedPostgres?: PostgresQueryRuntime,
 ): QueryRuntimeBoundary {
   if (config.query.mode === 'fixture') {
     return {
       status: () => 'fixture',
+      controlPlaneStatus: () => dependencies.queryControlPlane ? 'ok' : 'not_configured',
+      workerStatus: () => 'not_configured',
+      isReady: () => true,
       checkReadiness: async () => undefined,
+      start: () => undefined,
+      runOnce: () => Promise.resolve({ status: 'idle' }),
       close: async () => undefined,
     }
+  }
+
+  if (managedPostgres) {
+    void managedPostgres.checkReadiness()
+    return {
+      status: () => managedPostgres.readiness().query,
+      controlPlaneStatus: () => managedPostgres.readiness().controlPlane,
+      workerStatus: () => {
+        const worker = managedPostgres.readiness().worker
+        if (worker.lastError) return 'failed'
+        if (worker.draining) return 'draining'
+        return worker.running ? 'running' : 'stopped'
+      },
+      isReady: () => managedPostgres.readiness().ok,
+      async checkReadiness() {
+        await managedPostgres.checkReadiness()
+      },
+      start: () => managedPostgres.start(),
+      runOnce: () => managedPostgres.runOnce(),
+      async close() {
+        await managedPostgres.close()
+      },
+    }
+  }
+
+  if (config.environment === 'staging' || config.environment === 'production') {
+    throw new Error('Staging and production PostgreSQL mode requires the transactional managed runtime')
   }
 
   const adapter = dependencies.queryAdapter ?? createConfiguredPostgresAdapter(config, dependencies)
@@ -159,11 +396,29 @@ function createQueryRuntime(
   return {
     dispatcher,
     status: () => currentStatus,
+    controlPlaneStatus: () => dependencies.queryControlPlane ? 'ok' : 'not_configured',
+    workerStatus: () => 'not_configured',
+    isReady: () => currentStatus === 'ok',
     checkReadiness,
+    start: () => undefined,
+    runOnce: () => dispatcher.runOnce(),
     async close() {
       await adapter.close?.()
     },
   }
+}
+
+function createManagedPostgresRuntime(
+  config: ApiRuntimeConfig,
+  dependencies: ApiRuntimeDependencies,
+): PostgresQueryRuntime | undefined {
+  // Explicit adapter injection is retained for deterministic unit tests. The
+  // default process path always constructs the transactional dual-pool runtime.
+  if (dependencies.queryAdapter || dependencies.queryControlPlane) return undefined
+  if (!dependencies.resolveQueryCredential) {
+    throw new Error('PostgreSQL runtime requires a server-side credential resolver')
+  }
+  return createPostgresQueryRuntime({ config, resolveCredential: dependencies.resolveQueryCredential })
 }
 
 function createConfiguredPostgresAdapter(config: ApiRuntimeConfig, dependencies: ApiRuntimeDependencies) {
@@ -294,5 +549,6 @@ function withConfiguredCors(response: HttpResponseLike, config: ApiRuntimeConfig
 
 function normalizePath(path: string) {
   const [withoutQuery] = path.split('?')
-  return withoutQuery || '/'
+  if (!withoutQuery || withoutQuery === '/') return '/'
+  return withoutQuery.endsWith('/') ? withoutQuery.slice(0, -1) : withoutQuery
 }

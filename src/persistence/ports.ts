@@ -3,6 +3,8 @@ import type { AnalysisIR, AuditEvent, PlannerTraceView, QueryExecutionSummary, R
 
 export interface StoredRunRecord {
   run: Run
+  /** Exact canonical identity used to reject changed idempotency-key replays. */
+  idempotencyFingerprint?: string
   executedQuery: boolean
   retrieval?: RetrievalTraceView
   planner?: PlannerTraceView

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createRunWorker } from '../application/runWorker'
+import {
+  createRunWorker,
+  RunWorkerCommitAttemptError,
+  type RunWorkerHandlerResult,
+} from '../application/runWorker'
 import { createInMemoryRunJobQueue } from '../persistence/jobMemory'
 import type { RunJobLease, RunJobQueue, SynchronousRunJobQueue } from '../persistence/jobPorts'
 
@@ -323,6 +327,215 @@ describe('run worker', () => {
     })).resolves.toMatchObject({ ok: true, applied: true })
   })
 
+  it.each([
+    {
+      name: 'completion',
+      outcome: {
+        type: 'completed',
+        result: { rows: 12 },
+        resultFingerprint: 'atomic_result',
+        at: t1,
+      } as RunWorkerHandlerResult<Result>,
+      cycleStatus: 'completed',
+      jobStatus: 'completed',
+    },
+    {
+      name: 'retry',
+      outcome: {
+        type: 'retry',
+        failure: { code: 'QUERY_TIMEOUT', message: 'timeout', retryable: true },
+        failedAt: t1,
+        availableAt: t2,
+      } as RunWorkerHandlerResult<Result>,
+      cycleStatus: 'retry_scheduled',
+      jobStatus: 'retry_wait',
+    },
+    {
+      name: 'failure',
+      outcome: {
+        type: 'failed',
+        failure: { code: 'QUERY_FAILED', message: 'failed', retryable: false },
+        failedAt: t1,
+      } as RunWorkerHandlerResult<Result>,
+      cycleStatus: 'failed',
+      jobStatus: 'failed',
+    },
+  ] as const)('uses commitAttempt as the sole atomic authority for $name', async ({ outcome, cycleStatus, jobStatus }) => {
+    const memory = createInMemoryRunJobQueue<Payload, Result>()
+    enqueue(memory, `run_atomic_${outcome.type}`)
+    const base = asynchronousQueue(memory)
+    const complete = vi.fn(base.complete)
+    const retry = vi.fn(base.retry)
+    const fail = vi.fn(base.fail)
+    const queue: RunJobQueue<Payload, Result> = { ...base, complete, retry, fail }
+    const commitAttempt = vi.fn(async (input: { lease: RunJobLease<Payload>; outcome: RunWorkerHandlerResult<Result> }) => {
+      const leased = await base.getJob(input.lease.runId)
+      if (!leased) throw new Error('expected leased job')
+      return { ok: true as const, applied: true, job: { ...leased, status: jobStatus } }
+    })
+    const onCommitted = vi.fn()
+    const worker = createRunWorker({
+      queue,
+      workerId: 'worker_atomic',
+      leaseMs: 5_000,
+      now: () => t0,
+      commitAttempt,
+      onCommitted,
+      handler: { execute: () => outcome },
+    })
+
+    await expect(worker.runOnce(`run_atomic_${outcome.type}`)).resolves.toEqual({
+      status: cycleStatus,
+      runId: `run_atomic_${outcome.type}`,
+      attempt: 1,
+    })
+    expect(commitAttempt).toHaveBeenCalledWith({
+      lease: expect.objectContaining({
+        runId: `run_atomic_${outcome.type}`,
+        attempt: 1,
+        fence: 1,
+        leaseToken: expect.any(String),
+        payload: { question: '过去 12 个月净收入趋势' },
+      }),
+      outcome,
+    })
+    expect(complete).not.toHaveBeenCalled()
+    expect(retry).not.toHaveBeenCalled()
+    expect(fail).not.toHaveBeenCalled()
+    expect(onCommitted).toHaveBeenCalledWith(expect.objectContaining({
+      outcome,
+      job: expect.objectContaining({ status: jobStatus }),
+    }))
+  })
+
+  it.each([
+    { cancelled: true, expected: 'cancelled' },
+    { cancelled: false, expected: 'lost_lease' },
+  ] as const)('maps an atomic commit conflict to $expected without notification', async ({ cancelled, expected }) => {
+    const runId = `run_atomic_conflict_${expected}`
+    const memory = createInMemoryRunJobQueue<Payload, Result>()
+    enqueue(memory, runId)
+    const queue = asynchronousQueue(memory)
+    const onCommitted = vi.fn()
+    const commitAttempt = vi.fn(async () => {
+      if (cancelled) await queue.cancel(runId, t1)
+      const job = await queue.getJob(runId)
+      return { ok: false as const, reason: 'terminal_conflict' as const, ...(job ? { job } : {}) }
+    })
+    const worker = createRunWorker({
+      queue,
+      workerId: 'worker_atomic_conflict',
+      leaseMs: 5_000,
+      now: () => t0,
+      commitAttempt,
+      onCommitted,
+      handler: {
+        execute: () => ({
+          type: 'completed',
+          result: { rows: 12 },
+          resultFingerprint: 'conflicting_result',
+          at: t1,
+        }),
+      },
+    })
+
+    await expect(worker.runOnce(runId)).resolves.toEqual({ status: expected, runId, attempt: 1 })
+    expect(commitAttempt).toHaveBeenCalledOnce()
+    expect(onCommitted).not.toHaveBeenCalled()
+  })
+
+  it('propagates a safe commit error without falling back or publishing', async () => {
+    const runId = 'run_atomic_throw'
+    const memory = createInMemoryRunJobQueue<Payload, Result>()
+    enqueue(memory, runId)
+    const base = asynchronousQueue(memory)
+    const complete = vi.fn(base.complete)
+    const retry = vi.fn(base.retry)
+    const fail = vi.fn(base.fail)
+    const queue: RunJobQueue<Payload, Result> = { ...base, complete, retry, fail }
+    const internalError = new Error('password=warehouse-secret')
+    const onCommitted = vi.fn()
+    const worker = createRunWorker({
+      queue,
+      workerId: 'worker_atomic_throw',
+      leaseMs: 5_000,
+      now: () => t0,
+      commitAttempt: async () => { throw internalError },
+      onCommitted,
+      handler: {
+        execute: () => ({
+          type: 'completed',
+          result: { rows: 12 },
+          resultFingerprint: 'ambiguous_result',
+          at: t1,
+        }),
+      },
+    })
+
+    const rejection = await worker.runOnce(runId).catch((error: unknown) => error)
+    expect(rejection).toBeInstanceOf(RunWorkerCommitAttemptError)
+    expect(rejection).toMatchObject({
+      code: 'RUN_WORKER_COMMIT_FAILED',
+      message: 'Atomic run attempt commit failed.',
+      cause: internalError,
+    })
+    expect(String(rejection)).not.toContain('warehouse-secret')
+    expect(complete).not.toHaveBeenCalled()
+    expect(retry).not.toHaveBeenCalled()
+    expect(fail).not.toHaveBeenCalled()
+    expect(onCommitted).not.toHaveBeenCalled()
+    await expect(queue.getJob(runId)).resolves.toMatchObject({ status: 'leased' })
+  })
+
+  it('treats onCommitted as best-effort after either durable authority succeeds', async () => {
+    const telemetryError = new Error('cache refresh failed')
+    const onCommitted = vi.fn(async () => { throw telemetryError })
+    const onPostCommitError = vi.fn(async () => { throw new Error('telemetry unavailable') })
+
+    for (const authority of ['queue', 'hook'] as const) {
+      const runId = `run_notification_${authority}`
+      const memory = createInMemoryRunJobQueue<Payload, Result>()
+      enqueue(memory, runId)
+      const queue = asynchronousQueue(memory)
+      const worker = createRunWorker({
+        queue,
+        workerId: `worker_notification_${authority}`,
+        leaseMs: 5_000,
+        now: () => t0,
+        ...(authority === 'hook'
+          ? {
+              commitAttempt: async ({ lease }: { lease: RunJobLease<Payload> }) => {
+                const job = await queue.getJob(lease.runId)
+                if (!job) throw new Error('expected leased job')
+                return { ok: true as const, applied: true, job: { ...job, status: 'completed' as const } }
+              },
+            }
+          : {}),
+        onCommitted,
+        onPostCommitError,
+        handler: {
+          execute: () => ({
+            type: 'completed',
+            result: { rows: 12 },
+            resultFingerprint: `notification_${authority}`,
+            at: t1,
+          }),
+        },
+      })
+
+      await expect(worker.runOnce(runId)).resolves.toEqual({ status: 'completed', runId, attempt: 1 })
+    }
+
+    expect(onCommitted).toHaveBeenCalledTimes(2)
+    expect(onPostCommitError).toHaveBeenCalledTimes(2)
+    expect(onPostCommitError).toHaveBeenNthCalledWith(1, telemetryError, expect.objectContaining({
+      lease: expect.objectContaining({ runId: 'run_notification_queue' }),
+    }))
+    expect(onPostCommitError).toHaveBeenNthCalledWith(2, telemetryError, expect.objectContaining({
+      lease: expect.objectContaining({ runId: 'run_notification_hook' }),
+    }))
+  })
+
   it('automatically renews a long-running handler and clears the heartbeat before completion', async () => {
     vi.useFakeTimers()
     try {
@@ -381,6 +594,9 @@ describe('run worker', () => {
         const base = asynchronousQueue(memory)
         const complete = vi.fn(base.complete)
         const onCommitted = vi.fn()
+        const commitAttempt = vi.fn(async () => {
+          throw new Error('lease-lost commit must not run')
+        })
         const queue: RunJobQueue<Payload, Result> = {
           ...base,
           complete,
@@ -399,6 +615,7 @@ describe('run worker', () => {
           leaseMs: 500,
           heartbeatMs: 100,
           now: () => new Date(Date.now()).toISOString(),
+          commitAttempt,
           onCommitted,
           handler: {
             execute(_payload, context) {
@@ -427,6 +644,7 @@ describe('run worker', () => {
           attempt: 1,
         })
         expect(complete).not.toHaveBeenCalled()
+        expect(commitAttempt).not.toHaveBeenCalled()
         expect(onCommitted).not.toHaveBeenCalled()
         await expect(queue.getJob(`run_renew_${mode}`)).resolves.toMatchObject({ status: 'leased' })
         expect((await queue.getJob(`run_renew_${mode}`))?.result).toBeUndefined()

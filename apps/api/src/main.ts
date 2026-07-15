@@ -28,6 +28,13 @@ const input = {
   queryStatementTimeoutMs: env.CHATBI_QUERY_STATEMENT_TIMEOUT_MS,
   queryWorkerPollMs: env.CHATBI_QUERY_WORKER_POLL_MS,
   queryLeaseMs: env.CHATBI_QUERY_LEASE_MS,
+  controlPlaneCredentialRef: env.CHATBI_CONTROL_PLANE_CREDENTIAL_REF,
+  controlPlaneSslMode: parseOptionalQuerySslMode(env.CHATBI_CONTROL_PLANE_SSL_MODE),
+  controlPlanePoolMax: env.CHATBI_CONTROL_PLANE_POOL_MAX,
+  controlPlaneConnectTimeoutMs: env.CHATBI_CONTROL_PLANE_CONNECT_TIMEOUT_MS,
+  controlPlaneIdleTimeoutMs: env.CHATBI_CONTROL_PLANE_IDLE_TIMEOUT_MS,
+  controlPlaneCancellationPollMs: env.CHATBI_CONTROL_PLANE_CANCELLATION_POLL_MS,
+  controlPlaneWorkerDrainMs: env.CHATBI_CONTROL_PLANE_WORKER_DRAIN_MS,
   corsAllowOrigin: env.CORS_ALLOW_ORIGIN,
 } as const
 const config = createApiRuntimeConfig(input)
@@ -53,27 +60,19 @@ const server = createNodeBffServer({
     semantic: runtime.router.semantic,
     sharing: runtime.router.sharing,
     slo: runtime.router.slo,
-    handle: runtime.handle,
+    handle: runtime.handleAsync,
   },
 })
+if (config.query.mode === 'postgresql') runtime.startQueryWorker()
 server.listen(config.port, config.host, () => {
   process?.stdout?.write?.(`${config.serviceName} listening on http://${config.host}:${config.port}\n`)
 })
 
-let workerRunning = false
-const workerTimer = config.query.mode === 'postgresql'
-  ? setInterval(() => {
-      if (workerRunning) return
-      workerRunning = true
-      void runtime.runQueryWorkerOnce().finally(() => {
-        workerRunning = false
-      })
-    }, config.query.workerPollMs)
-  : undefined
-
+let shuttingDown = false
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process?.on?.(signal, () => {
-    if (workerTimer !== undefined) clearInterval(workerTimer)
+    if (shuttingDown) return
+    shuttingDown = true
     server.close(() => {
       void runtime.close()
     })
@@ -94,4 +93,9 @@ function parseQueryMode(value: string | undefined, environment: ReturnType<typeo
 function parseQuerySslMode(value: string | undefined) {
   if (value === 'require' || value === 'verify-full') return value
   return 'disable'
+}
+
+function parseOptionalQuerySslMode(value: string | undefined) {
+  if (value === 'disable' || value === 'require' || value === 'verify-full') return value
+  return undefined
 }

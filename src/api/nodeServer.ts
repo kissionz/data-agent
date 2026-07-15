@@ -1,11 +1,19 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { URL } from 'node:url'
-import { createChatBiBffRouter, type ChatBiBffRouter, type HttpRequestLike } from './router'
+import type { AsyncHttpRouterLike } from './asyncRouter'
+import {
+  createChatBiBffRouter,
+  type ChatBiBffRouter,
+  type HttpRequestLike,
+  type HttpResponseLike,
+} from './router'
+
+export type NodeBffRouter = ChatBiBffRouter | AsyncHttpRouterLike
 
 export interface NodeBffServerOptions {
   host?: string
   port?: number
-  router?: ChatBiBffRouter
+  router?: NodeBffRouter
 }
 
 export function createNodeBffServer(options: NodeBffServerOptions = {}): Server {
@@ -24,13 +32,13 @@ export function listenNodeBff(options: NodeBffServerOptions = {}): Server {
 }
 
 async function handleNodeRequest(
-  router: ChatBiBffRouter,
+  router: NodeBffRouter,
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
   try {
     const httpRequest = await toHttpRequestLike(request)
-    const httpResponse = router.handle(httpRequest)
+    const httpResponse = await resolveNodeBffResponse(router, httpRequest)
     response.writeHead(httpResponse.status, httpResponse.headers)
     response.end(typeof httpResponse.body === 'string' ? httpResponse.body : JSON.stringify(httpResponse.body))
   } catch (error) {
@@ -41,12 +49,19 @@ async function handleNodeRequest(
       traceId: 'trace_node_adapter',
       error: {
         code: 'INTERNAL_ERROR',
-        message: error instanceof Error ? error.message : '本地 BFF 适配器错误',
+        message: '本地 BFF 适配器错误',
         retryable: false,
         debugReference: 'node_adapter',
       },
     }))
   }
+}
+
+export async function resolveNodeBffResponse(
+  router: NodeBffRouter,
+  request: HttpRequestLike,
+): Promise<HttpResponseLike> {
+  return await Promise.resolve(router.handle(request))
 }
 
 async function toHttpRequestLike(request: IncomingMessage): Promise<HttpRequestLike> {

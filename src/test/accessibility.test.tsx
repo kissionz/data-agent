@@ -98,6 +98,7 @@ describe('Accessibility acceptance', () => {
   it('exposes replay detail as a named dialog with an explicit close control', () => {
     render(<OperationsCenter />)
 
+    fireEvent.click(screen.getByRole('tab', { name: '失败回放' }))
     fireEvent.click(screen.getByRole('button', { name: '回放 RUN-28419' }))
     const dialog = screen.getByRole('dialog', { name: '回放详情' })
     expect(dialog).toHaveAttribute('aria-modal', 'true')
@@ -106,6 +107,31 @@ describe('Accessibility acceptance', () => {
 
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭回放详情' }))
     expect(screen.queryByRole('dialog', { name: '回放详情' })).not.toBeInTheDocument()
+  })
+
+  it('keeps golden governance tabs, table and inspector keyboard reachable', () => {
+    render(<OperationsCenter />)
+
+    const taskTabs = screen.getByRole('tablist', { name: '运营中心任务' })
+    const goldenTab = within(taskTabs).getByRole('tab', { name: '黄金集' })
+    fireEvent.click(goldenTab)
+    expect(goldenTab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('table', { name: '黄金集样本列表' })).toBeInTheDocument()
+
+    const trigger = screen.getByRole('button', { name: '查看样本 golden_seed_002' })
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('dialog', { name: '黄金样本详情' })
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(within(dialog).getByRole('button', { name: '关闭黄金样本详情' })).toHaveFocus()
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: '黄金样本详情' })).not.toBeInTheDocument()
+
+    const regressionTab = within(taskTabs).getByRole('tab', { name: '回归运行' })
+    fireEvent.click(regressionTab)
+    expect(regressionTab).toHaveAttribute('aria-controls', 'operations-panel-regressions')
+    expect(goldenTab).not.toHaveAttribute('aria-controls')
+    expect(screen.queryByRole('table', { name: '黄金集样本列表' })).not.toBeInTheDocument()
+    expect(screen.getByRole('table', { name: '批量回归运行列表' })).toBeInTheDocument()
   })
 
   it('keeps status meaning available as text, not color alone', () => {

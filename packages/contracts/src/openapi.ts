@@ -432,13 +432,49 @@ export const openApiDocument = {
       },
     },
     '/v1/evaluation/golden-samples': {
+      get: {
+        summary: '列出可见黄金集样本',
+        description: '按当前租户和工作空间隔离，支持问题/ID、状态、业务域、语义版本和标签筛选。',
+        parameters: [
+          { name: 'q', in: 'query', required: false, schema: { type: 'string' } },
+          { name: 'status', in: 'query', required: false, schema: { enum: ['all', 'candidate_dataset', 'golden_approved'] } },
+          { name: 'domain', in: 'query', required: false, schema: { type: 'string' } },
+          { name: 'semantic_version', in: 'query', required: false, schema: { type: 'string' } },
+          { name: 'tag', in: 'query', required: false, schema: { type: 'string' } },
+        ],
+        responses: {
+          200: jsonResponse('黄金集样本列表', { $ref: '#/components/schemas/GoldenSampleListEnvelope' }),
+          400: errorResponse('筛选状态或身份上下文无效'),
+          403: errorResponse('角色无权查看黄金集'),
+        },
+      },
       post: {
         summary: '接收黄金集候选样本',
         description: '线上样本必须先脱敏、去重并人工标注；通过后进入 candidate_dataset，不能直接进入 golden_approved。',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/IngestGoldenSampleInput' },
+            },
+          },
+        },
         responses: {
-          200: { description: '样本已进入黄金集候选集' },
-          400: { description: '样本未通过脱敏/去重/人工标注门禁' },
-          403: { description: '角色无权管理黄金集' },
+          200: jsonResponse('样本已进入黄金集候选集', { $ref: '#/components/schemas/GoldenSampleEnvelope' }),
+          400: errorResponse('样本字段无效或未通过脱敏/去重/人工标注门禁'),
+          403: errorResponse('角色无权管理黄金集'),
+        },
+      },
+    },
+    '/v1/evaluation/golden-samples/{sampleId}': {
+      get: {
+        summary: '获取黄金集样本详情',
+        description: '返回脱敏问题、期望标注、质量门禁、生命周期、语义版本和审计；越工作空间与不存在使用相同 404。',
+        parameters: [{ name: 'sampleId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: jsonResponse('黄金集样本详情', { $ref: '#/components/schemas/GoldenSampleEnvelope' }),
+          403: errorResponse('角色无权查看黄金集'),
+          404: errorResponse('样本不存在或不可见'),
         },
       },
     },
@@ -447,21 +483,79 @@ export const openApiDocument = {
         summary: '审批黄金集样本',
         description: '将 candidate_dataset 样本审批为 golden_approved，供批量回归和发布门禁使用。',
         parameters: [{ name: 'sampleId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['note'],
+                properties: { note: { type: 'string', minLength: 1, maxLength: 500 } },
+              },
+            },
+          },
+        },
         responses: {
-          200: { description: '样本已审批进入黄金集' },
-          400: { description: '样本状态不可审批' },
-          403: { description: '角色无权审批' },
+          200: jsonResponse('样本已审批进入黄金集', { $ref: '#/components/schemas/GoldenSampleEnvelope' }),
+          400: errorResponse('审批说明无效或样本状态不可审批'),
+          403: errorResponse('角色无权审批'),
         },
       },
     },
     '/v1/evaluation/regression-runs': {
+      get: {
+        summary: '列出可见批量回归计划',
+        description: '按当前租户和工作空间隔离，支持状态和候选版本筛选；为后续 worker 轮询预留 queued/running/terminal 状态契约，当前治理切片只生成 queued 计划。',
+        parameters: [
+          { name: 'status', in: 'query', required: false, schema: { enum: ['all', 'queued', 'running', 'passed', 'failed', 'release_blocked'] } },
+          { name: 'candidate_version', in: 'query', required: false, schema: { type: 'string' } },
+        ],
+        responses: {
+          200: jsonResponse('批量回归计划列表', { $ref: '#/components/schemas/RegressionRunListEnvelope' }),
+          400: errorResponse('筛选状态或身份上下文无效'),
+          403: errorResponse('角色无权查看批量回归'),
+        },
+      },
       post: {
         summary: '调度候选版本批量回归',
         description: '对已审批黄金集样本调度 retrieval/planner/compiler/query/grounding 链路回归；回归计划不使用生产凭据，并联动发布门禁。',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['candidateVersion'],
+                properties: {
+                  candidateVersion: { type: 'string', minLength: 1, maxLength: 128 },
+                  sampleIds: {
+                    type: 'array',
+                    uniqueItems: true,
+                    items: { type: 'string', minLength: 1 },
+                  },
+                },
+              },
+            },
+          },
+        },
         responses: {
-          200: { description: '批量回归计划已排队' },
-          400: { description: '缺少已审批黄金集样本' },
-          403: { description: '角色无权调度回归' },
+          200: jsonResponse('批量回归计划已排队', { $ref: '#/components/schemas/RegressionRunEnvelope' }),
+          400: errorResponse('候选版本或样本范围无效，或缺少已审批黄金集样本'),
+          403: errorResponse('角色无权调度回归'),
+        },
+      },
+    },
+    '/v1/evaluation/regression-runs/{regressionRunId}': {
+      get: {
+        summary: '获取批量回归计划详情',
+        description: '返回样本范围、阶段、已完成阶段、安全边界和发布门关联；越工作空间与不存在使用相同 404。',
+        parameters: [{ name: 'regressionRunId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          200: jsonResponse('批量回归计划详情', { $ref: '#/components/schemas/RegressionRunEnvelope' }),
+          403: errorResponse('角色无权查看批量回归'),
+          404: errorResponse('回归计划不存在或不可见'),
         },
       },
     },
@@ -844,6 +938,206 @@ export const openApiDocument = {
             properties: {
               ok: { const: true },
               data: { $ref: '#/components/schemas/ExportJobView' },
+              requestId: { type: 'string', minLength: 1 },
+              traceId: { type: 'string', minLength: 1 },
+            },
+          },
+          { $ref: '#/components/schemas/ErrorEnvelope' },
+        ],
+      },
+      IngestGoldenSampleInput: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'sourceRunId',
+          'sanitizedQuestion',
+          'domain',
+          'expectedIntent',
+          'expectedMetricIds',
+          'expectedDimensionIds',
+          'semanticVersion',
+          'tags',
+          'desensitized',
+          'deduplicated',
+          'humanLabeled',
+        ],
+        properties: {
+          sourceRunId: { type: 'string', minLength: 1 },
+          sanitizedQuestion: { type: 'string', minLength: 1, maxLength: 500 },
+          domain: { type: 'string', minLength: 1 },
+          expectedIntent: { enum: ['trend', 'breakdown', 'ranking', 'lookup', 'clarification', 'empty_check'] },
+          expectedMetricIds: { type: 'array', items: { type: 'string', minLength: 1 } },
+          expectedDimensionIds: { type: 'array', items: { type: 'string', minLength: 1 } },
+          semanticVersion: { type: 'string', minLength: 1 },
+          tags: { type: 'array', items: { type: 'string', minLength: 1 } },
+          desensitized: { const: true },
+          deduplicated: { const: true },
+          humanLabeled: { const: true },
+        },
+      },
+      GoldenSampleView: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'contractVersion',
+          'id',
+          'sourceRunId',
+          'status',
+          'domain',
+          'sanitizedQuestion',
+          'expectedIntent',
+          'expectedMetricIds',
+          'expectedDimensionIds',
+          'semanticVersion',
+          'tags',
+          'createdAt',
+          'qualityGates',
+          'audit',
+        ],
+        properties: {
+          contractVersion: { const: CONTRACT_VERSION },
+          id: { type: 'string', minLength: 1 },
+          sourceRunId: { type: 'string', minLength: 1 },
+          status: { enum: ['new', 'triaged', 'in_review', 'resolved', 'rejected', 'candidate_dataset', 'golden_approved'] },
+          domain: { type: 'string', minLength: 1 },
+          sanitizedQuestion: { type: 'string', minLength: 1, maxLength: 500 },
+          expectedIntent: { enum: ['trend', 'breakdown', 'ranking', 'lookup', 'clarification', 'empty_check'] },
+          expectedMetricIds: { type: 'array', items: { type: 'string', minLength: 1 } },
+          expectedDimensionIds: { type: 'array', items: { type: 'string', minLength: 1 } },
+          semanticVersion: { type: 'string', minLength: 1 },
+          tags: { type: 'array', items: { type: 'string', minLength: 1 } },
+          createdAt: { type: 'string', format: 'date-time' },
+          qualityGates: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['desensitized', 'deduplicated', 'humanLabeled', 'productionCredentialsRemoved'],
+            properties: {
+              desensitized: { type: 'boolean' },
+              deduplicated: { type: 'boolean' },
+              humanLabeled: { type: 'boolean' },
+              productionCredentialsRemoved: { const: true },
+            },
+          },
+          approvedBy: { type: 'string', minLength: 1 },
+          approvedAt: { type: 'string', format: 'date-time' },
+          audit: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        },
+      },
+      RegressionRunPlanView: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'contractVersion',
+          'id',
+          'candidateVersion',
+          'status',
+          'createdAt',
+          'requestedBy',
+          'sampleIds',
+          'sampleCount',
+          'stages',
+          'usesProductionCredentials',
+          'releaseGateLinked',
+          'completedStages',
+          'audit',
+        ],
+        properties: {
+          contractVersion: { const: CONTRACT_VERSION },
+          id: { type: 'string', minLength: 1 },
+          candidateVersion: { type: 'string', minLength: 1, maxLength: 128 },
+          status: { enum: ['queued', 'running', 'passed', 'failed', 'release_blocked'] },
+          createdAt: { type: 'string', format: 'date-time' },
+          requestedBy: { type: 'string', minLength: 1 },
+          sampleIds: { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1 } },
+          sampleCount: { type: 'integer', minimum: 1 },
+          stages: {
+            type: 'array',
+            items: { enum: ['retrieval', 'planner', 'compiler', 'query_gateway', 'answer_grounding'] },
+          },
+          usesProductionCredentials: { const: false },
+          releaseGateLinked: { const: true },
+          completedStages: {
+            type: 'array',
+            items: { enum: ['retrieval', 'planner', 'compiler', 'query_gateway', 'answer_grounding'] },
+          },
+          releaseGateDecision: { enum: ['pass', 'blocked'] },
+          failureReason: { type: 'string' },
+          audit: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        },
+      },
+      GoldenSampleEnvelope: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok', 'data', 'requestId', 'traceId'],
+            properties: {
+              ok: { const: true },
+              data: { $ref: '#/components/schemas/GoldenSampleView' },
+              requestId: { type: 'string', minLength: 1 },
+              traceId: { type: 'string', minLength: 1 },
+            },
+          },
+          { $ref: '#/components/schemas/ErrorEnvelope' },
+        ],
+      },
+      GoldenSampleListEnvelope: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok', 'data', 'requestId', 'traceId'],
+            properties: {
+              ok: { const: true },
+              data: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['items', 'total'],
+                properties: {
+                  items: { type: 'array', items: { $ref: '#/components/schemas/GoldenSampleView' } },
+                  total: { type: 'integer', minimum: 0 },
+                },
+              },
+              requestId: { type: 'string', minLength: 1 },
+              traceId: { type: 'string', minLength: 1 },
+            },
+          },
+          { $ref: '#/components/schemas/ErrorEnvelope' },
+        ],
+      },
+      RegressionRunEnvelope: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok', 'data', 'requestId', 'traceId'],
+            properties: {
+              ok: { const: true },
+              data: { $ref: '#/components/schemas/RegressionRunPlanView' },
+              requestId: { type: 'string', minLength: 1 },
+              traceId: { type: 'string', minLength: 1 },
+            },
+          },
+          { $ref: '#/components/schemas/ErrorEnvelope' },
+        ],
+      },
+      RegressionRunListEnvelope: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok', 'data', 'requestId', 'traceId'],
+            properties: {
+              ok: { const: true },
+              data: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['items', 'total'],
+                properties: {
+                  items: { type: 'array', items: { $ref: '#/components/schemas/RegressionRunPlanView' } },
+                  total: { type: 'integer', minimum: 0 },
+                },
+              },
               requestId: { type: 'string', minLength: 1 },
               traceId: { type: 'string', minLength: 1 },
             },

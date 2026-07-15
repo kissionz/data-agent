@@ -451,3 +451,80 @@ Use `npm run dev` for interactive browser verification or `npm run preview` afte
 - **Notes**: Switched browser verification to the existing Vite `dev` script.
 
 ---
+
+## [ERR-20260715-001] in-app browser load-state wait
+
+**Logged**: 2026-07-15T10:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The in-app browser runtime rejects `networkidle` even though the general browser documentation lists it as a load-state value.
+
+### Error
+
+```text
+playwright_wait_for_load_state does not support networkidle
+```
+
+### Context
+
+- Attempted to wait for the local Vite app after navigating to `http://127.0.0.1:4173/`.
+- The tab was created successfully; only the unsupported wait-state parameter failed.
+
+### Suggested Fix
+
+Use the supported `load` or `domcontentloaded` state, then verify a concrete visible element instead of relying on network idleness.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: tests/e2e/prd-acceptance.desktop.spec.ts
+
+### Resolution
+
+- **Resolved**: 2026-07-15T10:01:00+08:00
+- **Notes**: Switched browser verification to `load` plus targeted DOM checks.
+
+---
+
+## [ERR-20260715-002] seeded evaluation approval
+
+**Logged**: 2026-07-15T18:17:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: backend
+
+### Summary
+
+Direct approval of a seeded golden sample returned not found because the approval entry point did not initialize demo seeds.
+
+### Error
+
+```text
+Evaluation service > requires and sanitizes approval notes before writing audit events
+expected approved.ok to be true, received false
+```
+
+### Context
+
+- List, get, and schedule paths initialized seeded samples, so UI tests passed because the UI lists samples first.
+- A direct approval request could skip all of those entry points and observe an empty store.
+
+### Suggested Fix
+
+Initialize the scoped demo seed set inside every entry point that may address a seed identifier, including approval.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: src/application/evaluation.ts, src/test/evaluationService.test.ts
+
+### Resolution
+
+- **Resolved**: 2026-07-15T18:18:00+08:00
+- **Notes**: Added scoped seed initialization before the approval lookup and retained the direct-entry regression test.
+
+---

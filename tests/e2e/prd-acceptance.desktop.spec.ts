@@ -120,6 +120,7 @@ test('operations center supports replay filtering and detail review', async ({ p
   await expect(page.getByRole('heading', { name: '黄金集发布门禁' })).toBeVisible()
   await expect(page.getByText('澄清召回率低于门槛 1.3%，当前版本不可发布。')).toBeVisible()
 
+  await page.getByRole('tab', { name: '失败回放' }).click()
   await page.getByPlaceholder('搜索问题或 Run ID').fill('RUN-28403')
   await expect(page.getByText('RUN-28403')).toBeVisible()
   await expect(page.getByText('RUN-28419')).not.toBeVisible()
@@ -133,6 +134,30 @@ test('operations center supports replay filtering and detail review', async ({ p
 
   await dialog.getByRole('button', { name: '关闭', exact: true }).click()
   await expect(dialog).not.toBeVisible()
+})
+
+test('golden set governance approves a sample and schedules a scoped regression', async ({ page }) => {
+  await page.getByRole('button', { name: '运营中心' }).click()
+  await page.getByRole('tab', { name: '黄金集' }).click()
+  await expect(page.getByRole('heading', { name: '黄金集样本' })).toBeVisible()
+
+  await page.getByRole('button', { name: '查看样本 golden_seed_002' }).click()
+  const inspector = page.getByRole('dialog', { name: '黄金样本详情' })
+  await expect(inspector.getByText('已完成敏感信息脱敏')).toBeVisible()
+  await expect(inspector.getByRole('button', { name: '批准进入黄金集' })).toBeDisabled()
+  await inspector.getByLabel('审批说明').fill('E2E 人工复核歧义、边界和期望口径通过')
+  await inspector.getByRole('button', { name: '批准进入黄金集' }).click()
+  await expect(page.getByRole('status')).toContainText('已批准进入黄金集')
+  await inspector.getByRole('button', { name: '关闭', exact: true }).click()
+
+  await page.getByRole('checkbox', { name: '选择样本 golden_seed_002' }).check()
+  await expect(page.getByText('已选 1 条黄金样本')).toBeVisible()
+  await page.getByRole('tab', { name: '回归运行' }).click()
+  await expect(page.getByText('当前选择 1 条')).toBeVisible()
+  await page.getByRole('button', { name: '调度回归' }).click()
+  await expect(page.getByRole('status')).toContainText('不使用生产凭据并关联发布门')
+  await expect(page.getByText('排队中')).toBeVisible()
+  await expect(page.getByText('0/5')).toBeVisible()
 })
 
 test('semantic governance exposes metric review and certification guardrails', async ({ page }) => {

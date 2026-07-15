@@ -57,8 +57,10 @@ describe('ChatBI local BFF router', () => {
         '/v1/operations/slo': expect.any(Object),
         '/v1/operations/slo/budget-evaluations': expect.any(Object),
         '/v1/evaluation/golden-samples': expect.any(Object),
+        '/v1/evaluation/golden-samples/{sampleId}': expect.any(Object),
         '/v1/evaluation/golden-samples/{sampleId}/approve': expect.any(Object),
         '/v1/evaluation/regression-runs': expect.any(Object),
+        '/v1/evaluation/regression-runs/{regressionRunId}': expect.any(Object),
         '/v1/results/{runId}': expect.any(Object),
         '/v1/semantic/metrics/{metricId}/reconcile-reference': expect.any(Object),
         '/v1/semantic/metrics/{metricId}/release-plan': expect.any(Object),
@@ -96,6 +98,18 @@ describe('ChatBI local BFF router', () => {
           }),
           FeedbackView: expect.objectContaining({
             additionalProperties: false,
+          }),
+          GoldenSampleView: expect.objectContaining({
+            additionalProperties: false,
+          }),
+          RegressionRunPlanView: expect.objectContaining({
+            additionalProperties: false,
+          }),
+          GoldenSampleEnvelope: expect.objectContaining({
+            oneOf: expect.any(Array),
+          }),
+          RegressionRunEnvelope: expect.objectContaining({
+            oneOf: expect.any(Array),
           }),
         },
       },

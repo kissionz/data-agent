@@ -541,8 +541,10 @@ export interface EvaluationAuditEvent {
     | 'evaluation.replay_viewed'
     | 'evaluation.release_blocked'
     | 'evaluation.sample_ingested'
+    | 'evaluation.samples_listed'
     | 'evaluation.golden_approved'
     | 'evaluation.regression_scheduled'
+    | 'evaluation.regressions_listed'
   actorUserId: string
   tenantId: string
   workspaceId: string
@@ -681,6 +683,7 @@ export interface GoldenSampleView {
   expectedDimensionIds: string[]
   semanticVersion: string
   tags: string[]
+  createdAt: string
   qualityGates: {
     desensitized: boolean
     deduplicated: boolean
@@ -688,7 +691,22 @@ export interface GoldenSampleView {
     productionCredentialsRemoved: true
   }
   approvedBy?: string
+  approvedAt?: string
   audit: EvaluationAuditEvent[]
+}
+
+export interface ListGoldenSamplesRequest {
+  actor: ActorContext
+  query?: string
+  status?: GoldenSampleStatus | 'all'
+  domain?: string
+  semanticVersion?: string
+  tag?: string
+}
+
+export interface GetGoldenSampleRequest {
+  actor: ActorContext
+  sampleId: string
 }
 
 export interface IngestGoldenSampleRequest {
@@ -718,16 +736,35 @@ export interface ScheduleRegressionRunRequest {
   sampleIds?: string[]
 }
 
+export interface ListRegressionRunsRequest {
+  actor: ActorContext
+  status?: RegressionRunStatus | 'all'
+  candidateVersion?: string
+}
+
+export interface GetRegressionRunRequest {
+  actor: ActorContext
+  regressionRunId: string
+}
+
+export type RegressionRunStatus = 'queued' | 'running' | 'passed' | 'failed' | 'release_blocked'
+export type RegressionStage = 'retrieval' | 'planner' | 'compiler' | 'query_gateway' | 'answer_grounding'
+
 export interface RegressionRunPlanView {
   contractVersion: typeof CONTRACT_VERSION
   id: string
   candidateVersion: string
-  status: 'queued'
+  status: RegressionRunStatus
+  createdAt: string
+  requestedBy: string
   sampleIds: string[]
   sampleCount: number
-  stages: Array<'retrieval' | 'planner' | 'compiler' | 'query_gateway' | 'answer_grounding'>
+  stages: RegressionStage[]
   usesProductionCredentials: false
   releaseGateLinked: true
+  completedStages: RegressionStage[]
+  releaseGateDecision?: 'pass' | 'blocked'
+  failureReason?: string
   audit: EvaluationAuditEvent[]
 }
 

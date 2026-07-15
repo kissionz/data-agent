@@ -43,10 +43,13 @@ import {
   type CancelRunRequest,
   type ClarifyRunRequest,
   type GetRunRequest,
+  type GoldenSampleStatus,
+  type IngestGoldenSampleRequest,
   type ModelCapability,
   type PublicRunView,
   type ResultPageRequest,
   type ResultPageView,
+  type RegressionRunStatus,
   type SloWindow,
   type SubscriptionCadence,
   type SubmitQuestionRequest,
@@ -596,6 +599,18 @@ export function createChatBiBffRouter(
         return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
       }
 
+      if (method === 'GET' && path === '/v1/evaluation/golden-samples') {
+        const envelope = evaluation.listGoldenSamples({
+          actor: actorFrom(request),
+          query: request.query?.q || request.query?.query,
+          status: request.query?.status as GoldenSampleStatus | 'all' | undefined,
+          domain: request.query?.domain,
+          semanticVersion: request.query?.semantic_version || request.query?.semanticVersion,
+          tag: request.query?.tag,
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
+      }
+
       if (method === 'POST' && path === '/v1/evaluation/golden-samples') {
         const body = bodyObject(request)
         const metricIdsInput = body.expectedMetricIds ?? body.expected_metric_ids
@@ -606,7 +621,7 @@ export function createChatBiBffRouter(
           sourceRunId: String(body.sourceRunId ?? body.source_run_id ?? ''),
           sanitizedQuestion: String(body.sanitizedQuestion ?? body.sanitized_question ?? ''),
           domain: String(body.domain ?? ''),
-          expectedIntent: (body.expectedIntent ?? body.expected_intent ?? 'trend') as never,
+          expectedIntent: (body.expectedIntent ?? body.expected_intent ?? 'trend') as IngestGoldenSampleRequest['expectedIntent'],
           expectedMetricIds: Array.isArray(metricIdsInput) ? metricIdsInput.map(String) : [],
           expectedDimensionIds: Array.isArray(dimensionIdsInput) ? dimensionIdsInput.map(String) : [],
           semanticVersion: String(body.semanticVersion ?? body.semantic_version ?? actorFrom(request).semanticVersion),
@@ -614,6 +629,15 @@ export function createChatBiBffRouter(
           desensitized: Boolean(body.desensitized),
           deduplicated: Boolean(body.deduplicated),
           humanLabeled: Boolean(body.humanLabeled ?? body.human_labeled),
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
+      }
+
+      const goldenSampleMatch = path.match(/^\/v1\/evaluation\/golden-samples\/([^/]+)$/)
+      if (goldenSampleMatch && method === 'GET') {
+        const envelope = evaluation.getGoldenSample({
+          actor: actorFrom(request),
+          sampleId: decodeURIComponent(goldenSampleMatch[1]),
         })
         return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
       }
@@ -636,6 +660,24 @@ export function createChatBiBffRouter(
           actor: actorFrom(request),
           candidateVersion: String(body.candidateVersion ?? body.candidate_version ?? 'planner-3.3-rc2'),
           sampleIds: Array.isArray(sampleIdsInput) ? sampleIdsInput.map(String) : undefined,
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
+      }
+
+      if (method === 'GET' && path === '/v1/evaluation/regression-runs') {
+        const envelope = evaluation.listRegressionRuns({
+          actor: actorFrom(request),
+          status: request.query?.status as RegressionRunStatus | 'all' | undefined,
+          candidateVersion: request.query?.candidate_version || request.query?.candidateVersion,
+        })
+        return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
+      }
+
+      const regressionRunMatch = path.match(/^\/v1\/evaluation\/regression-runs\/([^/]+)$/)
+      if (regressionRunMatch && method === 'GET') {
+        const envelope = evaluation.getRegressionRun({
+          actor: actorFrom(request),
+          regressionRunId: decodeURIComponent(regressionRunMatch[1]),
         })
         return withCors(respond(httpStatusForEvaluationEnvelope(envelope), envelope))
       }

@@ -38,9 +38,18 @@ import {
   type ReplayRun,
   type RunStatus,
 } from "./fixtures";
+import { EvaluationGovernance, type EvaluationGovernanceView } from "./EvaluationGovernance";
 import "./operations.css";
 
 type Period = "7d" | "30d" | "90d";
+type OperationsSection = "overview" | EvaluationGovernanceView | "replays";
+
+const operationsSections: Array<{ id: OperationsSection; label: string }> = [
+  { id: "overview", label: "总览" },
+  { id: "golden", label: "黄金集" },
+  { id: "regressions", label: "回归运行" },
+  { id: "replays", label: "失败回放" },
+];
 
 const statusLabels: Record<RunStatus, string> = {
   failed: "失败",
@@ -61,6 +70,7 @@ export function OperationsCenter() {
   const [status, setStatus] = useState<"all" | RunStatus>("all");
   const [selectedRun, setSelectedRun] = useState<ReplayRun | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [activeSection, setActiveSection] = useState<OperationsSection>("overview");
 
   const filteredRuns = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -107,6 +117,33 @@ export function OperationsCenter() {
         </div>
       </header>
 
+      <div className="operations__tabs" role="tablist" aria-label="运营中心任务">
+        {operationsSections.map((section, index) => (
+          <button
+            id={`operations-tab-${section.id}`}
+            key={section.id}
+            role="tab"
+            type="button"
+            aria-selected={activeSection === section.id}
+            aria-controls={activeSection === section.id ? `operations-panel-${section.id}` : undefined}
+            tabIndex={activeSection === section.id ? 0 : -1}
+            onClick={() => setActiveSection(section.id)}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const direction = event.key === "ArrowRight" ? 1 : -1;
+              const next = operationsSections[(index + direction + operationsSections.length) % operationsSections.length];
+              setActiveSection(next.id);
+              window.requestAnimationFrame(() => document.getElementById(`operations-tab-${next.id}`)?.focus());
+            }}
+          >
+            {section.label}
+          </button>
+        ))}
+      </div>
+
+      {activeSection === "overview" && (
+        <div id="operations-panel-overview" role="tabpanel" aria-labelledby="operations-tab-overview">
       <section className="operations__metric-grid" aria-label="运营核心指标">
         {overviewMetrics.map((metric) => {
           const DeltaIcon = metric.delta.startsWith("+") ? IconArrowUpRight : IconArrowDownRight;
@@ -244,7 +281,20 @@ export function OperationsCenter() {
           </div>
         </section>
       </div>
+        </div>
+      )}
 
+      <div
+        id={activeSection === "regressions" ? "operations-panel-regressions" : "operations-panel-golden"}
+        role="tabpanel"
+        aria-labelledby={activeSection === "regressions" ? "operations-tab-regressions" : "operations-tab-golden"}
+        hidden={activeSection !== "golden" && activeSection !== "regressions"}
+      >
+        <EvaluationGovernance activeView={activeSection === "regressions" ? "regressions" : "golden"} />
+      </div>
+
+      {activeSection === "replays" && (
+        <div id="operations-panel-replays" role="tabpanel" aria-labelledby="operations-tab-replays">
       <section className="operations__panel operations__replay" aria-labelledby="replay-title">
         <div className="operations__panel-header operations__panel-header--wrap">
           <div>
@@ -301,7 +351,10 @@ export function OperationsCenter() {
           {filteredRuns.length === 0 && <div className="operations__empty">没有匹配的回放记录，请调整筛选条件。</div>}
         </div>
       </section>
+        </div>
+      )}
 
+      {activeSection === "overview" && (
       <section className="operations__panel" aria-labelledby="slo-title">
         <div className="operations__panel-header">
           <div><h2 id="slo-title">SLO 状态</h2><p>当前滚动 30 天窗口</p></div>
@@ -318,6 +371,7 @@ export function OperationsCenter() {
           ))}
         </div>
       </section>
+      )}
 
       {selectedRun && <ReplayDetail run={selectedRun} onClose={() => setSelectedRun(null)} />}
     </main>

@@ -24,6 +24,7 @@ describe('OperationsCenter UI', () => {
   it('filters replay runs and opens a replay detail drawer', () => {
     render(<OperationsCenter />)
 
+    fireEvent.click(screen.getByRole('tab', { name: '失败回放' }))
     fireEvent.change(screen.getByPlaceholderText('搜索问题或 Run ID'), {
       target: { value: 'RUN-28403' },
     })
@@ -38,6 +39,63 @@ describe('OperationsCenter UI', () => {
 
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
     expect(screen.queryByRole('dialog', { name: '回放详情' })).not.toBeInTheDocument()
+  })
+
+  it('approves a candidate golden sample and schedules a scoped regression run', () => {
+    render(<OperationsCenter />)
+
+    fireEvent.click(screen.getByRole('tab', { name: '黄金集' }))
+    expect(screen.getByRole('heading', { name: '黄金集样本' })).toBeInTheDocument()
+    expect(screen.getByText('最近销售情况怎么样？')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '查看样本 golden_seed_002' }))
+    const dialog = screen.getByRole('dialog', { name: '黄金样本详情' })
+    expect(within(dialog).getByText('已完成敏感信息脱敏')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '批准进入黄金集' })).toBeDisabled()
+    fireEvent.change(within(dialog).getByLabelText('审批说明'), {
+      target: { value: '人工复核歧义与期望口径通过' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: '批准进入黄金集' }))
+    expect(screen.getByRole('status')).toHaveTextContent('已批准进入黄金集')
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择样本 golden_seed_002' }))
+    expect(screen.getByText('已选 1 条黄金样本')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: '回归运行' }))
+    expect(screen.getByRole('heading', { name: '批量回归运行' })).toBeInTheDocument()
+    expect(screen.getByText('当前选择 1 条')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '调度回归' }))
+    expect(screen.getByRole('status')).toHaveTextContent(/已排队，覆盖 1 条黄金样本/)
+    expect(screen.getByText('排队中')).toBeInTheDocument()
+    expect(screen.getByText('0/5')).toBeInTheDocument()
+  })
+
+  it('filters golden samples and provides a recoverable empty state', () => {
+    render(<OperationsCenter />)
+    fireEvent.click(screen.getByRole('tab', { name: '黄金集' }))
+
+    fireEvent.change(screen.getByLabelText('黄金样本状态'), {
+      target: { value: 'candidate_dataset' },
+    })
+    expect(screen.getByText('最近销售情况怎么样？')).toBeInTheDocument()
+    expect(screen.queryByText('过去 12 个完整自然月净收入趋势。')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('搜索问题、样本 ID 或标签'), {
+      target: { value: '没有这个样本' },
+    })
+    expect(screen.getByText('没有匹配的黄金样本')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '清除筛选' }))
+    expect(screen.getByText('过去 12 个完整自然月净收入趋势。')).toBeInTheDocument()
+  })
+
+  it('switches task tabs with arrow keys', () => {
+    render(<OperationsCenter />)
+    const overview = screen.getByRole('tab', { name: '总览' })
+    overview.focus()
+    fireEvent.keyDown(overview, { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: '黄金集' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: '黄金集样本' })).toBeInTheDocument()
   })
 
   it('shows refresh feedback without changing the operating context', () => {

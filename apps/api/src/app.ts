@@ -11,7 +11,12 @@ import { httpStatusForError, type ActorContext, type DeveloperScope, type Submit
 import { createFileChatBiPersistence } from '../../../src/persistence/file'
 import { createInMemoryChatBiPersistence } from '../../../src/persistence/memory'
 import type { ChatBiPersistence } from '../../../src/persistence/ports'
-import type { ResultPageStore, RunEventStore, StoredRunEvent } from '../../../src/persistence/resultPorts'
+import type {
+  PublishedResultPageResolver,
+  ResultPageStore,
+  RunEventStore,
+  StoredRunEvent,
+} from '../../../src/persistence/resultPorts'
 import type { QueryAdapter } from '../../../src/query'
 import { createPostgresPool, createPostgresQueryAdapter } from './adapters/postgresQueryAdapter'
 import { createApiRuntimeConfig, type ApiRuntimeConfig, type ApiRuntimeConfigInput } from './config'
@@ -20,6 +25,7 @@ import { createPostgresQueryRuntime, type PostgresQueryRuntime } from './postgre
 import type {
   TransactionalResultManifestMetadata,
   TransactionalResultPage,
+  TransactionalStoredResultPage,
 } from './transactionalQueryExecutionCoordinator'
 
 export interface ApiRuntime {
@@ -41,7 +47,11 @@ export interface ApiRuntimeDependencies {
   }
   resolveQueryCredential?: (credentialRef: string) => string
   queryControlPlane?: DurableQueryControlPlane
-  resultPageStore?: ResultPageStore<TransactionalResultPage, TransactionalResultManifestMetadata>
+  resultPageStore?: ResultPageStore<TransactionalStoredResultPage, TransactionalResultManifestMetadata>
+  resultPageResolver?: PublishedResultPageResolver<
+    TransactionalResultPage,
+    TransactionalResultManifestMetadata
+  >
   runEventStore?: RunEventStore
   postgresRuntime?: PostgresQueryRuntime
 }
@@ -92,7 +102,11 @@ export function createApiRuntime(
   const query = createQueryRuntime(config, persistence, dependencies, managedPostgres)
   const queryControlPlane = dependencies.queryControlPlane ?? managedPostgres?.controlPlane
   const resultPageStore = dependencies.resultPageStore ?? managedPostgres?.resultPageStore
+  const resultPageResolver = dependencies.resultPageResolver ?? managedPostgres?.resultPageResolver
   const runEventStore = dependencies.runEventStore ?? managedPostgres?.runEventStore
+  if (config.query.mode === 'postgresql' && config.resultStorage.mode === 's3' && !resultPageResolver) {
+    throw new Error('S3 result storage requires an authorized published-page resolver')
+  }
   const service = createChatBiApplicationService({ persistence, queryDispatcher: query.dispatcher })
   const durableService = queryControlPlane
     ? createDurableChatBiApplicationService({ controlPlane: queryControlPlane })
@@ -101,6 +115,7 @@ export function createApiRuntime(
     ? createDurableQueryReadService({
         controlPlane: queryControlPlane,
         resultPageStore,
+        publishedPageResolver: resultPageResolver,
         runEventStore,
       })
     : undefined
@@ -175,6 +190,45 @@ export function createApiRuntime(
           actor: actorFrom(effectiveRequest),
         })
         return withConfiguredCors(json(envelope.ok ? 200 : httpStatusForError(envelope.error.code), envelope, config), config)
+      }
+      const resultStreamMatch = path.match(/^\/v1\/results\/([^/]+)\/stream$/)
+      if (method === 'GET' && resultStreamMatch) {
+        if (!durableReadService) return durableRouteUnavailable(config)
+        const numberQuery = (snakeCase: string, camelCase: string) => {
+          const raw = effectiveRequest.query?.[snakeCase] ?? effectiveRequest.query?.[camelCase]
+          return raw === undefined ? undefined : Number(raw)
+        }
+        const envelope = await durableReadService.openResultStream({
+          runId: decodeURIComponent(resultStreamMatch[1]),
+          conversationId: effectiveRequest.query?.conversation_id || effectiveRequest.query?.conversationId || '',
+          actor: actorFrom(effectiveRequest),
+          signal: effectiveRequest.signal,
+          maxRows: numberQuery('max_rows', 'maxRows'),
+          maxBytes: numberQuery('max_bytes', 'maxBytes'),
+          timeoutMs: numberQuery('timeout_ms', 'timeoutMs'),
+        })
+        if (!envelope.ok) {
+          return withConfiguredCors(
+            json(httpStatusForError(envelope.error.code), envelope, config),
+            config,
+          )
+        }
+        return withConfiguredCors({
+          status: 200,
+          headers: {
+            'content-type': 'application/x-ndjson; charset=utf-8',
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+            'x-stream-mode': 'published-result',
+            'x-result-stream-schema': envelope.data.schemaVersion,
+            'x-result-id': envelope.data.resultId,
+            'x-result-total-rows': String(envelope.data.totalRows),
+            'x-result-max-rows': String(envelope.data.maxRows),
+            'x-result-max-bytes': String(envelope.data.maxBytes),
+            'x-result-timeout-ms': String(envelope.data.timeoutMs),
+          },
+          body: envelope.data.body,
+        }, config)
       }
       const resultMatch = path.match(/^\/v1\/results\/([^/]+)$/)
       if (method === 'GET' && resultMatch) {
@@ -302,6 +356,7 @@ function isDurableQueryRoute(method: string, path: string): boolean {
     || (normalizedMethod === 'GET' && /^\/v1\/runs\/[^/]+(?:\/events)?$/.test(path))
     || (normalizedMethod === 'POST' && /^\/v1\/runs\/[^/]+\/(?:clarify|cancel)$/.test(path))
     || (normalizedMethod === 'GET' && /^\/v1\/results\/[^/]+$/.test(path))
+    || (normalizedMethod === 'GET' && /^\/v1\/results\/[^/]+\/stream$/.test(path))
 }
 
 function durableRouteUnavailable(config: ApiRuntimeConfig): HttpResponseLike {
@@ -567,6 +622,7 @@ function scopesForRequest(method: string, path: string): DeveloperScope[] {
   if (normalizedMethod === 'POST' && path === '/v1/questions') return ['questions:write']
   if (normalizedMethod === 'POST' && path === '/v1/feedback') return ['feedback:write']
   if (normalizedMethod === 'GET' && /^\/v1\/runs\/[^/]+(?:\/events)?$/.test(path)) return ['runs:read']
+  if (normalizedMethod === 'GET' && /^\/v1\/results\/[^/]+(?:\/stream)?$/.test(path)) return ['runs:read']
   if (normalizedMethod === 'POST' && /^\/v1\/runs\/[^/]+\/(?:clarify|cancel)$/.test(path)) return ['questions:write']
   if (normalizedMethod === 'GET' && path.startsWith('/v1/semantic')) return ['semantic:read']
   if (normalizedMethod === 'GET' && path.startsWith('/v1/assets')) return ['assets:read']

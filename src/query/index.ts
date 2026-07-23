@@ -11,6 +11,12 @@ export {
   markQueryExecutionRunning,
 } from './gateway'
 export { mapQueryResultToRunResult } from './resultMapper'
+export {
+  CHART_ROW_HARD_LIMIT,
+  validateChartPublication,
+  type ChartPublicationValidation,
+  type ValidateChartPublicationInput,
+} from './chartValidator'
 export type {
   CompiledQueryPlan,
   MapQueryResultInput,

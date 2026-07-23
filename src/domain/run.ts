@@ -1,3 +1,12 @@
+import {
+  FACT_TRANSFORM_REGISTRY_VERSION,
+  evaluateDeterministicFactTransform,
+  type DeterministicFactTransform,
+  type ResultCellReference as FactResultCellReference,
+} from './factTransform'
+
+export type ResultCellReference = FactResultCellReference
+
 export const RUN_DISPLAY_STATUSES = [
   'waiting_input',
   'understanding',
@@ -24,19 +33,13 @@ export type PublicErrorCode =
   | 'VALIDATION_FAILED'
   | 'INTERNAL_ERROR'
 
-export interface ResultCellReference {
-  resultId: string
-  rowKey: string
-  columnId: string
-  transformId?: string
-}
-
 export interface DeterministicFact {
   id: string
   label: string
   value: string | number | boolean
   formattedValue: string
   references: ResultCellReference[]
+  transform?: DeterministicFactTransform
 }
 
 export interface DeterministicAnswer {
@@ -61,6 +64,41 @@ export interface ResultRow {
 
 export type ResultChartType = 'line' | 'bar' | 'table'
 
+export const CHART_VALIDATION_REPORT_VERSION = 'chatbi_chart_validation.v1' as const
+
+export type ResultChartValidationDecision = 'allow' | 'fallback_table' | 'reject'
+
+export const CHART_VALIDATION_RULE_CODES = [
+  'CHART_TYPE_ALLOWED',
+  'COLUMN_IDS_UNIQUE',
+  'AXIS_FIELDS_EXIST',
+  'AXIS_FIELDS_UNIQUE',
+  'ROW_COUNT_WITHIN_HARD_LIMIT',
+  'RESULT_NON_EMPTY',
+  'AXIS_TYPES_COMPATIBLE',
+  'TIME_AXIS_STRICTLY_ASCENDING',
+  'NUMERIC_VALUES_FINITE',
+  'PERCENTAGE_VALUES_REASONABLE',
+  'Y_AXIS_UNITS_COMPATIBLE',
+] as const
+
+export type ResultChartValidationRuleCode = (typeof CHART_VALIDATION_RULE_CODES)[number]
+
+export interface ResultChartValidationCheck {
+  code: ResultChartValidationRuleCode
+  status: 'pass' | 'fail' | 'not_applicable'
+}
+
+export interface ResultChartValidationReport {
+  schemaVersion: typeof CHART_VALIDATION_REPORT_VERSION
+  decision: ResultChartValidationDecision
+  requestedChartType: ResultChartType | 'unsupported'
+  publishedChartType?: ResultChartType
+  evaluatedRowCount: number
+  rowHardLimit: number
+  checks: ResultChartValidationCheck[]
+}
+
 export interface ResultChartSpec {
   id: string
   title: string
@@ -72,6 +110,7 @@ export interface ResultChartSpec {
   safety: {
     grounded: boolean
     warnings: string[]
+    validationReport?: ResultChartValidationReport
   }
 }
 
@@ -93,6 +132,8 @@ export interface ResultGroundingReport {
   grounded: boolean
   checkedFacts: number
   checkedReferences: number
+  checkedTransforms: number
+  transformRegistryVersion: typeof FACT_TRANSFORM_REGISTRY_VERSION
   mismatches: string[]
   chartSafety: {
     safe: boolean
@@ -328,8 +369,63 @@ export function assertChartSpecIntegrity(result: RunResult): void {
   const spec = result.chartSpec
 
   if (spec.source !== 'validated_result_spec') throw new Error('Chart spec must be produced by the validator')
+  if (!spec.safety.grounded) throw new Error('Published chart spec must be grounded')
+
+  const report = spec.safety.validationReport
+  if (report) {
+    if (report.schemaVersion !== CHART_VALIDATION_REPORT_VERSION) {
+      throw new Error('Chart validation report uses an unsupported schema version')
+    }
+    if (
+      report.decision !== 'allow'
+      && report.decision !== 'fallback_table'
+      && report.decision !== 'reject'
+    ) {
+      throw new Error('Chart validation report uses an unsupported decision')
+    }
+    if (
+      report.requestedChartType !== 'line'
+      && report.requestedChartType !== 'bar'
+      && report.requestedChartType !== 'table'
+      && report.requestedChartType !== 'unsupported'
+    ) {
+      throw new Error('Chart validation report uses an unsupported requested chart type')
+    }
+    if (report.decision === 'reject') throw new Error('A rejected chart decision cannot be published')
+    if (report.requestedChartType === 'unsupported') {
+      throw new Error('An unsupported chart type cannot be published')
+    }
+    if (report.publishedChartType !== spec.type) {
+      throw new Error('Chart validation report does not match the published chart type')
+    }
+    if (report.evaluatedRowCount !== result.rows.length) {
+      throw new Error('Chart validation report row count does not match the result')
+    }
+    if (!Number.isSafeInteger(report.rowHardLimit) || report.rowHardLimit <= 0) {
+      throw new Error('Chart validation report has an invalid row hard limit')
+    }
+    if (
+      report.checks.length !== CHART_VALIDATION_RULE_CODES.length
+      || report.checks.some((check, index) => (
+        check.code !== CHART_VALIDATION_RULE_CODES[index]
+        || (check.status !== 'pass' && check.status !== 'fail' && check.status !== 'not_applicable')
+      ))
+    ) {
+      throw new Error('Chart validation report checks are incomplete or out of order')
+    }
+    if (report.decision === 'fallback_table' && spec.type !== 'table') {
+      throw new Error('A chart safety fallback must publish a table')
+    }
+    if (report.decision === 'allow' && report.checks.some((check) => check.status === 'fail')) {
+      throw new Error('An allowed chart decision cannot contain failed checks')
+    }
+    if (report.decision === 'fallback_table' && !report.checks.some((check) => check.status === 'fail')) {
+      throw new Error('A chart safety fallback must identify a failed check')
+    }
+  }
 
   if (spec.type === 'table') {
+    if (spec.xAxisColumnId) throw new Error('Table chart spec cannot define an x-axis column')
     if (spec.yAxisColumnIds.length > 0) throw new Error('Table chart spec cannot define y-axis columns')
     return
   }
@@ -357,18 +453,91 @@ export function assertChartSpecIntegrity(result: RunResult): void {
 export function validateResultGrounding(result: RunResult): ResultGroundingReport {
   const mismatches: string[] = []
   let checkedReferences = 0
+  let checkedTransforms = 0
 
   const rowsByKey = new Map(result.rows.map((row) => [row.key, row]))
 
   for (const fact of result.answer.facts) {
+    const rawFact = fact as unknown as Record<string, unknown>
+    if (Object.keys(rawFact).some((key) => /sql|query|statement/i.test(key))) {
+      mismatches.push(`Fact ${fact.id} contains a forbidden public field`)
+      continue
+    }
+    if (!Array.isArray(rawFact.references) || !rawFact.references.every(isResultCellReference)) {
+      mismatches.push(`Fact ${fact.id} has an invalid result reference`)
+      continue
+    }
+    if (
+      'transform' in rawFact
+      && rawFact.transform !== undefined
+      && (!rawFact.transform || typeof rawFact.transform !== 'object' || Array.isArray(rawFact.transform))
+    ) {
+      mismatches.push(`Fact ${fact.id} has an invalid transform`)
+      continue
+    }
+    if (fact.transform) {
+      checkedTransforms += 1
+      const transform = fact.transform as DeterministicFactTransform
+      const rawInputs = (transform as unknown as { inputs?: unknown }).inputs
+      if (!Array.isArray(rawInputs) || rawInputs.length === 0) {
+        mismatches.push(`Fact ${fact.id} transform has no inputs`)
+        continue
+      }
+      if (!rawInputs.every(isResultCellReference)) {
+        mismatches.push(`Fact ${fact.id} transform has an invalid input reference`)
+        continue
+      }
+      const inputs = rawInputs as ResultCellReference[]
+      if (!referenceListsMatch(fact.references, inputs)) {
+        mismatches.push(`Fact ${fact.id} transform inputs do not match its result references`)
+        continue
+      }
+
+      const inputValues: Array<string | number | boolean | null> = []
+      let inputsValid = true
+      for (const reference of inputs) {
+        checkedReferences += 1
+        if (reference.transformId !== undefined) {
+          mismatches.push(`Fact ${fact.id} uses an unsupported legacy transform marker`)
+          inputsValid = false
+          continue
+        }
+        if (reference.resultId !== result.id) {
+          mismatches.push(`Fact ${fact.id} transform references another result`)
+          inputsValid = false
+          continue
+        }
+        const row = rowsByKey.get(reference.rowKey)
+        if (!row || !(reference.columnId in row.values)) {
+          mismatches.push(`Fact ${fact.id} transform has an invalid input cell reference`)
+          inputsValid = false
+          continue
+        }
+        inputValues.push(row.values[reference.columnId])
+      }
+      if (!inputsValid) continue
+
+      const evaluation = evaluateDeterministicFactTransform(transform, inputValues)
+      if (!evaluation.ok) {
+        mismatches.push(`Fact ${fact.id} transform rejected: ${evaluation.code}`)
+        continue
+      }
+      if (
+        typeof fact.value !== 'number'
+        || !Number.isFinite(fact.value)
+        || !Object.is(Object.is(fact.value, -0) ? 0 : fact.value, evaluation.value)
+      ) {
+        mismatches.push(`Fact ${fact.id} value does not match its recomputed transform result`)
+      }
+      continue
+    }
+
     if (fact.references.length === 0) {
       mismatches.push(`Fact ${fact.id} has no result reference`)
       continue
     }
 
     const directlyReferencedValues: Array<string | number | boolean | null> = []
-    let hasTransformReference = false
-
     for (const reference of fact.references) {
       checkedReferences += 1
       if (reference.resultId !== result.id) {
@@ -382,14 +551,14 @@ export function validateResultGrounding(result: RunResult): ResultGroundingRepor
         continue
       }
 
-      if (reference.transformId) {
-        hasTransformReference = true
-      } else {
-        directlyReferencedValues.push(row.values[reference.columnId])
+      if (reference.transformId !== undefined) {
+        mismatches.push(`Fact ${fact.id} uses an unsupported legacy transform marker`)
+        continue
       }
+      directlyReferencedValues.push(row.values[reference.columnId])
     }
 
-    if (!hasTransformReference && directlyReferencedValues.length > 0) {
+    if (directlyReferencedValues.length > 0) {
       const matchesFactValue = directlyReferencedValues.some((value) => cellValueMatchesFactValue(value, fact.value))
       if (!matchesFactValue) {
         mismatches.push(`Fact ${fact.id} value does not match any referenced cell`)
@@ -403,9 +572,36 @@ export function validateResultGrounding(result: RunResult): ResultGroundingRepor
     grounded: mismatches.length === 0,
     checkedFacts: result.answer.facts.length,
     checkedReferences,
+    checkedTransforms,
+    transformRegistryVersion: FACT_TRANSFORM_REGISTRY_VERSION,
     mismatches,
     chartSafety,
   }
+}
+
+const RESULT_CELL_REFERENCE_FIELDS = new Set(['resultId', 'rowKey', 'columnId', 'transformId'])
+
+function isResultCellReference(value: unknown): value is ResultCellReference {
+  if (!value || typeof value !== 'object') return false
+  const reference = value as Record<string, unknown>
+  return Object.keys(reference).every((key) => RESULT_CELL_REFERENCE_FIELDS.has(key))
+    && typeof reference.resultId === 'string'
+    && reference.resultId.length > 0
+    && typeof reference.rowKey === 'string'
+    && reference.rowKey.length > 0
+    && typeof reference.columnId === 'string'
+    && reference.columnId.length > 0
+    && (reference.transformId === undefined || typeof reference.transformId === 'string')
+}
+
+function referenceListsMatch(references: ResultCellReference[], inputs: ResultCellReference[]) {
+  return references.length === inputs.length && references.every((reference, index) => {
+    const input = inputs[index]
+    return reference.resultId === input.resultId
+      && reference.rowKey === input.rowKey
+      && reference.columnId === input.columnId
+      && reference.transformId === input.transformId
+  })
 }
 
 function cellValueMatchesFactValue(
@@ -418,6 +614,15 @@ function cellValueMatchesFactValue(
 }
 
 function evaluateChartSafety(result: RunResult): ResultGroundingReport['chartSafety'] {
+  const validationReport = result.chartSpec.safety.validationReport
+  if (validationReport) {
+    return {
+      safe: validationReport.decision !== 'reject',
+      recommendedVisualization: result.chartSpec.type,
+      warnings: [...result.chartSpec.safety.warnings],
+    }
+  }
+
   const warnings: string[] = []
   const dateColumn = result.columns.find((column) => column.type === 'date')
   const numericColumns = result.columns.filter((column) => (

@@ -4,6 +4,7 @@ import {
   createApiRuntimeConfig,
   parseApiEnvironment,
   parseApiQuerySslMode,
+  parseApiResultStorageMode,
 } from './config'
 import { bindGracefulShutdown } from './gracefulShutdown'
 
@@ -55,6 +56,13 @@ const input = {
   outboxRetryInitialMs: env.CHATBI_OUTBOX_RETRY_INITIAL_MS,
   outboxRetryMaxMs: env.CHATBI_OUTBOX_RETRY_MAX_MS,
   outboxMaxAttempts: env.CHATBI_OUTBOX_MAX_ATTEMPTS,
+  resultStorageMode: parseApiResultStorageMode(env.CHATBI_RESULT_STORAGE_MODE),
+  resultStorageEndpoint: env.CHATBI_RESULT_STORAGE_S3_ENDPOINT,
+  resultStorageRegion: env.CHATBI_RESULT_STORAGE_S3_REGION,
+  resultStorageBucket: env.CHATBI_RESULT_STORAGE_S3_BUCKET,
+  resultStorageCredentialRef: env.CHATBI_RESULT_STORAGE_CREDENTIAL_REF,
+  resultStorageTimeoutMs: env.CHATBI_RESULT_STORAGE_TIMEOUT_MS,
+  resultStorageMaxBlobBytes: env.CHATBI_RESULT_STORAGE_MAX_BLOB_BYTES,
   corsAllowOrigin: env.CORS_ALLOW_ORIGIN,
 } as const
 const config = createApiRuntimeConfig(input)

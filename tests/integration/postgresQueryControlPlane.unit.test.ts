@@ -13,6 +13,7 @@ import type {
   SubmitAndEnqueueInput,
 } from '../../src/persistence/controlPlanePorts'
 import type { RunResult } from '../../src/domain'
+import type { QueryRunJobPublication } from '../../src/application/queryExecutionCoordinator'
 
 interface Call { text: string; values?: readonly unknown[] }
 interface Payload { runId: string; question: string }
@@ -234,7 +235,7 @@ function resultFixture(): RunResult {
 }
 
 function completeCommitInput(): CommitControlPlaneAttemptInput<
-  { type: 'executed' },
+  QueryRunJobPublication,
   { type: string },
   { rows: unknown[] },
   { semanticVersion: string }
@@ -255,7 +256,14 @@ function completeCommitInput(): CommitControlPlaneAttemptInput<
       type: 'complete',
       input: {
         runId: 'run_atomic', attempt: 1, fence: 1, workerId: 'worker_a', leaseToken: 'lease-a',
-        completedAt: at1, resultFingerprint: 'result-v1', result: { type: 'executed' },
+        completedAt: at1,
+        resultFingerprint: 'result-v1',
+        result: {
+          schemaVersion: 'chatbi_result_manifest_reference.v1',
+          type: 'result_manifest',
+          resultId: 'result_atomic',
+          manifestChecksum: 'manifest-v1',
+        },
       },
     },
     conversation: { ...submitted.conversation, updatedAt: at1 },
@@ -706,7 +714,8 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
         return { rows: [jobRow({
           status: terminal ? 'completed' : 'leased', lease_owner: null, lease_token_hash: null,
           lease_expires_at: null, completed_at: at1, result_fingerprint: 'result-v1',
-          result_json: { type: 'executed' }, terminal_kind: 'completed', terminal_attempt: 1,
+          result_json: commit.job.type === 'complete' ? commit.job.input.result : null,
+          terminal_kind: 'completed', terminal_attempt: 1,
           terminal_fence: 1, terminal_worker_id: 'worker_a', terminal_lease_token_hash: tokenHash('lease-a'),
           terminal_fingerprint: 'result-v1',
         })], rowCount: 1 }
@@ -720,7 +729,13 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       return empty()
     })
     const outbox = new RecordingTransactionalOutbox()
-    const controlPlane = createPostgresQueryControlPlane<Payload, { type: 'executed' }, { type: string }, { rows: unknown[] }, { semanticVersion: string }>({
+    const controlPlane = createPostgresQueryControlPlane<
+      Payload,
+      QueryRunJobPublication,
+      { type: string },
+      { rows: unknown[] },
+      { semanticVersion: string }
+    >({
       pool: new ScriptedPool(client),
       transactionalOutbox: outbox,
     })
@@ -734,6 +749,16 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
     expect(manifestIndex).toBeGreaterThan(0)
     expect(runIndex).toBeGreaterThan(manifestIndex)
     expect(commitIndex).toBeGreaterThan(runIndex)
+    const jobUpdate = client.calls.find((call) => call.text.startsWith('update chatbi_run_jobs'))!
+    expect(JSON.parse(String(jobUpdate.values?.[3]))).toEqual({
+      schemaVersion: 'chatbi_result_manifest_reference.v1',
+      type: 'result_manifest',
+      resultId: 'result_atomic',
+      manifestChecksum: 'manifest-v1',
+    })
+    expect(String(jobUpdate.values?.[3])).not.toContain('answer')
+    expect(String(jobUpdate.values?.[3])).not.toContain('rows')
+    expect(String(jobUpdate.values?.[3])).not.toContain('columns')
     expect(outbox.clients).toEqual([client])
     expect(outbox.events).toHaveLength(1)
     expect(outbox.events[0]).toMatchObject({
@@ -844,7 +869,7 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       return empty()
     })
     const outbox = new RecordingTransactionalOutbox()
-    const controlPlane = createPostgresQueryControlPlane<Payload, { type: 'executed' }>({
+    const controlPlane = createPostgresQueryControlPlane<Payload, QueryRunJobPublication>({
       pool: new ScriptedPool(client),
       transactionalOutbox: outbox,
     })
@@ -860,7 +885,9 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
     const commit = completeCommitInput()
     const terminal = jobRow({
       status: 'completed', lease_owner: null, lease_token_hash: null, lease_expires_at: null,
-      completed_at: at1, result_fingerprint: 'result-v1', result_json: { type: 'executed' },
+      completed_at: at1,
+      result_fingerprint: 'result-v1',
+      result_json: commit.job.type === 'complete' ? commit.job.input.result : null,
       terminal_kind: 'completed', terminal_attempt: 1, terminal_fence: 1,
       terminal_worker_id: 'worker_a', terminal_lease_token_hash: tokenHash('lease-a'), terminal_fingerprint: 'result-v1',
     })
@@ -871,7 +898,7 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       return empty()
     })
     const outbox = new RecordingTransactionalOutbox()
-    const controlPlane = createPostgresQueryControlPlane<Payload, { type: 'executed' }>({
+    const controlPlane = createPostgresQueryControlPlane<Payload, QueryRunJobPublication>({
       pool: new ScriptedPool(client),
       transactionalOutbox: outbox,
     })

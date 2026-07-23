@@ -89,6 +89,13 @@ describe('browser-safe query adapter contract and result mapper', () => {
         type: 'line',
         xAxisColumnId: 'order_date',
         yAxisColumnIds: ['net_revenue'],
+        safety: {
+          validationReport: {
+            schemaVersion: 'chatbi_chart_validation.v1',
+            decision: 'allow',
+            publishedChartType: 'line',
+          },
+        },
       },
       answer: {
         generatedFrom: 'query_result',
@@ -109,7 +116,14 @@ describe('browser-safe query adapter contract and result mapper', () => {
       }),
       expect.objectContaining({ id: 'fact_is_final', value: true, formattedValue: '是' }),
     ])
-    expect(validateResultGrounding(result)).toMatchObject({ grounded: true, checkedFacts: 2, checkedReferences: 2 })
+    expect(result.answer.facts.every((fact) => fact.transform === undefined)).toBe(true)
+    expect(validateResultGrounding(result)).toMatchObject({
+      grounded: true,
+      checkedFacts: 2,
+      checkedReferences: 2,
+      checkedTransforms: 0,
+      transformRegistryVersion: 'chatbi_fact_transform_registry.v1',
+    })
   })
 
   it('maps an empty result to a grounded table empty state', () => {
@@ -118,8 +132,53 @@ describe('browser-safe query adapter contract and result mapper', () => {
     expect(result.rows).toEqual([])
     expect(result.answer.facts).toEqual([])
     expect(result.answer.headline).toContain('未返回')
-    expect(result.chartSpec).toMatchObject({ type: 'table', yAxisColumnIds: [] })
+    expect(result.chartSpec).toMatchObject({
+      type: 'table',
+      yAxisColumnIds: [],
+      safety: {
+        validationReport: {
+          decision: 'fallback_table',
+          publishedChartType: 'table',
+        },
+      },
+    })
     expect(validateResultGrounding(result)).toMatchObject({ grounded: true, checkedFacts: 0 })
+  })
+
+  it('deterministically downgrades an unsafe unsorted time series before publication', () => {
+    const result = map(execution([
+      {
+        order_date: '2026-07-15',
+        note: '较晚',
+        net_revenue: 1250,
+        is_final: false,
+      },
+      {
+        order_date: '2026-07-14',
+        note: '较早',
+        net_revenue: 1200,
+        is_final: true,
+      },
+    ]))
+
+    expect(result.chartSpec).toMatchObject({
+      type: 'table',
+      yAxisColumnIds: [],
+      safety: {
+        grounded: true,
+        warnings: [expect.stringContaining('降级')],
+        validationReport: {
+          schemaVersion: 'chatbi_chart_validation.v1',
+          decision: 'fallback_table',
+          requestedChartType: 'line',
+          publishedChartType: 'table',
+          checks: expect.arrayContaining([
+            { code: 'TIME_AXIS_STRICTLY_ASCENDING', status: 'fail' },
+          ]),
+        },
+      },
+    })
+    expect(result.chartSpec.xAxisColumnId).toBeUndefined()
   })
 
   it('marks adapter truncation as an explicit partial result', () => {
@@ -176,6 +235,13 @@ describe('browser-safe query adapter contract and result mapper', () => {
       order_date: '2026-07-14',
       note: null,
       net_revenue: 'not-numeric',
+      is_final: true,
+    }]))).toThrow('numeric output type')
+
+    expect(() => map(execution([{
+      order_date: '2026-07-14',
+      note: null,
+      net_revenue: '1e309',
       is_final: true,
     }]))).toThrow('numeric output type')
   })

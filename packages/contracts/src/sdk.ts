@@ -6,6 +6,7 @@ export type DeveloperSdkEndpoint =
   | 'runs.read'
   | 'runs.events'
   | 'results.page'
+  | 'results.stream'
   | 'semantic.read'
   | 'assets.read'
   | 'exports.create'
@@ -33,6 +34,14 @@ export type DeveloperEndpointRequestInput =
       conversationId: string
       cursor?: string
       limit?: number
+    })
+  | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
+      endpoint: 'results.stream'
+      runId: string
+      conversationId: string
+      maxRows?: number
+      maxBytes?: number
+      timeoutMs?: number
     })
   | (Omit<DeveloperSdkRequestInput, 'method' | 'path' | 'body'> & {
       endpoint: 'exports.create'
@@ -90,6 +99,7 @@ const endpointScopes: Record<DeveloperSdkEndpoint, DeveloperScope[]> = {
   'runs.read': ['runs:read'],
   'runs.events': ['runs:read'],
   'results.page': ['runs:read'],
+  'results.stream': ['runs:read'],
   'semantic.read': ['semantic:read'],
   'assets.read': ['assets:read'],
   'exports.create': ['exports:create'],
@@ -108,7 +118,7 @@ export function createDeveloperSdkRequest(input: DeveloperSdkRequestInput): Deve
   const baseUrl = normalizeBaseUrl(input.baseUrl)
   const headers: Record<string, string> = {
     ...input.headers,
-    accept: 'application/json',
+    accept: input.headers?.accept ?? 'application/json',
     authorization: `Bearer ${input.apiKey}`,
   }
 
@@ -165,6 +175,21 @@ export function createDeveloperEndpointRequest(input: DeveloperEndpointRequestIn
           conversation_id: input.conversationId,
           cursor: input.cursor,
           limit: input.limit,
+        })}` as `/${string}`,
+      })
+    case 'results.stream':
+      return createDeveloperSdkRequest({
+        ...baseEndpointInput(input),
+        headers: {
+          ...input.headers,
+          accept: 'application/x-ndjson',
+        },
+        method: 'GET',
+        path: `/v1/results/${encodeURIComponent(input.runId)}/stream?${query({
+          conversation_id: input.conversationId,
+          max_rows: input.maxRows,
+          max_bytes: input.maxBytes,
+          timeout_ms: input.timeoutMs,
         })}` as `/${string}`,
       })
     case 'exports.create':

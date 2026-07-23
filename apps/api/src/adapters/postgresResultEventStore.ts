@@ -191,15 +191,26 @@ returning *`, [
 
   async function getManifest(input: GetPublishedResultInput) {
     validateScope(input)
-    const result = await options.pool.query<ManifestRow>(`select * from chatbi_result_manifests
-where tenant_id = $1 and workspace_id = $2 and run_id = $3`, [input.tenantId, input.workspaceId, input.runId])
+    const result = await boundedReadQuery<ManifestRow>(
+      options.pool,
+      options.cancellationPool ?? options.pool,
+      `select * from chatbi_result_manifests
+where tenant_id = $1 and workspace_id = $2 and run_id = $3`,
+      [input.tenantId, input.workspaceId, input.runId],
+      input,
+    )
     return result.rows[0] ? mapManifest<TMetadata>(result.rows[0]) : undefined
   }
 
   async function getPage(input: GetPublishedResultPageInput): Promise<PublishedResultPage<TPayload> | undefined> {
     validateScope(input)
     nonNegativeInteger(input.pageIndex, 'pageIndex')
-    const result = await options.pool.query<PageRow & Pick<ManifestRow, 'result_id' | 'manifest_checksum' | 'published_at'>>(`select
+    const result = await boundedReadQuery<
+      PageRow & Pick<ManifestRow, 'result_id' | 'manifest_checksum' | 'published_at'>
+    >(
+      options.pool,
+      options.cancellationPool ?? options.pool,
+      `select
   page.*, manifest.result_id, manifest.manifest_checksum, manifest.published_at
 from chatbi_result_manifests manifest
 join chatbi_result_pages page
@@ -210,8 +221,10 @@ join chatbi_result_pages page
  and page.page_index = $4
  and page.checksum = manifest.page_checksums[page.page_index + 1]
 where manifest.tenant_id = $1 and manifest.workspace_id = $2 and manifest.run_id = $3`, [
-      input.tenantId, input.workspaceId, input.runId, input.pageIndex,
-    ])
+        input.tenantId, input.workspaceId, input.runId, input.pageIndex,
+      ],
+      input,
+    )
     const row = result.rows[0]
     return row ? {
       ...mapPage<TPayload>(row),

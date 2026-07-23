@@ -3,7 +3,7 @@ import {
   prepareQuerySubmission,
   projectQueryRunOutcome,
   toQueryRunJobInput,
-  type QueryRunJobPublication,
+  type QueryRunExecutionOutcome,
 } from '../application'
 import type { ActorContext } from '../contracts'
 import { trendResult } from '../mocks'
@@ -36,7 +36,7 @@ function prepared() {
 describe('pure query outcome projection', () => {
   it('projects an executed result, releases the conversation and returns the exact audit suffix', () => {
     const { submission, payload } = prepared()
-    const outcome: RunWorkerHandlerResult<QueryRunJobPublication> = {
+    const outcome: RunWorkerHandlerResult<QueryRunExecutionOutcome> = {
       type: 'completed',
       result: { type: 'executed', result: trendResult, summary: submission.record.queryExecution! },
       resultFingerprint: 'result-fingerprint',
@@ -56,7 +56,7 @@ describe('pure query outcome projection', () => {
 
   it('keeps retry state active without inventing an audit event', () => {
     const { submission, payload } = prepared()
-    const outcome: RunWorkerHandlerResult<QueryRunJobPublication> = {
+    const outcome: RunWorkerHandlerResult<QueryRunExecutionOutcome> = {
       type: 'retry',
       failure: { code: 'QUERY_UNAVAILABLE', message: 'retry', retryable: true },
       failedAt: at,
@@ -75,7 +75,7 @@ describe('pure query outcome projection', () => {
 
   it('projects a terminal adapter failure without exposing its internal message', () => {
     const { submission, payload } = prepared()
-    const outcome: RunWorkerHandlerResult<QueryRunJobPublication> = {
+    const outcome: RunWorkerHandlerResult<QueryRunExecutionOutcome> = {
       type: 'failed',
       failedAt: at,
       failure: {

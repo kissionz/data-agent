@@ -242,6 +242,17 @@ describe('queued PostgreSQL query execution coordinator', () => {
         result: { rows: [{ values: { net_revenue: 128000 } }] },
       },
     })
+    const terminalJob = await queue.getJob(success.data.runId)
+    expect(terminalJob?.result).toMatchObject({
+      schemaVersion: 'chatbi_result_manifest_reference.v1',
+      type: 'result_manifest',
+      resultId: expect.any(String),
+      manifestChecksum: expect.stringMatching(/^fixture-fnv1a:[a-f0-9]{8}$/),
+    })
+    const serializedTerminalResult = JSON.stringify(terminalJob?.result)
+    for (const forbidden of ['answer', 'rows', 'columns', 'chartSpec', 'summary', '128000']) {
+      expect(serializedTerminalResult).not.toContain(forbidden)
+    }
 
     const cancelled = submit(service, 'durable_cancel')
     if (!cancelled.ok) throw new Error('expected durable cancel run preparation')

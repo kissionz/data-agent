@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createDurableQueryReadService,
@@ -25,6 +26,21 @@ const actor: ActorContext = {
   semanticVersion: 'sales-semantic-2026.06.1',
   locale: 'zh-CN',
   timezone: 'Asia/Shanghai',
+}
+
+function sha256(value: unknown) {
+  return `sha256:${createHash('sha256').update(JSON.stringify(stableValue(value)), 'utf8').digest('hex')}`
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, stableValue(item)]))
+  }
+  return value
 }
 
 function fixture() {
@@ -69,7 +85,12 @@ function fixture() {
   for (let offset = 0; offset < trendResult.rows.length; offset += pageSize) {
     pages.push({ columns: trendResult.columns, rows: trendResult.rows.slice(offset, offset + pageSize) })
   }
-  const checksums = pages.map((_, pageIndex) => `checksum_${pageIndex}`)
+  const checksums = pages.map((payload, pageIndex) => sha256({
+    runId: record.run.id,
+    attempt: 1,
+    pageIndex,
+    payload,
+  }))
   for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
     resultPageStore.stagePage({
       ...scope,
@@ -101,16 +122,33 @@ function fixture() {
 }
 
 function publish(test: ReturnType<typeof fixture>) {
+  const manifestIdentity = {
+    runId: test.record.run.id,
+    attempt: 1,
+    resultId: trendResult.id,
+    pageChecksums: test.checksums,
+    totalRows: trendResult.rows.length,
+    metadata: test.metadata,
+  }
   return test.resultPageStore.publishManifest({
     ...test.scope,
     attempt: 1,
     resultId: trendResult.id,
-    manifestChecksum: 'manifest_checksum',
+    manifestChecksum: sha256(manifestIdentity),
     pageChecksums: test.checksums,
     totalRows: trendResult.rows.length,
     metadata: test.metadata,
     publishedAt: at,
   })
+}
+
+async function ndjsonRecords(body: AsyncIterable<string>) {
+  let text = ''
+  for await (const chunk of body) text += chunk
+  return {
+    text,
+    records: text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>),
+  }
 }
 
 describe('durable query read service', () => {
@@ -158,7 +196,308 @@ describe('durable query read service', () => {
       limit: 1,
     })
     expect(getPage).toHaveBeenCalledTimes(1)
-    expect(getPage).toHaveBeenCalledWith({ ...test.scope, pageIndex: 0 })
+    expect(getPage).toHaveBeenCalledWith(expect.objectContaining({ ...test.scope, pageIndex: 0 }))
+  })
+
+  it('streams a verified published result as lazy NDJSON through an authorized resolver', async () => {
+    const test = fixture()
+    expect(publish(test)).toMatchObject({ ok: true })
+    const resolve = vi.fn(async (input) => await test.resultPageStore.getPage(input))
+    const service = createDurableQueryReadService({
+      ...test.options,
+      publishedPageResolver: { resolve },
+    })
+
+    const opened = await service.openResultStream({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+    })
+    expect(opened).toMatchObject({
+      ok: true,
+      data: {
+        schemaVersion: 'chatbi_result_stream.v1',
+        runId: test.record.run.id,
+        resultId: trendResult.id,
+        totalRows: trendResult.rows.length,
+      },
+    })
+    if (!opened.ok) throw new Error('expected stream')
+    expect(resolve).not.toHaveBeenCalled()
+
+    const iterator = opened.data.body[Symbol.asyncIterator]()
+    const manifestLine = await iterator.next()
+    expect(JSON.parse(String(manifestLine.value))).toMatchObject({
+      type: 'manifest',
+      schemaVersion: 'chatbi_result_stream.v1',
+      attempt: 1,
+      totalRows: trendResult.rows.length,
+    })
+    expect(resolve).not.toHaveBeenCalled()
+    const firstRowLine = await iterator.next()
+    expect(JSON.parse(String(firstRowLine.value))).toMatchObject({
+      type: 'row',
+      index: 0,
+      row: trendResult.rows[0],
+    })
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
+      ...test.scope,
+      pageIndex: 0,
+      manifest: expect.objectContaining({ resultId: trendResult.id }),
+      signal: expect.any(AbortSignal),
+      timeoutMs: expect.any(Number),
+    }))
+
+    const remaining: string[] = []
+    for (;;) {
+      const next = await iterator.next()
+      if (next.done) break
+      remaining.push(next.value)
+    }
+    const records = remaining.map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(records.filter((record) => record.type === 'row')).toHaveLength(trendResult.rows.length - 1)
+    expect(records.at(-1)).toMatchObject({ type: 'complete', rowCount: trendResult.rows.length })
+    expect(resolve).toHaveBeenCalledTimes(test.checksums.length)
+  })
+
+  it('accepts a v2 S3 manifest only when its storage contract is complete', async () => {
+    const test = fixture()
+    test.metadata.schemaVersion = 'chatbi_result_manifest.v2'
+    test.metadata.pageStorage = {
+      type: 's3',
+      encoding: 'canonical-json',
+      contentType: 'application/vnd.insightflow.result-page+json',
+    }
+    expect(publish(test)).toMatchObject({ ok: true })
+    const resolve = vi.fn(async (input) => await test.resultPageStore.getPage(input))
+    const response = await createDurableQueryReadService({
+      ...test.options,
+      publishedPageResolver: { resolve },
+    }).getResultPage({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+      limit: 1,
+    })
+
+    expect(response).toMatchObject({ ok: true, data: { rows: trendResult.rows.slice(0, 1) } })
+    expect(resolve).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['v2 without pageStorage', (metadata: TransactionalResultManifestMetadata) => {
+      metadata.schemaVersion = 'chatbi_result_manifest.v2'
+      metadata.pageStorage = undefined
+    }],
+    ['v2 with inline storage', (metadata: TransactionalResultManifestMetadata) => {
+      metadata.schemaVersion = 'chatbi_result_manifest.v2'
+      metadata.pageStorage = {
+        type: 'inline',
+        encoding: 'canonical-json',
+        contentType: 'application/vnd.insightflow.result-page+json',
+      }
+    }],
+    ['v1 with external storage', (metadata: TransactionalResultManifestMetadata) => {
+      metadata.schemaVersion = 'chatbi_result_manifest.v1'
+      metadata.pageStorage = {
+        type: 's3',
+        encoding: 'canonical-json',
+        contentType: 'application/vnd.insightflow.result-page+json',
+      }
+    }],
+  ])('rejects %s before resolving a page', async (_label, mutateMetadata) => {
+    const test = fixture()
+    mutateMetadata(test.metadata)
+    expect(publish(test)).toMatchObject({ ok: true })
+    const resolve = vi.fn()
+    const response = await createDurableQueryReadService({
+      ...test.options,
+      publishedPageResolver: { resolve },
+    }).getResultPage({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+      limit: 1,
+    })
+
+    expect(response).toMatchObject({ ok: false, error: { code: 'INTERNAL_ERROR' } })
+    expect(resolve).not.toHaveBeenCalled()
+  })
+
+  it('never resolves a payload before publication and scope authorization', async () => {
+    const unpublished = fixture()
+    const resolveUnpublished = vi.fn()
+    const unpublishedResponse = await createDurableQueryReadService({
+      ...unpublished.options,
+      publishedPageResolver: { resolve: resolveUnpublished },
+    }).openResultStream({
+      runId: unpublished.record.run.id,
+      conversationId: unpublished.conversation.id,
+      actor,
+    })
+    expect(unpublishedResponse).toMatchObject({ ok: false, error: { code: 'SEMANTIC_NOT_FOUND' } })
+    expect(resolveUnpublished).not.toHaveBeenCalled()
+
+    const scoped = fixture()
+    publish(scoped)
+    const resolveScoped = vi.fn()
+    const crossScope = await createDurableQueryReadService({
+      ...scoped.options,
+      publishedPageResolver: { resolve: resolveScoped },
+    }).openResultStream({
+      runId: scoped.record.run.id,
+      conversationId: scoped.conversation.id,
+      actor: { ...actor, tenantId: 'tenant_other' },
+    })
+    expect(crossScope).toMatchObject({ ok: false, error: { code: 'SEMANTIC_NOT_FOUND' } })
+    expect(resolveScoped).not.toHaveBeenCalled()
+  })
+
+  it('enforces row and byte budgets without exposing internal failures', async () => {
+    const test = fixture()
+    test.metadata.warnings = ['budget-fixture-'.repeat(200)]
+    publish(test)
+    const resolve = vi.fn(async (input) => await test.resultPageStore.getPage(input))
+    const service = createDurableQueryReadService({
+      ...test.options,
+      publishedPageResolver: { resolve },
+    })
+    await expect(service.openResultStream({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+      maxRows: 1,
+    })).resolves.toMatchObject({ ok: false, error: { code: 'QUERY_TOO_EXPENSIVE' } })
+    expect(resolve).not.toHaveBeenCalled()
+
+    const byteLimited = await service.openResultStream({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+      maxBytes: 1_024,
+    })
+    if (!byteLimited.ok) throw new Error('expected byte-limited stream')
+    const streamed = await ndjsonRecords(byteLimited.data.body)
+    expect(new TextEncoder().encode(streamed.text).byteLength).toBeLessThanOrEqual(1_024)
+    expect(streamed.records.at(-1)).toMatchObject({
+      type: 'error',
+      error: { code: 'RESULT_STREAM_BYTE_BUDGET_EXCEEDED' },
+    })
+
+    const leaking = createDurableQueryReadService({
+      ...test.options,
+      publishedPageResolver: {
+        async resolve() {
+          throw new Error('postgresql://admin:secret@private-db/chatbi result_pages')
+        },
+      },
+    })
+    const opened = await leaking.openResultStream({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+    })
+    if (!opened.ok) throw new Error('expected stream')
+    const failed = await ndjsonRecords(opened.data.body)
+    expect(failed.records.at(-1)).toMatchObject({
+      type: 'error',
+      error: { code: 'RESULT_STREAM_UNAVAILABLE' },
+    })
+    expect(failed.text).not.toMatch(/postgresql|admin|secret|private-db|result_pages/i)
+  })
+
+  it.each([
+    ['checksum', (page: NonNullable<ReturnType<ReturnType<typeof fixture>['resultPageStore']['getPage']>>) => ({
+      ...page,
+      checksum: `sha256:${'0'.repeat(64)}`,
+    })],
+    ['attempt', (page: NonNullable<ReturnType<ReturnType<typeof fixture>['resultPageStore']['getPage']>>) => ({
+      ...page,
+      attempt: page.attempt + 1,
+    })],
+    ['schema', (page: NonNullable<ReturnType<ReturnType<typeof fixture>['resultPageStore']['getPage']>>) => ({
+      ...page,
+      payload: { ...page.payload, columns: [] },
+    })],
+  ] as const)('terminates before rows when a published page has a bad %s', async (_name, corrupt) => {
+    const test = fixture()
+    publish(test)
+    const opened = await createDurableQueryReadService({
+      ...test.options,
+      publishedPageResolver: {
+        resolve(input) {
+          const page = test.resultPageStore.getPage(input)
+          return page ? corrupt(page) : undefined
+        },
+      },
+    }).openResultStream({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+    })
+    if (!opened.ok) throw new Error('expected stream')
+    const streamed = await ndjsonRecords(opened.data.body)
+    expect(streamed.records.filter((record) => record.type === 'row')).toHaveLength(0)
+    expect(streamed.records.at(-1)).toMatchObject({
+      type: 'error',
+      error: { code: 'RESULT_STREAM_INTEGRITY_FAILED', retryable: false },
+    })
+  })
+
+  it('propagates disconnect and total timeout cancellation into page resolution', async () => {
+    const test = fixture()
+    publish(test)
+    const signals: AbortSignal[] = []
+    const timeouts: number[] = []
+    const blockingResolver = {
+      resolve(input: { signal?: AbortSignal; timeoutMs?: number }) {
+        if (input.signal) signals.push(input.signal)
+        if (input.timeoutMs) timeouts.push(input.timeoutMs)
+        return new Promise<never>((_resolve, reject) => {
+          const abort = () => reject(Object.assign(new Error('private storage wait'), { name: 'AbortError' }))
+          input.signal?.addEventListener('abort', abort, { once: true })
+          if (input.signal?.aborted) abort()
+        })
+      },
+    }
+
+    const controller = new AbortController()
+    const disconnected = await createDurableQueryReadService({
+      ...test.options,
+      publishedPageResolver: blockingResolver,
+    }).openResultStream({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+      signal: controller.signal,
+      timeoutMs: 1_000,
+    })
+    if (!disconnected.ok) throw new Error('expected stream')
+    const disconnectedIterator = disconnected.data.body[Symbol.asyncIterator]()
+    await disconnectedIterator.next()
+    const pending = disconnectedIterator.next()
+    controller.abort()
+    await expect(pending).resolves.toMatchObject({ done: true })
+    expect(signals[0]?.aborted).toBe(true)
+
+    const timed = await createDurableQueryReadService({
+      ...test.options,
+      publishedPageResolver: blockingResolver,
+    }).openResultStream({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+      timeoutMs: 100,
+    })
+    if (!timed.ok) throw new Error('expected stream')
+    const timedResult = await ndjsonRecords(timed.data.body)
+    expect(timedResult.records.at(-1)).toMatchObject({
+      type: 'error',
+      error: { code: 'RESULT_STREAM_TIMEOUT' },
+    })
+    expect(signals.at(-1)?.aborted).toBe(true)
+    expect(timeouts.at(-1)).toBeLessThanOrEqual(100)
   })
 
   it('does not expose staged pages before their manifest is published', async () => {
@@ -316,6 +655,14 @@ describe('durable query read service', () => {
       'x-semantic-version': actor.semanticVersion,
     }
 
+    const streamPageRead = vi.spyOn(test.resultPageStore, 'getPage')
+    await expect(runtime.handleAsync({
+      method: 'GET',
+      path: `/v1/results/${test.record.run.id}/stream`,
+      query: { conversation_id: test.conversation.id },
+    })).resolves.toMatchObject({ status: 401 })
+    expect(streamPageRead).not.toHaveBeenCalled()
+
     await expect(runtime.handleAsync({
       method: 'GET',
       path: `/v1/results/${test.record.run.id}`,
@@ -325,6 +672,25 @@ describe('durable query read service', () => {
       status: 200,
       body: { ok: true, data: { rows: trendResult.rows.slice(1, 2), page: { nextCursor: 'offset:2' } } },
     })
+
+    const resultStream = await runtime.handleAsync({
+      method: 'GET',
+      path: `/v1/results/${test.record.run.id}/stream`,
+      headers,
+      query: { conversation_id: test.conversation.id },
+    })
+    expect(resultStream).toMatchObject({
+      status: 200,
+      headers: {
+        'content-type': 'application/x-ndjson; charset=utf-8',
+        'x-stream-mode': 'published-result',
+        'x-result-total-rows': String(trendResult.rows.length),
+      },
+    })
+    const resultStreamBody = await ndjsonRecords(resultStream.body as AsyncIterable<string>)
+    expect(resultStreamBody.records.filter((record) => record.type === 'row').map((record) => record.row))
+      .toEqual(trendResult.rows)
+    expect(resultStreamBody.records.at(-1)).toMatchObject({ type: 'complete' })
 
     const events = await runtime.handleAsync({
       method: 'GET',

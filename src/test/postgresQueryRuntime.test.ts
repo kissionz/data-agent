@@ -12,6 +12,11 @@ function config() {
     outboxMode: 'http',
     outboxEndpointUrl: 'https://events.example.com/chatbi',
     outboxHmacSecretRef: 'env:CHATBI_OUTBOX_HMAC_SECRET',
+    resultStorageMode: 's3',
+    resultStorageEndpoint: 'https://objects.example.com',
+    resultStorageRegion: 'us-east-1',
+    resultStorageBucket: 'chatbi-results-prod',
+    resultStorageCredentialRef: 'env:CHATBI_RESULT_STORAGE_CREDENTIALS',
     controlPlaneWorkerDrainMs: 0,
   })
 }

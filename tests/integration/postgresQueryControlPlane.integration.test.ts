@@ -9,6 +9,7 @@ import type {
 } from '../../src/persistence/controlPlanePorts'
 import type { RunJobLease } from '../../src/persistence/jobPorts'
 import type { RunResult } from '../../src/domain'
+import type { QueryRunJobPublication } from '../../src/application/queryExecutionCoordinator'
 
 interface Payload { runId: string; question: string }
 
@@ -123,7 +124,7 @@ function completeCommit(
   submitted: SubmitAndEnqueueInput<Payload>,
   lease: RunJobLease<Payload>,
   eventId = `event_complete_${submitted.runRecord.run.id}`,
-): CommitControlPlaneAttemptInput<{ type: 'executed' }, { type: string }, { rows: unknown[] }, { semanticVersion: string }> {
+): CommitControlPlaneAttemptInput<QueryRunJobPublication, { type: string }, { rows: unknown[] }, { semanticVersion: string }> {
   const runId = submitted.runRecord.run.id
   const audit = {
     id: `audit_complete_${runId}`,
@@ -140,7 +141,14 @@ function completeCommit(
       type: 'complete',
       input: {
         runId, attempt: lease.attempt, fence: lease.fence, workerId: lease.workerId, leaseToken: lease.leaseToken,
-        completedAt: at1, resultFingerprint: `result:${runId}`, result: { type: 'executed' },
+        completedAt: at1,
+        resultFingerprint: `result:${runId}`,
+        result: {
+          schemaVersion: 'chatbi_result_manifest_reference.v1',
+          type: 'result_manifest',
+          resultId: `result_${runId}`,
+          manifestChecksum: `manifest:${runId}`,
+        },
       },
     },
     conversation: { ...submitted.conversation, activeRunId: undefined, updatedAt: at1 },

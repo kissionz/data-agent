@@ -3,6 +3,7 @@ import type { AuditEvent, QueryExecutionSummary, ResultColumn } from '../../../s
 import type { Conversation, RunResult } from '../../../src/domain'
 import {
   projectQueryRunOutcome,
+  type QueryRunExecutionOutcome,
   type QueryRunJobPayload,
   type QueryRunJobPublication,
 } from '../../../src/application/queryExecutionCoordinator'
@@ -15,6 +16,12 @@ import type {
 } from '../../../src/persistence/controlPlanePorts'
 import type { RunJobFailure, RunJobLease, RunJobQueue } from '../../../src/persistence/jobPorts'
 import type { StoredRunRecord } from '../../../src/persistence/ports'
+import type {
+  ImmutableResultBlob,
+  ImmutableResultBlobStore,
+  PutImmutableResultBlobInput,
+} from '../../../src/persistence/resultBlobPorts'
+import { buildImmutableResultBlobKey } from '../../../src/persistence/resultBlobPorts'
 import type { QueryAdapter } from '../../../src/query/types'
 import { applyQueryAdapterOutcome, mapQueryResultToRunResult } from '../../../src/query'
 
@@ -23,8 +30,18 @@ export interface TransactionalResultPage {
   rows: RunResult['rows']
 }
 
+export interface TransactionalResultBlobPageReference {
+  schemaVersion: 'chatbi_result_page_blob_reference.v1'
+  storage: 's3'
+  blob: ImmutableResultBlob
+}
+
+export type TransactionalStoredResultPage =
+  | TransactionalResultPage
+  | TransactionalResultBlobPageReference
+
 export interface TransactionalResultManifestMetadata {
-  schemaVersion: 'chatbi_result_manifest.v1'
+  schemaVersion: 'chatbi_result_manifest.v1' | 'chatbi_result_manifest.v2'
   pageSize: number
   columns: ResultColumn[]
   chartSpec: RunResult['chartSpec']
@@ -33,6 +50,11 @@ export interface TransactionalResultManifestMetadata {
   warnings: string[]
   freshnessAt: string
   semanticVersion: string
+  pageStorage?: {
+    type: 'inline' | 's3'
+    encoding: 'canonical-json'
+    contentType: 'application/vnd.insightflow.result-page+json'
+  }
 }
 
 export type TransactionalQueryRunEvent = {
@@ -51,7 +73,7 @@ export type TransactionalQueryExecutionControlPlane = QueryExecutionControlPlane
   QueryRunJobPayload,
   QueryRunJobPublication,
   TransactionalQueryRunEvent,
-  TransactionalResultPage,
+  TransactionalStoredResultPage,
   TransactionalResultManifestMetadata
 >
 
@@ -63,6 +85,7 @@ export interface TransactionalQueryExecutionCoordinatorOptions {
   leaseMs?: number
   heartbeatMs?: number
   resultPageSize?: number
+  resultBlobStore?: ImmutableResultBlobStore
   now?: () => string
 }
 
@@ -73,11 +96,20 @@ export interface TransactionalQueryExecutionRunner {
 
 export interface BuildTransactionalAttemptCommitInput {
   lease: RunJobLease<QueryRunJobPayload>
-  outcome: RunWorkerHandlerResult<QueryRunJobPublication>
+  outcome: RunWorkerHandlerResult<TransactionalQueryExecutionOutcome>
   stored: StoredRunRecord
   conversation: Conversation
   resultPageSize?: number
 }
+
+type TransactionalQueryExecutionOutcome =
+  | Extract<QueryRunExecutionOutcome, { type: 'blocked' }>
+  | (Extract<QueryRunExecutionOutcome, { type: 'executed' }> & {
+      resultPublication?: ControlPlaneResultPublication<
+        TransactionalStoredResultPage,
+        TransactionalResultManifestMetadata
+      >
+    })
 
 /**
  * Production query worker whose queue mutation, Run/Conversation projection,
@@ -90,7 +122,7 @@ export function createTransactionalQueryExecutionCoordinator(
   const leaseMs = options.leaseMs ?? 30_000
   const resultPageSize = validatePageSize(options.resultPageSize ?? 100)
 
-  return createRunWorker<QueryRunJobPayload, QueryRunJobPublication>({
+  return createRunWorker<QueryRunJobPayload, QueryRunJobPublication, TransactionalQueryExecutionOutcome>({
     queue: options.queue,
     workerId: options.workerId,
     leaseMs,
@@ -110,7 +142,7 @@ export function createTransactionalQueryExecutionCoordinator(
           }, context.signal)
           const completedAt = now()
           const summary = applyQueryAdapterOutcome(payload.summary, adapterOutcome)
-          const result: QueryRunJobPublication = adapterOutcome.status === 'blocked'
+          const result: QueryRunExecutionOutcome = adapterOutcome.status === 'blocked'
             ? { type: 'blocked', summary, reason: adapterOutcome.reason }
             : {
                 type: 'executed',
@@ -122,16 +154,36 @@ export function createTransactionalQueryExecutionCoordinator(
                   freshnessAt: completedAt,
                 }),
               }
+          const transactionalResult: TransactionalQueryExecutionOutcome = result.type === 'executed'
+            ? {
+                ...result,
+                resultPublication: await buildResultPublication(
+                  {
+                    tenantId: context.tenantId,
+                    workspaceId: context.workspaceId,
+                    runId: context.runId,
+                    attempt: context.attempt,
+                  },
+                  result.result,
+                  completedAt,
+                  resultPageSize,
+                  options.resultBlobStore,
+                  context.signal,
+                ),
+              }
+            : result
           return {
             type: 'completed',
-            result,
+            result: transactionalResult,
             resultFingerprint: sha256({
               runId: payload.runId,
               attempt: context.attempt,
               sqlFingerprint: payload.plan.sqlFingerprint,
               adapterStatus: adapterOutcome.status,
               explainCheckedAt: adapterOutcome.explain.checkedAt,
-              result: result.type === 'executed' ? result.result : { reason: result.reason },
+              result: transactionalResult.type === 'executed'
+                ? transactionalResult.result
+                : { reason: transactionalResult.reason },
             }),
             at: completedAt,
           }
@@ -180,7 +232,7 @@ export function buildTransactionalQueryAttemptCommit(
 ): CommitControlPlaneAttemptInput<
   QueryRunJobPublication,
   TransactionalQueryRunEvent,
-  TransactionalResultPage,
+  TransactionalStoredResultPage,
   TransactionalResultManifestMetadata
 > {
   const pageSize = validatePageSize(input.resultPageSize ?? 100)
@@ -192,7 +244,6 @@ export function buildTransactionalQueryAttemptCommit(
   )
   if (!projected.conversation) throw new Error('transactional query commit requires its Conversation projection')
 
-  const job = jobMutation(input.lease, input.outcome)
   const occurredAt = mutationTime(input.outcome)
   const event: TransactionalQueryRunEvent = {
     schemaVersion: 'query_attempt.v1',
@@ -212,8 +263,10 @@ export function buildTransactionalQueryAttemptCommit(
     }),
   }
   const resultPublication = input.outcome.type === 'completed' && input.outcome.result.type === 'executed'
-    ? buildResultPublication(input.lease, input.outcome.result.result, occurredAt, pageSize)
+    ? input.outcome.result.resultPublication
+      ?? buildInlineResultPublication(input.lease, input.outcome.result.result, occurredAt, pageSize)
     : undefined
+  const job = jobMutation(input.lease, input.outcome, resultPublication?.manifest)
 
   return {
     job,
@@ -235,12 +288,81 @@ export function buildTransactionalQueryAttemptCommit(
   }
 }
 
-function buildResultPublication(
-  lease: RunJobLease<QueryRunJobPayload>,
+async function buildResultPublication(
+  lease: Pick<RunJobLease<QueryRunJobPayload>, 'tenantId' | 'workspaceId' | 'runId' | 'attempt'>,
   result: RunResult,
   publishedAt: string,
   pageSize: number,
-): ControlPlaneResultPublication<TransactionalResultPage, TransactionalResultManifestMetadata> {
+  blobStore: ImmutableResultBlobStore | undefined,
+  signal: AbortSignal,
+): Promise<ControlPlaneResultPublication<TransactionalStoredResultPage, TransactionalResultManifestMetadata>> {
+  if (!blobStore) return buildInlineResultPublication(lease, result, publishedAt, pageSize)
+
+  const pageRows = chunk(result.rows, pageSize)
+  const pages: ControlPlaneResultPublication<
+    TransactionalStoredResultPage,
+    TransactionalResultManifestMetadata
+  >['pages'] = []
+  for (let pageIndex = 0; pageIndex < pageRows.length; pageIndex += 1) {
+    const rows = pageRows[pageIndex]
+    const payload: TransactionalResultPage = { columns: result.columns, rows }
+    const body = new TextEncoder().encode(stableStringify(payload))
+    const writeInput: PutImmutableResultBlobInput = {
+      tenantId: lease.tenantId,
+      workspaceId: lease.workspaceId,
+      runId: lease.runId,
+      attempt: lease.attempt,
+      kind: 'page',
+      checksum: sha256Bytes(body),
+      byteLength: body.byteLength,
+      contentType: 'application/vnd.insightflow.result-page+json',
+      body,
+      signal,
+    }
+    const written = await blobStore.put(writeInput)
+    if (!written.ok) throw resultBlobConflict()
+    assertResultBlobWrite(writeInput, written.blob)
+    pages.push({
+      tenantId: lease.tenantId,
+      workspaceId: lease.workspaceId,
+      runId: lease.runId,
+      attempt: lease.attempt,
+      pageIndex,
+      checksum: sha256({ runId: lease.runId, attempt: lease.attempt, pageIndex, payload }),
+      rowCount: rows.length,
+      payload: {
+        schemaVersion: 'chatbi_result_page_blob_reference.v1',
+        storage: 's3',
+        blob: written.blob,
+      },
+      stagedAt: publishedAt,
+    })
+  }
+  const metadata: TransactionalResultManifestMetadata = {
+    schemaVersion: 'chatbi_result_manifest.v2',
+    pageSize,
+    columns: result.columns,
+    chartSpec: result.chartSpec,
+    completeness: result.completeness,
+    incompleteSteps: result.incompleteSteps,
+    warnings: result.warnings,
+    freshnessAt: result.freshnessAt,
+    semanticVersion: result.answer.semanticVersion,
+    pageStorage: {
+      type: 's3',
+      encoding: 'canonical-json',
+      contentType: 'application/vnd.insightflow.result-page+json',
+    },
+  }
+  return assembleResultPublication(lease, result, publishedAt, pages, metadata)
+}
+
+function buildInlineResultPublication(
+  lease: Pick<RunJobLease<QueryRunJobPayload>, 'tenantId' | 'workspaceId' | 'runId' | 'attempt'>,
+  result: RunResult,
+  publishedAt: string,
+  pageSize: number,
+): ControlPlaneResultPublication<TransactionalStoredResultPage, TransactionalResultManifestMetadata> {
   const pageRows = chunk(result.rows, pageSize)
   const pages = pageRows.map((rows, pageIndex) => {
     const payload: TransactionalResultPage = { columns: result.columns, rows }
@@ -267,6 +389,19 @@ function buildResultPublication(
     freshnessAt: result.freshnessAt,
     semanticVersion: result.answer.semanticVersion,
   }
+  return assembleResultPublication(lease, result, publishedAt, pages, metadata)
+}
+
+function assembleResultPublication(
+  lease: Pick<RunJobLease<QueryRunJobPayload>, 'tenantId' | 'workspaceId' | 'runId' | 'attempt'>,
+  result: RunResult,
+  publishedAt: string,
+  pages: ControlPlaneResultPublication<
+    TransactionalStoredResultPage,
+    TransactionalResultManifestMetadata
+  >['pages'],
+  metadata: TransactionalResultManifestMetadata,
+): ControlPlaneResultPublication<TransactionalStoredResultPage, TransactionalResultManifestMetadata> {
   const manifestIdentity = {
     runId: lease.runId,
     attempt: lease.attempt,
@@ -294,7 +429,11 @@ function buildResultPublication(
 
 function jobMutation(
   lease: RunJobLease<QueryRunJobPayload>,
-  outcome: RunWorkerHandlerResult<QueryRunJobPublication>,
+  outcome: RunWorkerHandlerResult<TransactionalQueryExecutionOutcome>,
+  manifest: ControlPlaneResultPublication<
+    TransactionalStoredResultPage,
+    TransactionalResultManifestMetadata
+  >['manifest'] | undefined,
 ): ControlPlaneAttemptMutation<QueryRunJobPublication> {
   const identity = {
     runId: lease.runId,
@@ -304,11 +443,23 @@ function jobMutation(
     leaseToken: lease.leaseToken,
   }
   if (outcome.type === 'completed') {
+    const result: QueryRunJobPublication = outcome.result.type === 'executed'
+      ? {
+          schemaVersion: 'chatbi_result_manifest_reference.v1',
+          type: 'result_manifest',
+          resultId: requiredManifest(manifest).resultId,
+          manifestChecksum: requiredManifest(manifest).manifestChecksum,
+        }
+      : {
+          schemaVersion: 'chatbi_no_result_reference.v1',
+          type: 'no_result',
+          reasonCode: 'QUERY_TOO_EXPENSIVE',
+        }
     return { type: 'complete', input: {
       ...identity,
       completedAt: outcome.at,
       resultFingerprint: outcome.resultFingerprint,
-      result: outcome.result,
+      result,
     } }
   }
   if (outcome.type === 'retry') {
@@ -322,13 +473,40 @@ function jobMutation(
   return { type: 'fail', input: { ...identity, failedAt: outcome.failedAt, failure: outcome.failure } }
 }
 
-function mutationTime(outcome: RunWorkerHandlerResult<QueryRunJobPublication>) {
+function mutationTime(outcome: RunWorkerHandlerResult<TransactionalQueryExecutionOutcome>) {
   return outcome.type === 'completed' ? outcome.at : outcome.failedAt
+}
+
+function requiredManifest(
+  manifest: ControlPlaneResultPublication<
+    TransactionalStoredResultPage,
+    TransactionalResultManifestMetadata
+  >['manifest'] | undefined,
+) {
+  if (!manifest) throw new Error('executed query completion requires a result manifest reference')
+  return manifest
 }
 
 function classifyQueryFailure(error: unknown, aborted: boolean): RunJobFailure {
   const value = error && typeof error === 'object' ? error as { code?: unknown; retryable?: unknown } : {}
   const rawCode = typeof value.code === 'string' ? value.code : undefined
+  const resultStorageUnavailable = rawCode === 'TIMEOUT'
+    || rawCode === 'REMOTE_UNAVAILABLE'
+    || rawCode === 'CREDENTIAL_UNAVAILABLE'
+  const resultStorageRejected = rawCode === 'INVALID_CONFIGURATION'
+    || rawCode === 'INVALID_INPUT'
+    || rawCode === 'REMOTE_REJECTED'
+    || rawCode === 'REMOTE_PROTOCOL_ERROR'
+    || rawCode === 'INTEGRITY_MISMATCH'
+    || rawCode === 'RESULT_BLOB_CONTENT_CONFLICT'
+  if (!aborted && (resultStorageUnavailable || resultStorageRejected)) {
+    return {
+      code: resultStorageUnavailable ? 'RESULT_STORAGE_UNAVAILABLE' : 'RESULT_STORAGE_REJECTED',
+      message: resultStorageUnavailable ? '结果存储暂时不可用。' : '结果存储校验失败。',
+      retryable: resultStorageUnavailable,
+      debugReference: resultStorageUnavailable ? 'result_storage_unavailable' : 'result_storage_rejected',
+    }
+  }
   const knownCode = rawCode === 'QUERY_CANCELLED'
     || rawCode === 'QUERY_TIMEOUT'
     || rawCode === 'QUERY_UNAVAILABLE'
@@ -382,6 +560,41 @@ function chunk<T>(values: T[], size: number): T[][] {
 
 function sha256(value: unknown) {
   return `sha256:${createHash('sha256').update(stableStringify(value), 'utf8').digest('hex')}`
+}
+
+function sha256Bytes(value: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`
+}
+
+function resultBlobConflict() {
+  return Object.assign(new Error('Immutable result blob content conflict'), {
+    code: 'RESULT_BLOB_CONTENT_CONFLICT',
+    retryable: false,
+  })
+}
+
+function assertResultBlobWrite(
+  input: PutImmutableResultBlobInput,
+  blob: ImmutableResultBlob,
+) {
+  if (
+    blob.key !== buildImmutableResultBlobKey(input)
+    || blob.tenantId !== input.tenantId
+    || blob.workspaceId !== input.workspaceId
+    || blob.runId !== input.runId
+    || blob.attempt !== input.attempt
+    || blob.kind !== input.kind
+    || blob.checksum !== input.checksum
+    || blob.byteLength !== input.byteLength
+    || blob.contentType !== input.contentType
+    || blob.cacheControl !== 'private, max-age=31536000, immutable'
+    || !/^"[A-Za-z0-9._:+/=-]{1,160}"$/.test(blob.etag)
+  ) {
+    throw Object.assign(new Error('Immutable result blob integrity mismatch'), {
+      code: 'INTEGRITY_MISMATCH',
+      retryable: false,
+    })
+  }
 }
 
 function stableStringify(value: unknown): string {

@@ -9,6 +9,7 @@ import {
   type CompiledQueryPlan,
   type QueryAdapter,
 } from '../query'
+import { stableHash } from '../query/hash'
 import type { ActorContext, AuditEvent, QueryExecutionSummary } from '../contracts'
 import { createRunWorker, type RunWorkerCycleResult, type RunWorkerHandlerResult } from './runWorker'
 
@@ -20,9 +21,27 @@ export interface QueryRunJobPayload {
   resultId: string
 }
 
-export type QueryRunJobPublication =
+export type QueryRunExecutionOutcome =
   | { type: 'executed'; result: RunResult; summary: QueryExecutionSummary }
   | { type: 'blocked'; summary: QueryExecutionSummary; reason: string }
+
+/**
+ * The only result-shaped data allowed in a terminal query Job. Full answers,
+ * rows, columns, facts and chart payloads live in the atomically published Run
+ * and result page/manifest path, never in the queue record.
+ */
+export type QueryRunJobPublication =
+  | {
+      schemaVersion: 'chatbi_result_manifest_reference.v1'
+      type: 'result_manifest'
+      resultId: string
+      manifestChecksum: string
+    }
+  | {
+      schemaVersion: 'chatbi_no_result_reference.v1'
+      type: 'no_result'
+      reasonCode: 'QUERY_TOO_EXPENSIVE'
+    }
 
 export interface QueryRunOutcomeProjection {
   runRecord: StoredRunRecord
@@ -115,13 +134,13 @@ function createQueryWorker(
   now: () => string,
   leaseMs: number,
 ) {
-  return createRunWorker<QueryRunJobPayload, QueryRunJobPublication>({
+  return createRunWorker<QueryRunJobPayload, QueryRunJobPublication, QueryRunExecutionOutcome>({
     queue,
     workerId: options.workerId ?? 'query-worker-1',
     leaseMs,
     now,
     handler: {
-      async execute(payload, context): Promise<RunWorkerHandlerResult<QueryRunJobPublication>> {
+      async execute(payload, context): Promise<RunWorkerHandlerResult<QueryRunExecutionOutcome>> {
         markRunning(options.persistence, payload, now())
         try {
           const outcome = await options.adapter.runReadOnly({
@@ -135,7 +154,7 @@ function createQueryWorker(
           }, context.signal)
           const completedAt = now()
           const summary = applyQueryAdapterOutcome(payload.summary, outcome)
-          const publication: QueryRunJobPublication = outcome.status === 'blocked'
+          const publication: QueryRunExecutionOutcome = outcome.status === 'blocked'
             ? { type: 'blocked', summary, reason: outcome.reason }
             : {
                 type: 'executed',
@@ -168,6 +187,7 @@ function createQueryWorker(
         }
       },
     },
+    serializeCompletedResult: toQueryRunJobPublication,
     onCommitted(commit) {
       publishCommittedOutcome(options.persistence, commit.lease.payload, commit.outcome)
     },
@@ -206,7 +226,7 @@ function markRunning(persistence: ChatBiPersistence, payload: QueryRunJobPayload
 function publishCommittedOutcome(
   persistence: ChatBiPersistence,
   payload: QueryRunJobPayload,
-  outcome: RunWorkerHandlerResult<QueryRunJobPublication>,
+  outcome: RunWorkerHandlerResult<QueryRunExecutionOutcome>,
 ) {
   const stored = persistence.getRun(payload.runId)
   if (!stored || stored.run.displayStatus !== 'querying') return
@@ -223,7 +243,7 @@ function publishCommittedOutcome(
 export function projectQueryRunOutcome(
   stored: StoredRunRecord,
   payload: QueryRunJobPayload,
-  outcome: RunWorkerHandlerResult<QueryRunJobPublication>,
+  outcome: RunWorkerHandlerResult<QueryRunExecutionOutcome>,
   conversation?: Conversation,
 ): QueryRunOutcomeProjection {
   if (stored.run.id !== payload.runId || stored.run.displayStatus !== 'querying') {
@@ -280,6 +300,24 @@ export function projectQueryRunOutcome(
     runRecord,
     conversation: conversation ? attachRun(conversation, runRecord.run) : undefined,
     newAuditEvents: runRecord.audit.slice(stored.audit.length),
+  }
+}
+
+function toQueryRunJobPublication(result: QueryRunExecutionOutcome): QueryRunJobPublication {
+  if (result.type === 'blocked') {
+    return {
+      schemaVersion: 'chatbi_no_result_reference.v1',
+      type: 'no_result',
+      reasonCode: 'QUERY_TOO_EXPENSIVE',
+    }
+  }
+  return {
+    schemaVersion: 'chatbi_result_manifest_reference.v1',
+    type: 'result_manifest',
+    resultId: result.result.id,
+    // Fixture mode has no durable page store; retain only a deterministic
+    // reference checksum while the full Run projection is committed separately.
+    manifestChecksum: `fixture-fnv1a:${stableHash(result.result)}`,
   }
 }
 

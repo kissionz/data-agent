@@ -16,6 +16,9 @@
 - durable SSE 使用最长 25 秒的有限 long-poll；支持 `Last-Event-ID`，无新事件返回不推进 sequence 的 heartbeat。总 deadline 覆盖持久化读取；PostgreSQL event read 使用 dedicated client、硬 `query_timeout` 和独立取消池的 `pg_cancel_backend` 响应断连，随后释放监听器与连接。
 - control-plane reconciler 周期扫描不可能状态，只自动释放可证明终态的 Conversation 或 fence 已失效 Job；结果/manifest 不一致只持久告警，绝不推测或生成结果。
 - durable outbox 与 Run/Job/结果/事件使用同一 control-plane 事务提交；独立 publisher 通过数据库权威 lease 时钟、attempt、fence 和 token 提供至少一次投递，使用稳定 event ID、HMAC-SHA256、确定性指数退避和死信状态。连续投递失败与死信会让 readiness 退化并暴露 public-safe 计数；readiness、日志错误摘要和 outbox 状态视图不包含 payload、lease token、secret 或异常 message。
+- terminal query Job 只保存 versioned manifest reference（`resultId + manifestChecksum`）；答案、事实、rows、columns、chartSpec 和结果摘要仅存在于同事务发布的最终 Run 与不可变 result pages/manifest。预算阻断只保存 versioned no-result code，不保存解释文本。
+- `inline` / `s3` result storage mode：本地和测试默认 inline；staging/production PostgreSQL 强制使用 S3-compatible immutable blob storage。对象 key 由 tenant/workspace/run/attempt 与 SHA-256 派生，写入采用 create-only 条件语义，并在发布 manifest 前校验长度和摘要；数据库事务只提交 blob reference，失败事务遗留的内容寻址对象不会被 reader 看见。
+- `GET /v1/results/{runId}/stream`：重新鉴权并确认 published manifest 后才解析 inline/blob 页面，逐行输出 NDJSON；Node transport 支持背压与断连取消，默认硬限制为 100k 行、32 MiB、60 秒，流中错误只返回 public-safe 终止记录。
 
 ## 运行时配置
 
@@ -57,6 +60,13 @@
 | `CHATBI_OUTBOX_RETRY_INITIAL_MS` | `1000` | 确定性指数退避初始延迟，范围 100–3600000ms |
 | `CHATBI_OUTBOX_RETRY_MAX_MS` | `300000` | 退避上限，不得小于初始延迟，最大 86400000ms |
 | `CHATBI_OUTBOX_MAX_ATTEMPTS` | `5` | 最大投递次数，范围 1–100；耗尽后进入死信 |
+| `CHATBI_RESULT_STORAGE_MODE` | local/test 为 `inline`，staging/production PostgreSQL 为 `s3` | `inline` 或 `s3`；生产 PostgreSQL 禁止退回 inline |
+| `CHATBI_RESULT_STORAGE_S3_ENDPOINT` | 无 | S3-compatible HTTPS origin；禁止 userinfo、path、query parameter 和 fragment |
+| `CHATBI_RESULT_STORAGE_S3_REGION` | 无 | SigV4 region，使用小写字母、数字和连字符 |
+| `CHATBI_RESULT_STORAGE_S3_BUCKET` | 无 | DNS-style bucket 名称 |
+| `CHATBI_RESULT_STORAGE_CREDENTIAL_REF` | 无 | 独立的 `env:CHATBI_*` 或受支持 `vault://` opaque bundle reference；解析结果包含 `accessKeyId`、`secretAccessKey` 和可选 `sessionToken`，不得复用 query、control-plane 或 outbox ref |
+| `CHATBI_RESULT_STORAGE_TIMEOUT_MS` | `15000` | 单次对象存储操作硬超时，范围 100–120000ms |
+| `CHATBI_RESULT_STORAGE_MAX_BLOB_BYTES` | `67108864` | 单个 immutable blob 上限，范围 1024–1073741824 bytes |
 | `CORS_ALLOW_ORIGIN` | `*` | CORS allow-origin |
 
 复制 `.env.example` 后，先运行 `npm run migrate:control-plane`；migration CLI 使用非阻塞 advisory lock、SHA-256 ledger 和逐文件事务，检测到已应用文件变化、数据库未来版本，或 ledger 中存在 000/缺口/非连续前缀时会拒绝继续，避免向异常数据库补跑旧版本。空 ledger 若已存在任一已知 control-plane relation 也会拒绝接管；运行结束前还会核验全部已知 migration 的必需关系和结果不可变触发器，防止 `CREATE IF NOT EXISTS` 为漂移 schema 错误背书。001 是不含演示数据、登录角色或数据库名称的纯 control-plane baseline；006 增加 durable outbox message/attempt 状态。`scripts/postgres/init.sql` 仅供本地 PostgreSQL 集成测试使用，不属于生产迁移链。随后可用 `npm run start:api` 启动 Node API。真实 PostgreSQL adapter 只在 `apps/api` 组合根导入；`src/query` 仅包含 browser-safe 端口和 mapper。

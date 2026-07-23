@@ -14,6 +14,9 @@ export type RunWorkerHandlerResult<TResult> =
   | { type: 'failed'; failure: RunJobFailure; failedAt: string }
 
 export interface RunWorkerContext {
+  tenantId: string
+  workspaceId: string
+  runId: string
   attempt: number
   maxAttempts: number
   fence: number
@@ -30,38 +33,65 @@ export interface RunWorkerHandler<TPayload, TResult> {
   ): RunWorkerHandlerResult<TResult> | Promise<RunWorkerHandlerResult<TResult>>
 }
 
-export interface RunWorkerOptions<TPayload, TResult> {
+interface RunWorkerBaseOptions<TPayload, TResult, TExecutionResult> {
   queue: RunJobQueue<TPayload, TResult>
-  handler: RunWorkerHandler<TPayload, TResult>
+  handler: RunWorkerHandler<TPayload, TExecutionResult>
   workerId: string
   leaseMs: number
   heartbeatMs?: number
   now?: () => string
-  classifyThrownError?: (error: unknown, at: string) => RunWorkerHandlerResult<TResult>
-  /**
-   * Durable transaction authority. When supplied it fully replaces the queue's
-   * complete/fail/retry mutation for this attempt.
-   */
-  commitAttempt?: (
-    input: RunWorkerCommitAttemptInput<TPayload, TResult>,
-  ) => MaybePromise<RunJobMutationResult<TPayload, TResult>>
+  classifyThrownError?: (error: unknown, at: string) => RunWorkerHandlerResult<TExecutionResult>
   /** Best-effort notification/cache hook after the durable mutation wins. */
-  onCommitted?: (commit: RunWorkerCommit<TPayload, TResult>) => MaybePromise<void>
+  onCommitted?: (commit: RunWorkerCommit<TPayload, TResult, TExecutionResult>) => MaybePromise<void>
   /** Best-effort telemetry for onCommitted failures; its own failures are swallowed. */
   onPostCommitError?: (
     error: unknown,
-    commit: RunWorkerCommit<TPayload, TResult>,
+    commit: RunWorkerCommit<TPayload, TResult, TExecutionResult>,
   ) => MaybePromise<void>
 }
 
-export interface RunWorkerCommitAttemptInput<TPayload, TResult> {
-  lease: RunJobLease<TPayload>
-  outcome: RunWorkerHandlerResult<TResult>
+type SameType<Left, Right> = [Left] extends [Right]
+  ? [Right] extends [Left] ? true : false
+  : false
+
+type CompletedResultSerializer<TResult, TExecutionResult> = {
+  /** Reduces ephemeral execution material to the durable queue representation. */
+  serializeCompletedResult: (result: TExecutionResult) => TResult
+  commitAttempt?: never
 }
 
-export interface RunWorkerCommit<TPayload, TResult> {
+type DurableAttemptCommit<TPayload, TResult, TExecutionResult> = {
+  serializeCompletedResult?: (result: TExecutionResult) => TResult
+  /** Fully replaces the queue complete/fail/retry mutation for this attempt. */
+  commitAttempt: (
+    input: RunWorkerCommitAttemptInput<TPayload, TResult, TExecutionResult>,
+  ) => MaybePromise<RunJobMutationResult<TPayload, TResult>>
+}
+
+type DirectResultPersistence<TPayload, TResult, TExecutionResult> = {
+  serializeCompletedResult?: (result: TExecutionResult) => TResult
+  commitAttempt?: (
+    input: RunWorkerCommitAttemptInput<TPayload, TResult, TExecutionResult>,
+  ) => MaybePromise<RunJobMutationResult<TPayload, TResult>>
+}
+
+export type RunWorkerOptions<TPayload, TResult, TExecutionResult = TResult> =
+  RunWorkerBaseOptions<TPayload, TResult, TExecutionResult>
+  & (SameType<TResult, TExecutionResult> extends true
+    ? DirectResultPersistence<TPayload, TResult, TExecutionResult>
+    : (
+      | CompletedResultSerializer<TResult, TExecutionResult>
+      | DurableAttemptCommit<TPayload, TResult, TExecutionResult>
+    ))
+
+export interface RunWorkerCommitAttemptInput<TPayload, TResult, TExecutionResult = TResult> {
   lease: RunJobLease<TPayload>
-  outcome: RunWorkerHandlerResult<TResult>
+  outcome: RunWorkerHandlerResult<TExecutionResult>
+}
+
+export interface RunWorkerCommit<TPayload, TResult, TExecutionResult = TResult> {
+  lease: RunJobLease<TPayload>
+  outcome: RunWorkerHandlerResult<TExecutionResult>
   job: RunJobView<TPayload, TResult>
 }
 
@@ -84,7 +114,9 @@ export type RunWorkerCycleResult =
  * Queue fencing, rather than handler cooperation, is the final authority: a
  * cancelled or superseded attempt can never publish its outcome.
  */
-export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPayload, TResult>) {
+export function createRunWorker<TPayload, TResult, TExecutionResult = TResult>(
+  options: RunWorkerOptions<TPayload, TResult, TExecutionResult>,
+) {
   const now = options.now ?? (() => new Date().toISOString())
   const heartbeatMs = resolveHeartbeatMs(options.leaseMs, options.heartbeatMs)
   let activeCancellation: AbortController | undefined
@@ -175,6 +207,9 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
     }
 
     const context: RunWorkerContext = {
+      tenantId: lease.tenantId,
+      workspaceId: lease.workspaceId,
+      runId: lease.runId,
       attempt: lease.attempt,
       maxAttempts: lease.maxAttempts,
       fence: lease.fence,
@@ -189,7 +224,7 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
     }
 
     scheduleHeartbeat()
-    let outcome: RunWorkerHandlerResult<TResult>
+    let outcome: RunWorkerHandlerResult<TExecutionResult>
     try {
       outcome = await options.handler.execute(lease.payload, context)
     } catch (error) {
@@ -225,7 +260,9 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
         ? await options.queue.complete({
             ...identity,
             completedAt: outcome.at,
-            result: outcome.result,
+            result: options.serializeCompletedResult
+              ? options.serializeCompletedResult(outcome.result)
+              : outcome.result as unknown as TResult,
             resultFingerprint: outcome.resultFingerprint,
           })
         : outcome.type === 'retry'

@@ -5,6 +5,7 @@ export type ApiPersistenceMode = 'memory' | 'file'
 export type ApiQueryMode = 'fixture' | 'postgresql'
 export type ApiQuerySslMode = 'disable' | 'require' | 'verify-full'
 export type ApiOutboxMode = 'disabled' | 'http'
+export type ApiResultStorageMode = 'inline' | 's3'
 
 export function parseApiEnvironment(
   value: string | undefined,
@@ -23,6 +24,14 @@ export function parseApiQuerySslMode(
   if (value === undefined || !value.trim()) return undefined
   if (value === 'disable' || value === 'require' || value === 'verify-full') return value
   throw new Error(`${variableName} must be disable, require, or verify-full`)
+}
+
+export function parseApiResultStorageMode(
+  value: string | undefined,
+): ApiResultStorageMode | undefined {
+  if (value === undefined || !value.trim()) return undefined
+  if (value === 'inline' || value === 's3') return value
+  throw new Error('CHATBI_RESULT_STORAGE_MODE must be inline or s3')
 }
 
 export interface ApiRuntimeConfig {
@@ -68,6 +77,15 @@ export interface ApiRuntimeConfig {
     retryMaxMs: number
     maxAttempts: number
   }
+  resultStorage: {
+    mode: ApiResultStorageMode
+    endpoint?: string
+    region?: string
+    bucket?: string
+    credentialRef?: string
+    timeoutMs: number
+    maxBlobBytes: number
+  }
   cors: {
     allowOrigin: string
   }
@@ -107,6 +125,13 @@ export interface ApiRuntimeConfigInput {
   outboxRetryInitialMs?: number | string
   outboxRetryMaxMs?: number | string
   outboxMaxAttempts?: number | string
+  resultStorageMode?: ApiResultStorageMode
+  resultStorageEndpoint?: string
+  resultStorageRegion?: string
+  resultStorageBucket?: string
+  resultStorageCredentialRef?: string
+  resultStorageTimeoutMs?: number | string
+  resultStorageMaxBlobBytes?: number | string
   corsAllowOrigin?: string
 }
 
@@ -206,6 +231,65 @@ export function createApiRuntimeConfig(input: ApiRuntimeConfigInput = {}): ApiRu
   if (outboxRetryMaxMs < outboxRetryInitialMs) {
     throw new Error('outbox retry maximum delay cannot be less than initial delay')
   }
+  if (
+    input.resultStorageMode !== undefined
+    && input.resultStorageMode !== 'inline'
+    && input.resultStorageMode !== 's3'
+  ) {
+    throw new Error('result storage mode must be inline or s3')
+  }
+  const resultStorageMode = input.resultStorageMode ?? (productionPostgres ? 's3' : 'inline')
+  if (productionPostgres && resultStorageMode !== 's3') {
+    throw new Error('Staging and production PostgreSQL mode requires S3 result storage')
+  }
+  const hasS3OnlyConfiguration = [
+    input.resultStorageEndpoint,
+    input.resultStorageRegion,
+    input.resultStorageBucket,
+    input.resultStorageCredentialRef,
+  ].some((value) => value !== undefined && (typeof value !== 'string' || value.trim() !== ''))
+  if (resultStorageMode === 'inline' && hasS3OnlyConfiguration) {
+    throw new Error('S3 result storage configuration requires result storage mode=s3')
+  }
+  const resultStorageEndpoint = resultStorageMode === 's3'
+    ? requiredS3Endpoint(input.resultStorageEndpoint)
+    : undefined
+  const resultStorageRegion = resultStorageMode === 's3'
+    ? requiredS3Region(input.resultStorageRegion)
+    : undefined
+  const resultStorageBucket = resultStorageMode === 's3'
+    ? requiredS3Bucket(input.resultStorageBucket)
+    : undefined
+  const resultStorageCredentialRef = resultStorageMode === 's3'
+    ? requiredOpaqueSecretReference(
+        input.resultStorageCredentialRef,
+        'S3 result storage credential reference',
+      )
+    : undefined
+  if (
+    resultStorageCredentialRef
+    && [
+      queryCredentialRef,
+      controlPlaneCredentialRef,
+      outboxHmacSecretRef,
+    ].includes(resultStorageCredentialRef)
+  ) {
+    throw new Error('S3 result storage credential reference must be dedicated and separate from database and outbox credentials')
+  }
+  const resultStorageTimeoutMs = boundedInteger(
+    input.resultStorageTimeoutMs,
+    15_000,
+    'result storage timeout',
+    100,
+    120_000,
+  )
+  const resultStorageMaxBlobBytes = boundedInteger(
+    input.resultStorageMaxBlobBytes,
+    64 * 1024 * 1024,
+    'result storage maximum blob bytes',
+    1_024,
+    1024 * 1024 * 1024,
+  )
   return {
     serviceName: 'insightflow-chatbi-api',
     environment,
@@ -289,6 +373,15 @@ export function createApiRuntimeConfig(input: ApiRuntimeConfigInput = {}): ApiRu
       retryMaxMs: outboxRetryMaxMs,
       maxAttempts: boundedInteger(input.outboxMaxAttempts, 5, 'outbox max attempts', 1, 100),
     },
+    resultStorage: {
+      mode: resultStorageMode,
+      endpoint: resultStorageEndpoint,
+      region: resultStorageRegion,
+      bucket: resultStorageBucket,
+      credentialRef: resultStorageCredentialRef,
+      timeoutMs: resultStorageTimeoutMs,
+      maxBlobBytes: resultStorageMaxBlobBytes,
+    },
     cors: {
       allowOrigin: input.corsAllowOrigin ?? '*',
     },
@@ -344,4 +437,63 @@ function requiredHttpsEndpoint(value: string | undefined) {
   if (endpoint.search) throw new Error('HTTP outbox endpoint URL must not contain query parameters')
   if (endpoint.hash) throw new Error('HTTP outbox endpoint URL must not contain a fragment')
   return endpoint.href
+}
+
+function requiredS3Endpoint(value: string | undefined) {
+  let endpoint: URL
+  if (!value || value !== value.trim()) {
+    throw new Error('S3 result storage endpoint is required and must be valid')
+  }
+  try {
+    endpoint = new URL(value)
+  } catch {
+    throw new Error('S3 result storage endpoint is required and must be valid')
+  }
+  if (endpoint.protocol !== 'https:') throw new Error('S3 result storage endpoint must use HTTPS')
+  if (endpoint.username || endpoint.password) {
+    throw new Error('S3 result storage endpoint must not contain userinfo')
+  }
+  if (endpoint.search) throw new Error('S3 result storage endpoint must not contain query parameters')
+  if (endpoint.hash) throw new Error('S3 result storage endpoint must not contain a fragment')
+  if (endpoint.pathname !== '/') {
+    throw new Error('S3 result storage endpoint must be an HTTPS origin without a path')
+  }
+  return endpoint.href
+}
+
+function requiredS3Region(value: string | undefined) {
+  const region = value?.trim()
+  if (!region || value !== region || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(region)) {
+    throw new Error('S3 result storage region is required and must use lowercase letters, digits, or hyphens')
+  }
+  return region
+}
+
+function requiredS3Bucket(value: string | undefined) {
+  const bucket = value?.trim()
+  if (
+    !bucket
+    || value !== bucket
+    || !/^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$/.test(bucket)
+    || bucket.includes('..')
+    || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(bucket)
+  ) {
+    throw new Error('S3 result storage bucket is required and must be a valid DNS-style bucket name')
+  }
+  return bucket
+}
+
+function requiredOpaqueSecretReference(value: string | undefined, label: string) {
+  const reference = value?.trim()
+  if (
+    !reference
+    || value !== reference
+    || (
+      !/^env:CHATBI_[A-Z0-9_]+$/.test(reference)
+      && !/^vault:\/\/[A-Za-z0-9][A-Za-z0-9/_\-.]{0,254}$/.test(reference)
+    )
+  ) {
+    throw new Error(`${label} must use env:CHATBI_* or a supported vault:// opaque reference`)
+  }
+  return reference
 }

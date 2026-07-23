@@ -63,6 +63,25 @@ export interface PublishedResultPage<TPayload = unknown> extends StagedResultPag
   publishedAt: string
 }
 
+export interface ResolvePublishedResultPageInput<TMetadata = unknown>
+  extends GetPublishedResultPageInput {
+  /**
+   * The manifest has already passed scope authorization and publication
+   * validation. Resolvers must not fetch an external payload before receiving it.
+   */
+  manifest: PublishedResultManifest<TMetadata>
+}
+
+/**
+ * Resolves one page behind an already-authorized published manifest. This keeps
+ * the read service independent from inline JSONB versus an external blob.
+ */
+export interface PublishedResultPageResolver<TPayload = unknown, TMetadata = unknown> {
+  resolve(
+    input: ResolvePublishedResultPageInput<TMetadata>,
+  ): MaybePromise<PublishedResultPage<TPayload> | undefined>
+}
+
 /**
  * Stores immutable result pages before atomically publishing their manifest.
  * Staged pages are deliberately not exposed through the read API.

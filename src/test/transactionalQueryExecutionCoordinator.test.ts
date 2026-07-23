@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildTransactionalQueryAttemptCommit,
@@ -15,6 +16,13 @@ import type {
 } from '../persistence/jobPorts'
 import type { CommitControlPlaneAttemptInput } from '../persistence/controlPlanePorts'
 import type { StoredRunRecord } from '../persistence/ports'
+import {
+  buildImmutableResultBlobKey,
+  type ImmutableResultBlob,
+  type ImmutableResultBlobStore,
+  type PutImmutableResultBlobInput,
+  type PutImmutableResultBlobResult,
+} from '../persistence/resultBlobPorts'
 import type { QueryAdapter, QueryScalar } from '../query'
 
 const at = '2026-07-15T14:00:00.000Z'
@@ -67,7 +75,7 @@ function executedOutcome(payload: QueryRunJobPayload, rows = 1) {
       checkedAt: at,
     },
     fields: payload.plan.outputColumns.map((column) => ({ name: column.id, databaseType: 'text' })),
-    rows: rows === 0 ? [] : [row],
+    rows: Array.from({ length: rows }, () => ({ ...row })),
     rowCount: rows,
     truncated: false,
   }
@@ -91,7 +99,31 @@ function failingAdapter(code: string, retryable: boolean): QueryAdapter {
   }
 }
 
-function harness(adapterFactory: (payload: QueryRunJobPayload) => QueryAdapter) {
+function blockedAdapter(): QueryAdapter {
+  return {
+    dialect: 'postgresql',
+    async runReadOnly() {
+      return {
+        status: 'blocked',
+        reason: 'scan_budget',
+        explain: {
+          estimatedRows: 50_000,
+          estimatedScanBytes: 900_000_000,
+          costUnits: 220,
+          checkedAt: at,
+        },
+      }
+    },
+  }
+}
+
+function harness(
+  adapterFactory: (payload: QueryRunJobPayload) => QueryAdapter,
+  options: {
+    resultBlobStore?: ImmutableResultBlobStore
+    operationOrder?: string[]
+  } = {},
+) {
   const { submission, job } = prepare()
   const rawQueue = createInMemoryRunJobQueue<QueryRunJobPayload, QueryRunJobPublication>()
   rawQueue.enqueue(job)
@@ -139,6 +171,7 @@ function harness(adapterFactory: (payload: QueryRunJobPayload) => QueryAdapter) 
       return { ok: false, reason: 'terminal_conflict' }
     },
     async commitAttempt(input) {
+      options.operationOrder?.push('commit')
       commits.push(structuredClone(input))
       const mutation = input.job.type === 'complete'
         ? rawQueue.complete(input.job.input)
@@ -158,6 +191,7 @@ function harness(adapterFactory: (payload: QueryRunJobPayload) => QueryAdapter) 
     controlPlane,
     workerId: 'worker_transactional',
     resultPageSize: 1,
+    resultBlobStore: options.resultBlobStore,
     now: () => at,
   })
   return {
@@ -180,6 +214,69 @@ function harness(adapterFactory: (payload: QueryRunJobPayload) => QueryAdapter) 
   }
 }
 
+function recordingBlobStore(operationOrder: string[] = []) {
+  const objects = new Map<string, ImmutableResultBlob>()
+  const calls: PutImmutableResultBlobInput[] = []
+  const applied: boolean[] = []
+  const store: ImmutableResultBlobStore = {
+    put: vi.fn(async (input): Promise<PutImmutableResultBlobResult> => {
+      const snapshot = { ...input, body: Uint8Array.from(input.body) }
+      calls.push(snapshot)
+      operationOrder.push(`put:${calls.length - 1}`)
+      const key = buildImmutableResultBlobKey(input)
+      const existing = objects.get(key)
+      if (existing) {
+        applied.push(false)
+        return { ok: true, applied: false, blob: existing }
+      }
+      const blob: ImmutableResultBlob = {
+        key,
+        tenantId: input.tenantId,
+        workspaceId: input.workspaceId,
+        runId: input.runId,
+        attempt: input.attempt,
+        kind: input.kind,
+        checksum: input.checksum,
+        byteLength: input.byteLength,
+        contentType: input.contentType,
+        etag: `"${input.checksum.slice('sha256:'.length, 'sha256:'.length + 32)}"`,
+        cacheControl: 'private, max-age=31536000, immutable',
+      }
+      objects.set(key, blob)
+      applied.push(true)
+      return { ok: true, applied: true, blob }
+    }),
+    stat: vi.fn(async () => undefined),
+    get: vi.fn(async () => undefined),
+  }
+  return { store, calls, applied }
+}
+
+function oneShotBlobStore(
+  put: (input: PutImmutableResultBlobInput) => PutImmutableResultBlobResult | Promise<PutImmutableResultBlobResult>,
+): ImmutableResultBlobStore {
+  return {
+    put: vi.fn(put),
+    stat: vi.fn(async () => undefined),
+    get: vi.fn(async () => undefined),
+  }
+}
+
+function canonicalSha256(value: unknown) {
+  return `sha256:${createHash('sha256').update(JSON.stringify(canonicalValue(value))).digest('hex')}`
+}
+
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, canonicalValue(item)]))
+  }
+  return value
+}
+
 describe('transactional query execution coordinator', () => {
   it('commits an executed result, public projection, audit and SHA-256 publication through one boundary', async () => {
     const test = harness(executedAdapter)
@@ -197,12 +294,29 @@ describe('transactional query execution coordinator', () => {
     expect(commit.resultPublication?.manifest).toMatchObject({
       totalRows: 1,
       publishedAt: at,
-      metadata: { pageSize: 1 },
+      metadata: { schemaVersion: 'chatbi_result_manifest.v1', pageSize: 1 },
+    })
+    expect(commit.resultPublication?.manifest.metadata.pageStorage).toBeUndefined()
+    expect(commit.resultPublication?.pages[0].payload).toMatchObject({
+      columns: commit.runRecord.run.result?.columns,
+      rows: commit.runRecord.run.result?.rows,
     })
     expect(commit.resultPublication?.pages[0].checksum).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(commit.resultPublication?.manifest.manifestChecksum).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(commit.job.type === 'complete' && commit.job.input.resultFingerprint).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(commit.event.eventId).toMatch(/^evt_query_[a-f0-9]{32}$/)
+    if (commit.job.type !== 'complete' || !commit.resultPublication) throw new Error('expected completed publication')
+    expect(commit.job.input.result).toEqual({
+      schemaVersion: 'chatbi_result_manifest_reference.v1',
+      type: 'result_manifest',
+      resultId: commit.resultPublication.manifest.resultId,
+      manifestChecksum: commit.resultPublication.manifest.manifestChecksum,
+    })
+    const serializedJobResult = JSON.stringify(commit.job.input.result)
+    for (const forbidden of ['answer', 'rows', 'columns', 'chartSpec', 'summary', '128000', '华东']) {
+      expect(serializedJobResult).not.toContain(forbidden)
+    }
+    expect(test.rawQueue.getJob(commit.runRecord.run.id)?.result).toEqual(commit.job.input.result)
 
     const serializedEvent = JSON.stringify(commit.event)
     expect(serializedEvent).not.toContain('SELECT')
@@ -214,12 +328,18 @@ describe('transactional query execution coordinator', () => {
     expect(test.directRetry).not.toHaveBeenCalled()
 
     const capturedLease = test.getLease()
-    if (!capturedLease || commit.job.type !== 'complete') throw new Error('expected completed lease')
+    if (!capturedLease || !commit.runRecord.run.result || !commit.runRecord.queryExecution) {
+      throw new Error('expected completed lease and Run result')
+    }
     const rebuilt = buildTransactionalQueryAttemptCommit({
       lease: capturedLease,
       outcome: {
         type: 'completed',
-        result: commit.job.input.result,
+        result: {
+          type: 'executed',
+          result: commit.runRecord.run.result,
+          summary: commit.runRecord.queryExecution,
+        },
         resultFingerprint: commit.job.input.resultFingerprint,
         at: commit.job.input.completedAt,
       },
@@ -230,6 +350,222 @@ describe('transactional query execution coordinator', () => {
     expect(rebuilt.event.eventId).toBe(commit.event.eventId)
     expect(rebuilt.resultPublication?.manifest.manifestChecksum)
       .toBe(commit.resultPublication?.manifest.manifestChecksum)
+  })
+
+  it('writes every immutable S3 page before committing only v2 blob references', async () => {
+    const operationOrder: string[] = []
+    const blobs = recordingBlobStore(operationOrder)
+    const test = harness(
+      (payload) => executedAdapter(payload, 3),
+      { resultBlobStore: blobs.store, operationOrder },
+    )
+
+    await expect(test.runner.runOnce()).resolves.toMatchObject({ status: 'completed', attempt: 1 })
+
+    expect(operationOrder).toEqual(['put:0', 'put:1', 'put:2', 'commit'])
+    expect(blobs.calls).toHaveLength(3)
+    const commit = test.commits[0]
+    const publication = commit.resultPublication
+    if (!publication) throw new Error('expected S3 result publication')
+    expect(publication.manifest).toMatchObject({
+      attempt: 1,
+      totalRows: 3,
+      metadata: {
+        schemaVersion: 'chatbi_result_manifest.v2',
+        pageSize: 1,
+        pageStorage: {
+          type: 's3',
+          encoding: 'canonical-json',
+          contentType: 'application/vnd.insightflow.result-page+json',
+        },
+      },
+    })
+
+    publication.pages.forEach((page, pageIndex) => {
+      const write = blobs.calls[pageIndex]
+      const decoded = JSON.parse(new TextDecoder().decode(write.body)) as {
+        columns: ResultColumn[]
+        rows: unknown[]
+      }
+      const bodyDigest = `sha256:${createHash('sha256').update(write.body).digest('hex')}`
+      expect(write).toMatchObject({
+        tenantId: actor.tenantId,
+        workspaceId: actor.workspaceId,
+        runId: commit.runRecord.run.id,
+        attempt: 1,
+        kind: 'page',
+        checksum: bodyDigest,
+        byteLength: write.body.byteLength,
+        contentType: 'application/vnd.insightflow.result-page+json',
+      })
+      expect(decoded.columns).toEqual(commit.runRecord.run.result?.columns)
+      expect(decoded.rows).toHaveLength(1)
+      expect(page.checksum).toBe(canonicalSha256({
+        runId: commit.runRecord.run.id,
+        attempt: 1,
+        pageIndex,
+        payload: decoded,
+      }))
+      expect(page.payload).toEqual({
+        schemaVersion: 'chatbi_result_page_blob_reference.v1',
+        storage: 's3',
+        blob: expect.objectContaining({
+          key: buildImmutableResultBlobKey(write),
+          checksum: bodyDigest,
+          byteLength: write.body.byteLength,
+        }),
+      })
+      const serializedReference = JSON.stringify(page.payload)
+      for (const forbidden of ['"rows"', '"columns"', '"answer"', '"facts"']) {
+        expect(serializedReference).not.toContain(forbidden)
+      }
+    })
+    expect(publication.manifest.pageChecksums).toEqual(
+      publication.pages.map((page) => page.checksum),
+    )
+    expect(commit.job).toMatchObject({
+      type: 'complete',
+      input: {
+        result: {
+          schemaVersion: 'chatbi_result_manifest_reference.v1',
+          type: 'result_manifest',
+          resultId: publication.manifest.resultId,
+          manifestChecksum: publication.manifest.manifestChecksum,
+        },
+      },
+    })
+  })
+
+  it('accepts an idempotent repeated-attempt blob PUT without changing the manifest', async () => {
+    let repeatedInput: PutImmutableResultBlobInput | undefined
+    const store = oneShotBlobStore(async (input) => {
+      repeatedInput = input
+      return {
+        ok: true,
+        applied: false,
+        blob: {
+          key: buildImmutableResultBlobKey(input),
+          tenantId: input.tenantId,
+          workspaceId: input.workspaceId,
+          runId: input.runId,
+          attempt: input.attempt,
+          kind: input.kind,
+          checksum: input.checksum,
+          byteLength: input.byteLength,
+          contentType: input.contentType,
+          etag: `"${input.checksum.slice('sha256:'.length, 'sha256:'.length + 32)}"`,
+          cacheControl: 'private, max-age=31536000, immutable',
+        },
+      }
+    })
+    const test = harness(executedAdapter, { resultBlobStore: store })
+
+    await expect(test.runner.runOnce()).resolves.toMatchObject({ status: 'completed', attempt: 1 })
+
+    expect(store.put).toHaveBeenCalledTimes(1)
+    expect(repeatedInput).toMatchObject({
+      tenantId: actor.tenantId,
+      workspaceId: actor.workspaceId,
+      attempt: 1,
+      kind: 'page',
+    })
+    expect(test.commits).toHaveLength(1)
+    expect(test.commits[0].job.type).toBe('complete')
+    expect(test.commits[0].resultPublication?.pages[0].payload).toMatchObject({
+      schemaVersion: 'chatbi_result_page_blob_reference.v1',
+      storage: 's3',
+      blob: {
+        key: repeatedInput ? buildImmutableResultBlobKey(repeatedInput) : '',
+        checksum: repeatedInput?.checksum,
+      },
+    })
+  })
+
+  it('schedules a retry without publishing a DB result when S3 is unavailable', async () => {
+    const remoteSecret = 'https://access:secret@objects.internal/private'
+    const store = oneShotBlobStore(async () => {
+      throw Object.assign(new Error(remoteSecret), {
+        code: 'REMOTE_UNAVAILABLE',
+        retryable: true,
+      })
+    })
+    const test = harness(executedAdapter, { resultBlobStore: store })
+
+    await expect(test.runner.runOnce()).resolves.toMatchObject({
+      status: 'retry_scheduled',
+      attempt: 1,
+    })
+
+    expect(store.put).toHaveBeenCalledTimes(1)
+    expect(test.commits).toHaveLength(1)
+    expect(test.commits[0]).toMatchObject({
+      job: {
+        type: 'retry',
+        input: {
+          failure: { code: 'RESULT_STORAGE_UNAVAILABLE', retryable: true },
+        },
+      },
+      runRecord: { run: { displayStatus: 'querying' } },
+    })
+    expect(test.commits[0].resultPublication).toBeUndefined()
+    expect(test.rawQueue.getJob(test.commits[0].runRecord.run.id)?.result).toBeUndefined()
+    expect(JSON.stringify(test.commits[0])).not.toContain(remoteSecret)
+  })
+
+  it('fails closed without a result publication on immutable blob content conflict', async () => {
+    const store = oneShotBlobStore(async () => ({
+      ok: false,
+      reason: 'content_conflict',
+    }))
+    const test = harness(executedAdapter, { resultBlobStore: store })
+
+    await expect(test.runner.runOnce()).resolves.toMatchObject({ status: 'failed', attempt: 1 })
+
+    expect(test.commits[0]).toMatchObject({
+      job: {
+        type: 'fail',
+        input: {
+          failure: { code: 'RESULT_STORAGE_REJECTED', retryable: false },
+        },
+      },
+      runRecord: { run: { displayStatus: 'failed' } },
+    })
+    expect(test.commits[0].resultPublication).toBeUndefined()
+    expect(test.rawQueue.getJob(test.commits[0].runRecord.run.id)?.result).toBeUndefined()
+  })
+
+  it('fails closed when a successful blob write returns mismatched integrity metadata', async () => {
+    const store = oneShotBlobStore(async (input) => ({
+      ok: true,
+      applied: true,
+      blob: {
+        key: buildImmutableResultBlobKey(input),
+        tenantId: input.tenantId,
+        workspaceId: input.workspaceId,
+        runId: input.runId,
+        attempt: input.attempt,
+        kind: input.kind,
+        checksum: `sha256:${'0'.repeat(64)}`,
+        byteLength: input.byteLength,
+        contentType: input.contentType,
+        etag: '"untrusted"',
+        cacheControl: 'private, max-age=31536000, immutable',
+      },
+    }))
+    const test = harness(executedAdapter, { resultBlobStore: store })
+
+    await expect(test.runner.runOnce()).resolves.toMatchObject({ status: 'failed', attempt: 1 })
+
+    expect(test.commits[0]).toMatchObject({
+      job: {
+        type: 'fail',
+        input: {
+          failure: { code: 'RESULT_STORAGE_REJECTED', retryable: false },
+        },
+      },
+    })
+    expect(test.commits[0].resultPublication).toBeUndefined()
+    expect(JSON.stringify(test.commits[0])).not.toContain('0000000000000000')
   })
 
   it('atomically schedules retry with only a safe failure code in the event', async () => {
@@ -249,6 +585,33 @@ describe('transactional query execution coordinator', () => {
     })
     expect(JSON.stringify(commit)).not.toContain(secret)
     expect(test.rawQueue.getJob(commit.runRecord.run.id)?.status).toBe('retry_wait')
+  })
+
+  it('stores only a versioned no-result marker when the budget gate blocks execution', async () => {
+    const test = harness(() => blockedAdapter())
+
+    await expect(test.runner.runOnce()).resolves.toMatchObject({ status: 'completed', attempt: 1 })
+
+    const commit = test.commits[0]
+    expect(commit.job).toMatchObject({
+      type: 'complete',
+      input: {
+        result: {
+          schemaVersion: 'chatbi_no_result_reference.v1',
+          type: 'no_result',
+          reasonCode: 'QUERY_TOO_EXPENSIVE',
+        },
+      },
+    })
+    expect(commit.runRecord).toMatchObject({
+      run: { displayStatus: 'failed', error: { code: 'QUERY_TOO_EXPENSIVE' } },
+      queryExecution: { status: 'blocked' },
+    })
+    expect(commit.resultPublication).toBeUndefined()
+    const serialized = JSON.stringify(commit.job.type === 'complete' ? commit.job.input.result : {})
+    expect(serialized).not.toContain('scan_budget')
+    expect(serialized).not.toContain('summary')
+    expect(serialized).not.toContain('reason:')
   })
 
   it('atomically fails the Run without leaking an adapter error or credentials', async () => {

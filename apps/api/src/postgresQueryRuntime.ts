@@ -5,6 +5,8 @@ import { createPostgresOutboxStore } from './adapters/postgresOutboxStore'
 import { createPostgresResultPageStore, createPostgresRunEventStore } from './adapters/postgresResultEventStore'
 import { createPostgresRunJobQueue } from './adapters/postgresRunJobQueue'
 import { createPostgresQueryReconciler } from './adapters/postgresQueryReconciler'
+import { createS3ResultBlobStore } from './adapters/s3ResultBlobStore'
+import { createBlobBackedResultPageResolver } from './adapters/blobBackedResultPageResolver'
 import {
   createQueryWorkerHost,
   type QueryWorkerCycleSummary,
@@ -23,10 +25,15 @@ import {
   type TransactionalQueryExecutionControlPlane,
   type TransactionalQueryRunEvent,
   type TransactionalResultManifestMetadata,
-  type TransactionalResultPage,
+  type TransactionalStoredResultPage,
 } from './transactionalQueryExecutionCoordinator'
 import type { QueryRunJobPayload, QueryRunJobPublication } from '../../../src/application/queryExecutionCoordinator'
-import type { ResultPageStore, RunEventStore } from '../../../src/persistence/resultPorts'
+import type {
+  PublishedResultPageResolver,
+  ResultPageStore,
+  RunEventStore,
+} from '../../../src/persistence/resultPorts'
+import type { TransactionalResultPage } from './transactionalQueryExecutionCoordinator'
 
 export interface PostgresQueryRuntimeOptions {
   config: ApiRuntimeConfig
@@ -57,7 +64,11 @@ export interface PostgresQueryRuntimeReadiness {
 
 export interface PostgresQueryRuntime {
   controlPlane: TransactionalQueryExecutionControlPlane
-  resultPageStore: ResultPageStore<TransactionalResultPage, TransactionalResultManifestMetadata>
+  resultPageStore: ResultPageStore<TransactionalStoredResultPage, TransactionalResultManifestMetadata>
+  resultPageResolver?: PublishedResultPageResolver<
+    TransactionalResultPage,
+    TransactionalResultManifestMetadata
+  >
   runEventStore: RunEventStore<TransactionalQueryRunEvent>
   start(): void
   runOnce(): Promise<{ status: string }>
@@ -90,6 +101,22 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
     ? requiredSecret(options.resolveCredential(
         requiredReference(options.config.outbox.hmacSecretRef, 'outbox HMAC secret'),
       ))
+    : undefined
+  const resultBlobStore = options.config.resultStorage.mode === 's3'
+    ? createS3ResultBlobStore({
+        endpoint: requiredConfiguredValue(options.config.resultStorage.endpoint, 'result storage endpoint'),
+        region: requiredConfiguredValue(options.config.resultStorage.region, 'result storage region'),
+        bucket: requiredConfiguredValue(options.config.resultStorage.bucket, 'result storage bucket'),
+        credentialRef: requiredReference(
+          options.config.resultStorage.credentialRef,
+          'result storage credential',
+        ),
+        resolveCredentials(reference) {
+          return parseResultStorageCredentials(options.resolveCredential(reference))
+        },
+        defaultTimeoutMs: options.config.resultStorage.timeoutMs,
+        maxBlobBytes: options.config.resultStorage.maxBlobBytes,
+      })
     : undefined
   if ((options.config.environment === 'staging' || options.config.environment === 'production')
     && queryConnectionString === controlPlaneConnectionString) {
@@ -144,7 +171,7 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
     QueryRunJobPayload,
     QueryRunJobPublication,
     TransactionalQueryRunEvent,
-    TransactionalResultPage,
+    TransactionalStoredResultPage,
     TransactionalResultManifestMetadata
   >({
     pool: controlPlanePool,
@@ -162,9 +189,12 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
     cancellationPollMs: options.config.controlPlane.cancellationPollMs,
   })
   const resultPageStore = createPostgresResultPageStore<
-    TransactionalResultPage,
+    TransactionalStoredResultPage,
     TransactionalResultManifestMetadata
   >({ pool: controlPlanePool })
+  const resultPageResolver = resultBlobStore
+    ? createBlobBackedResultPageResolver({ resultPageStore, blobStore: resultBlobStore })
+    : undefined
   const runEventStore = createPostgresRunEventStore<TransactionalQueryRunEvent>({
     pool: controlPlanePool,
     cancellationPool: controlPlaneCancellationPool,
@@ -221,6 +251,7 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
         controlPlane,
         workerId,
         leaseMs: options.config.query.leaseMs,
+        resultBlobStore,
       })
       return executionRunner
     },
@@ -323,6 +354,7 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
   return {
     controlPlane,
     resultPageStore,
+    resultPageResolver,
     runEventStore,
     start() {
       if (closing || resourcesClosed) throw new Error('PostgreSQL query runtime is closing or closed')
@@ -499,6 +531,29 @@ function requiredSecret(value: string) {
     throw new Error('PostgreSQL outbox HMAC secret must resolve to at least 32 bytes')
   }
   return value
+}
+
+function parseResultStorageCredentials(value: string) {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>
+    if (
+      !parsed
+      || typeof parsed !== 'object'
+      || Array.isArray(parsed)
+      || typeof parsed.accessKeyId !== 'string'
+      || typeof parsed.secretAccessKey !== 'string'
+      || (parsed.sessionToken !== undefined && typeof parsed.sessionToken !== 'string')
+    ) {
+      throw new Error('invalid credential bundle')
+    }
+    return {
+      accessKeyId: parsed.accessKeyId,
+      secretAccessKey: parsed.secretAccessKey,
+      ...(typeof parsed.sessionToken === 'string' ? { sessionToken: parsed.sessionToken } : {}),
+    }
+  } catch {
+    throw new Error('Result storage credential bundle could not be resolved')
+  }
 }
 
 function requiredConfiguredValue(value: string | undefined, label: string) {

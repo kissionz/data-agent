@@ -41,25 +41,122 @@ async function handleNodeRequest(
     const httpRequest = await toHttpRequestLike(request, disconnect.signal)
     const httpResponse = await resolveNodeBffResponse(router, httpRequest)
     if (disconnect.signal.aborted || response.destroyed) return
-    response.writeHead(httpResponse.status, httpResponse.headers)
-    response.end(typeof httpResponse.body === 'string' ? httpResponse.body : JSON.stringify(httpResponse.body))
+    await writeNodeBffResponse(response, httpResponse, disconnect.signal)
   } catch {
-    if (disconnect.signal.aborted || response.destroyed) return
-    response.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-    response.end(JSON.stringify({
-      ok: false,
-      requestId: 'req_node_adapter',
-      traceId: 'trace_node_adapter',
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: '本地 BFF 适配器错误',
-        retryable: false,
-        debugReference: 'node_adapter',
-      },
-    }))
+    writeNodeInternalErrorResponse(response, disconnect.signal)
   } finally {
     disconnect.dispose()
   }
+}
+
+export async function writeNodeBffResponse(
+  response: ServerResponse,
+  httpResponse: HttpResponseLike,
+  signal?: AbortSignal,
+) {
+  response.writeHead(httpResponse.status, httpResponse.headers)
+  if (isStreamingBody(httpResponse.body)) {
+    await writeNodeStreamingBody(response, httpResponse.body, signal)
+    return
+  }
+  response.end(typeof httpResponse.body === 'string' ? httpResponse.body : JSON.stringify(httpResponse.body))
+}
+
+export function writeNodeInternalErrorResponse(
+  response: Pick<
+    ServerResponse,
+    'destroyed' | 'headersSent' | 'destroy' | 'writeHead' | 'end'
+  >,
+  signal?: AbortSignal,
+) {
+  if (signal?.aborted || response.destroyed) return
+  if (response.headersSent) {
+    response.destroy()
+    return
+  }
+  response.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+  response.end(JSON.stringify({
+    ok: false,
+    requestId: 'req_node_adapter',
+    traceId: 'trace_node_adapter',
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: '本地 BFF 适配器错误',
+      retryable: false,
+      debugReference: 'node_adapter',
+    },
+  }))
+}
+
+export type NodeStreamingBody = AsyncIterable<string | Uint8Array>
+
+export function isStreamingBody(body: unknown): body is NodeStreamingBody {
+  return Boolean(
+    body
+    && typeof body === 'object'
+    && Symbol.asyncIterator in body
+    && typeof (body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function',
+  )
+}
+
+/** Writes one chunk at a time and never pulls the next chunk before `drain`. */
+export async function writeNodeStreamingBody(
+  response: Pick<
+    ServerResponse,
+    'write' | 'end' | 'once' | 'removeListener' | 'destroyed'
+  >,
+  body: NodeStreamingBody,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    for await (const chunk of body) {
+      if (signal?.aborted || response.destroyed) throw streamAborted()
+      const writable = response.write(chunk)
+      if (!writable) await waitForNodeDrain(response, signal)
+    }
+    if (!signal?.aborted && !response.destroyed) response.end()
+  } catch (error) {
+    if (signal?.aborted || response.destroyed || isAbortError(error)) return
+    throw error
+  }
+}
+
+function waitForNodeDrain(
+  response: Pick<ServerResponse, 'once' | 'removeListener' | 'destroyed'>,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted || response.destroyed) return Promise.reject(streamAborted())
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      response.removeListener('drain', onDrain)
+      response.removeListener('error', onError)
+      response.removeListener('close', onClose)
+      signal?.removeEventListener('abort', onAbort)
+      callback()
+    }
+    const onDrain = () => finish(resolve)
+    const onError = (error: Error) => finish(() => reject(error))
+    const onClose = () => finish(() => reject(streamAborted()))
+    const onAbort = () => finish(() => reject(streamAborted()))
+    response.once('drain', onDrain)
+    response.once('error', onError)
+    response.once('close', onClose)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted || response.destroyed) onAbort()
+  })
+}
+
+function streamAborted() {
+  const error = new Error('HTTP result stream aborted')
+  error.name = 'AbortError'
+  return error
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError'
 }
 
 export async function resolveNodeBffResponse(

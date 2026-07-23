@@ -63,6 +63,7 @@ describe('@insightflow/contracts package entry', () => {
     expect(openApiDocumentFromSubpath.paths['/v1/questions']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/operations/slo']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/results/{runId}']).toEqual(expect.any(Object))
+    expect(openApiDocumentFromSubpath.paths['/v1/results/{runId}/stream']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/data-sources/{dataSourceId}/lineage']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/data-sources/{dataSourceId}/schema-review']).toEqual(expect.any(Object))
     expect(openApiDocumentFromSubpath.paths['/v1/sharing/exports/{exportId}']).toEqual(expect.any(Object))
@@ -235,6 +236,25 @@ describe('@insightflow/contracts package entry', () => {
       method: 'GET',
       url: 'https://api.example.com/v1/results/run_001?conversation_id=conversation_001&cursor=offset%3A50&limit=50',
       headers: expect.objectContaining({
+        authorization: 'Bearer ifk_live_redacted',
+      }),
+    })
+
+    const streamRequest = createDeveloperEndpointRequest({
+      baseUrl: 'https://api.example.com/',
+      endpoint: 'results.stream',
+      apiKey: 'ifk_live_redacted',
+      runId: 'run_001',
+      conversationId: 'conversation_001',
+      maxRows: 5000,
+      maxBytes: 1048576,
+      timeoutMs: 30000,
+    })
+    expect(streamRequest).toMatchObject({
+      method: 'GET',
+      url: 'https://api.example.com/v1/results/run_001/stream?conversation_id=conversation_001&max_rows=5000&max_bytes=1048576&timeout_ms=30000',
+      headers: expect.objectContaining({
+        accept: 'application/x-ndjson',
         authorization: 'Bearer ifk_live_redacted',
       }),
     })

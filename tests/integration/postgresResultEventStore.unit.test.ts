@@ -220,6 +220,30 @@ describe('PostgreSQL ResultPageStore and RunEventStore unit boundary', () => {
     expect(pool.directCalls[0].values).toEqual([scope.tenantId, scope.workspaceId, scope.runId, 0])
   })
 
+  it('honors an already-aborted boundary before acquiring a published result page backend', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    let connected = false
+    const pool = {
+      async connect() {
+        connected = true
+        throw new Error('must not connect')
+      },
+      async query() {
+        throw new Error('must not query')
+      },
+    } as PostgresResultEventPoolLike
+    const store = createPostgresResultPageStore({ pool })
+
+    await expect(store.getPage({
+      ...scope,
+      pageIndex: 0,
+      signal: controller.signal,
+      timeoutMs: 250,
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(connected).toBe(false)
+  })
+
   it('appends an event with sequence CAS and lists after a parameterized cursor', async () => {
     const client = new ScriptedClient(async (text, values) => {
       if (text.startsWith('select current_sequence')) return { rows: [{ current_sequence: 0 }], rowCount: 1 }

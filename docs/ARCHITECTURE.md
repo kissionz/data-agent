@@ -54,7 +54,7 @@
 
 语义治理当前是 F03 的服务治理切片：`SemanticGovernanceApplicationService` 以本地 catalog 为事实源，提供指标列表、详情、提交评审、认证发布、参考 SQL 对账门禁、角色权限、不可变版本和 Join Graph 风险暴露。认证后的指标才可进入可信模式；具体高风险 Join 仍在 Compiler 使用该维度时阻断。它尚未接入真实语义对象仓库、Join Graph 编辑器、参考 SQL 自动对账执行器、灰度发布或回滚。
 
-Query Gateway 是 F06 的安全边界：Compiler 只接受规范 Analysis IR 和 Semantic Catalog 裁决后的 metric/dimension ID，绑定受治理的 `dataSourceId` 与输出 schema，生成带 tenant/workspace/business domain 守卫的只读参数化 SQL。Node-only PostgreSQL adapter 在同一个 `BEGIN READ ONLY` 事务内执行 JSON EXPLAIN、真实预算判定和查询正文，设置 statement timeout，并通过独立连接调用 `pg_cancel_backend` 响应 worker 的 AbortSignal。生产组合根使用独立 warehouse 只读凭据/连接池和 control-plane 写凭据/连接池：问题提交将 Conversation、Run、幂等预留、审计、Job 与 durable Outbox event 原子落库后才返回 202；worker 以 attempt、lease token、fence、heartbeat 和 expiry 门禁执行，最终把 job mutation、Run/Conversation 投影、SHA-256 result pages/manifest、审计、ordered event 与 Outbox event 在同一事务发布。Outbox 使用持久 message/attempt 表、数据库权威租约时钟、`SKIP LOCKED`、attempt/fence/token CAS、稳定 event ID、HMAC-SHA256、确定性退避和 dead-letter 提供至少一次外部投递；payload 经过 canonical JSON 大小/深度/敏感字段边界，生产环境禁止关闭 publisher，并要求独立的 32 字节以上 secret reference。投递重试和死信会通过 public-safe 计数让 readiness 退化。取消与完成竞争只允许一个结果获胜，旧 worker 不能覆盖取消或新 attempt。Result API 只读取已发布 manifest 的相交页；SSE 使用有限 long-poll 按持久化 sequence 续传，整体 deadline 覆盖 store IO，PostgreSQL event read 以 dedicated client 取得 backend PID，并用独立取消池调用 `pg_cancel_backend`，避免 control-plane 主池上限为 1 时取消死锁。Reconciler 以相同 Job→Run→Conversation 锁序扫描异常，只修复可证明安全的终态 Conversation/失效 Job，其余 finding 使用 canonical identity + SHA-256 去重持久化且不合成结果。001–006 migration runner 使用 advisory lock、SHA-256 ledger、连续前缀校验、schema definition/trigger drift 防线和逐文件事务。停机时 worker/outbox drain 超时会主动中止当前工作，进程信号同时停止 HTTP admission 与启动 runtime drain，资源关闭逐项可重试且所有后台等待有界。`PublicRunView` 仍只返回 public-safe 指纹、预算、缓存与取消摘要，不暴露 SQL、参数、连接串或数据库对象细节。后续需补进程管理器级最终强制终止、真实 PostgreSQL 故障注入与多实例压测。
+Query Gateway 是 F06 的安全边界：Compiler 只接受规范 Analysis IR 和 Semantic Catalog 裁决后的 metric/dimension ID，绑定受治理的 `dataSourceId` 与输出 schema，生成带 tenant/workspace/business domain 守卫的只读参数化 SQL。Node-only PostgreSQL adapter 在同一个 `BEGIN READ ONLY` 事务内执行 JSON EXPLAIN、真实预算判定和查询正文，设置 statement timeout，并通过独立连接调用 `pg_cancel_backend` 响应 worker 的 AbortSignal。生产组合根使用独立 warehouse 只读凭据/连接池和 control-plane 写凭据/连接池：问题提交将 Conversation、Run、幂等预留、审计、Job 与 durable Outbox event 原子落库后才返回 202；worker 以 attempt、lease token、fence、heartbeat 和 expiry 门禁执行，最终把 job mutation、Run/Conversation 投影、SHA-256 result pages/manifest、审计、ordered event 与 Outbox event 在同一事务发布。terminal Job 的 result JSON 仅保存 versioned `resultId + manifestChecksum` 引用，不复制答案、事实、rows、columns、chart 或结果摘要；完整结果只在最终 Run 和不可变 pages/manifest 发布路径。Outbox 使用持久 message/attempt 表、数据库权威租约时钟、`SKIP LOCKED`、attempt/fence/token CAS、稳定 event ID、HMAC-SHA256、确定性退避和 dead-letter 提供至少一次外部投递；payload 经过 canonical JSON 大小/深度/敏感字段边界，生产环境禁止关闭 publisher，并要求独立的 32 字节以上 secret reference。投递重试和死信会通过 public-safe 计数让 readiness 退化。取消与完成竞争只允许一个结果获胜，旧 worker 不能覆盖取消或新 attempt。Result API 只读取已发布 manifest 的相交页；SSE 使用有限 long-poll 按持久化 sequence 续传，整体 deadline 覆盖 store IO，PostgreSQL event read 以 dedicated client 取得 backend PID，并用独立取消池调用 `pg_cancel_backend`，避免 control-plane 主池上限为 1 时取消死锁。Reconciler 以相同 Job→Run→Conversation 锁序扫描异常，只修复可证明安全的终态 Conversation/失效 Job，其余 finding 使用 canonical identity + SHA-256 去重持久化且不合成结果。001–006 migration runner 使用 advisory lock、SHA-256 ledger、连续前缀校验、schema definition/trigger drift 防线和逐文件事务。停机时 worker/outbox drain 超时会主动中止当前工作，进程信号同时停止 HTTP admission 与启动 runtime drain，资源关闭逐项可重试且所有后台等待有界。`PublicRunView` 仍只返回 public-safe 指纹、预算、缓存与取消摘要，不暴露 SQL、参数、连接串或数据库对象细节。后续需补进程管理器级最终强制终止、真实 PostgreSQL 故障注入与多实例压测。
 
 评测回放当前是 F09/F10 的服务与 UI 治理切片：`EvaluationApplicationService` 使用运营中心 fixtures 形成可测试的黄金集门禁和失败回放契约。当前建模的 5 项 fixture P0 门禁中任一项低于目标时 `releaseAllowed=false`；这不等价于 PRD 第 14 章完整 8 指标的生产评测。阻断样本按角色过滤，回放计划显式声明需要脱敏且不能使用生产凭据，但尚未执行真实脱敏或重放。线上样本只能先进入 `candidate_dataset`，再由授权角色审批为 `golden_approved`；服务端拆分查看、采集、审批和调度角色，审批说明必须非空、限长并在写入审计前脱敏。黄金样本与回归计划的 list/get/approve/schedule 均按 tenant/workspace scope 过滤，跨作用域 ID 使用与不存在相同的 404；显式回归范围只要包含不可见或未审批样本就整体拒绝，不会静默生成缩水计划，重复 ID 会去重。运营中心使用总览/黄金集/回归运行/失败回放四任务页签，黄金集页提供筛选、质量门禁、详情检查器、审批、样本选择与回归调度。批量回归计划会存储在当前服务实例并可查询，覆盖 retrieval/planner/compiler/query_gateway/answer_grounding 阶段，声明不使用生产凭据并联动发布门禁；当前只生成 `queued` 计划，尚未接入真实数据库持久化、批量回归队列/worker、queued→running→terminal 状态推进、真实版本差异结果、OpenTelemetry trace、灰度发布控制面或审计落库。
 
@@ -174,7 +174,7 @@ fixtures/
 - `JoinEdge`：左右实体、键、基数、方向、允许路径、风险标签。
 - `AnalysisPlan`：通过 schema 校验的 IR 与确定性 `planFingerprint`。
 - `QueryExecution`：SQL 指纹、方言、预算、权限摘要、数据版本、执行统计；对普通用户默认不返回原始 SQL。
-- `ResultSet`：schema、分页 rows、统计、完整性、freshness、cell references、chart spec。
+- `ResultSet`：schema、分页 rows、统计、完整性、freshness、cell references、versioned deterministic fact transforms、chart spec。
 - `Evidence`：指标口径、过滤、时间、数据新鲜度、来源、语义版本、结果引用。
 - `Feedback`：评价、原因标签、备注、可选正确答案，关联完整运行链路。
 - `AuditEvent`：主体、代理、目的、策略/语义/模型版本、脱敏级别、trace/request ID。
@@ -236,6 +236,7 @@ IR 使用严格 JSON Schema（`additionalProperties: false`），服务端维护
 | `POST` | `/v1/runs/{id}/clarify` | 提交候选 ID + `ir_revision` |
 | `POST` | `/v1/runs/{id}/cancel` | 幂等取消并向执行器传播 |
 | `GET` | `/v1/results/{id}` | 游标分页结果，服务端复核权限 |
+| `GET` | `/v1/results/{id}/stream` | 鉴权后按 published manifest 逐页输出 NDJSON；支持背压、断连取消和行/字节/时间硬预算 |
 | `POST` | `/v1/feedback` | 点赞/点踩与原因 |
 | `GET` | `/v1/semantic/metrics/{id}` | 当前用户可见的指标口径与版本 |
 | `POST` | `/v1/developer/service-accounts` | 创建绑定工作区、scope、配额和过期时间的服务账号 |
@@ -419,7 +420,8 @@ MVP 最小表：
 6. SSE 为 MVP 流式协议；不依赖 WebSocket。耗时任务未来可迁移到队列 worker。
 7. 部分结果表现为 `completed + completeness=partial`，不扩展用户可见状态词表。
 8. “已取消”作为历史终止原因而非常驻任务状态，避免与设计规范六态冲突。
-9. 图表规范采用受限 JSON schema，轴必须从结果字段推导，禁止截断误导轴和不存在字段；`RunResult.chartSpec` 作为展示层唯一图表语义输入，领域层先校验 line/bar/table 轴字段和安全建议，生产层再接完整图表误导性校验器。
-10. SQL 可见性按角色控制：业务用户默认仅见口径/来源/过滤，分析师可在探索模式展开脱敏 SQL。
+9. 图表规范采用受限 JSON schema，轴必须从结果字段推导，禁止截断误导轴和不存在字段；`RunResult.chartSpec` 作为展示层唯一图表语义输入。Query result mapper 在发布前强制执行 deterministic chart validator：校验 chart type、列与轴唯一性/存在性、500 行硬上限、空结果、x/y 类型、时间轴严格升序且无重复、数值有限性、百分比 `[-100, 100]` 范围及同轴单位/量纲一致性。结构歧义或非有限数值拒绝发布，其余不安全图表确定性降级为 table；最终决策和固定顺序 rule checks 记录在 public-safe、versioned `chatbi_chart_validation.v1` report 中，禁止以 warning 代替发布门禁。
+10. Derived fact 只允许 `chatbi_fact_transform_registry.v1` 中的纯函数 `sum`、`difference(current, baseline)`、`ratio(numerator, denominator)` 与 `percent_change(current, baseline)`；其中 percent change 使用 `(current-baseline)/abs(baseline)*100`。每个 `chatbi_fact_transform.v1` transform 必须公开声明有序 result cell inputs、0–12 位 precision、`half_away_from_zero` rounding、null policy 和 `reject` divide-by-zero policy。Grounding 必须按 registry 重算并精确比较舍入结果；未知版本/函数、缺输入、引用不一致或跨 result、非数值/非有限值、除零及结果不匹配全部拒绝。Direct fact 保持单元格直接匹配，旧 `transformId` 绕过标记不再可信；public fact schema 不包含 SQL。
+11. SQL 可见性按角色控制：业务用户默认仅见口径/来源/过滤，分析师可在探索模式展开脱敏 SQL。
 
 这些默认值应写入配置与契约，而不是散落在组件中；产品或数据负责人决策后可版本化替换。

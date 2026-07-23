@@ -3,6 +3,7 @@ import {
   createApiRuntimeConfig,
   parseApiEnvironment,
   parseApiQuerySslMode,
+  parseApiResultStorageMode,
 } from '../../apps/api/src/config'
 
 const postgresCredentials = {
@@ -12,6 +13,11 @@ const postgresCredentials = {
   outboxMode: 'http' as const,
   outboxEndpointUrl: 'https://events.example.com/chatbi',
   outboxHmacSecretRef: 'env:CHATBI_OUTBOX_HMAC_SECRET',
+  resultStorageMode: 's3' as const,
+  resultStorageEndpoint: 'https://objects.example.com',
+  resultStorageRegion: 'us-east-1',
+  resultStorageBucket: 'chatbi-results-prod',
+  resultStorageCredentialRef: 'env:CHATBI_RESULT_STORAGE_CREDENTIALS',
 }
 
 describe('API PostgreSQL control-plane configuration', () => {
@@ -34,6 +40,9 @@ describe('API PostgreSQL control-plane configuration', () => {
     expect(parseApiQuerySslMode(undefined)).toBeUndefined()
     expect(parseApiQuerySslMode('require')).toBe('require')
     expect(() => parseApiQuerySslMode('verify_full')).toThrow('CHATBI_QUERY_SSL_MODE')
+    expect(parseApiResultStorageMode(undefined)).toBeUndefined()
+    expect(parseApiResultStorageMode('s3')).toBe('s3')
+    expect(() => parseApiResultStorageMode('S3')).toThrow('CHATBI_RESULT_STORAGE_MODE')
   })
 
   it('keeps independent query and control-plane credentials behind references', () => {
@@ -71,7 +80,122 @@ describe('API PostgreSQL control-plane configuration', () => {
       retryMaxMs: 300_000,
       maxAttempts: 5,
     })
+    expect(config.resultStorage).toEqual({
+      mode: 's3',
+      endpoint: 'https://objects.example.com/',
+      region: 'us-east-1',
+      bucket: 'chatbi-results-prod',
+      credentialRef: 'env:CHATBI_RESULT_STORAGE_CREDENTIALS',
+      timeoutMs: 15_000,
+      maxBlobBytes: 64 * 1024 * 1024,
+    })
     expect(JSON.stringify(config)).not.toMatch(/postgres(?:ql)?:\/\//i)
+  })
+
+  it('requires S3 result storage for staging and production PostgreSQL mode', () => {
+    expect(createApiRuntimeConfig({
+      environment: 'production',
+      queryMode: 'fixture',
+    }).resultStorage.mode).toBe('inline')
+    expect(createApiRuntimeConfig({
+      queryMode: 'postgresql',
+      queryCredentialRef: 'env:CHATBI_QUERY_DATABASE_URL',
+      controlPlaneCredentialRef: 'env:CHATBI_CONTROL_PLANE_DATABASE_URL',
+    }).resultStorage.mode).toBe('inline')
+    expect(createApiRuntimeConfig({
+      ...postgresCredentials,
+      environment: 'production',
+      resultStorageMode: undefined,
+    }).resultStorage.mode).toBe('s3')
+    expect(() => createApiRuntimeConfig({
+      ...postgresCredentials,
+      environment: 'staging',
+      resultStorageMode: 'inline',
+      resultStorageEndpoint: undefined,
+      resultStorageRegion: undefined,
+      resultStorageBucket: undefined,
+      resultStorageCredentialRef: undefined,
+    })).toThrow('requires S3 result storage')
+    expect(() => createApiRuntimeConfig({
+      environment: 'production',
+      queryMode: 'postgresql',
+      queryCredentialRef: 'env:CHATBI_QUERY_DATABASE_URL',
+      controlPlaneCredentialRef: 'env:CHATBI_CONTROL_PLANE_DATABASE_URL',
+      outboxMode: 'http',
+      outboxEndpointUrl: 'https://events.example.com/chatbi',
+      outboxHmacSecretRef: 'env:CHATBI_OUTBOX_HMAC_SECRET',
+    })).toThrow('S3 result storage endpoint')
+  })
+
+  it('validates S3 endpoint, region, bucket, opaque credential reference and isolation', () => {
+    for (const resultStorageEndpoint of [
+      'http://objects.example.com',
+      'https://user:secret@objects.example.com',
+      'https://objects.example.com/base',
+      'https://objects.example.com?token=secret',
+      'https://objects.example.com#secret',
+    ]) {
+      expect(() => createApiRuntimeConfig({ ...postgresCredentials, resultStorageEndpoint }))
+        .toThrow('S3 result storage endpoint')
+    }
+    for (const resultStorageRegion of ['', 'US_EAST_1', ' us-east-1 ']) {
+      expect(() => createApiRuntimeConfig({ ...postgresCredentials, resultStorageRegion }))
+        .toThrow('S3 result storage region')
+    }
+    for (const resultStorageBucket of ['Bad_Bucket', '192.168.1.1', 'bad..bucket']) {
+      expect(() => createApiRuntimeConfig({ ...postgresCredentials, resultStorageBucket }))
+        .toThrow('S3 result storage bucket')
+    }
+    for (const resultStorageCredentialRef of [
+      'raw-access-key-and-secret',
+      'https://vault.example.com/secret',
+      'postgresql://user:secret@db/chatbi',
+    ]) {
+      expect(() => createApiRuntimeConfig({ ...postgresCredentials, resultStorageCredentialRef }))
+        .toThrow('opaque reference')
+    }
+    for (const resultStorageCredentialRef of [
+      postgresCredentials.queryCredentialRef,
+      postgresCredentials.controlPlaneCredentialRef,
+      postgresCredentials.outboxHmacSecretRef,
+    ]) {
+      expect(() => createApiRuntimeConfig({ ...postgresCredentials, resultStorageCredentialRef }))
+        .toThrow('dedicated and separate')
+    }
+    expect(createApiRuntimeConfig({
+      ...postgresCredentials,
+      resultStorageCredentialRef: 'vault://chatbi/production/result-storage',
+    }).resultStorage.credentialRef).toBe('vault://chatbi/production/result-storage')
+    expect(() => createApiRuntimeConfig({
+      resultStorageMode: 'inline',
+      resultStorageEndpoint: 'https://objects.example.com',
+    })).toThrow('requires result storage mode=s3')
+  })
+
+  it('enforces bounded result storage timeout and blob size', () => {
+    expect(createApiRuntimeConfig({
+      ...postgresCredentials,
+      resultStorageTimeoutMs: 100,
+      resultStorageMaxBlobBytes: 1_024,
+    }).resultStorage).toMatchObject({ timeoutMs: 100, maxBlobBytes: 1_024 })
+    expect(createApiRuntimeConfig({
+      ...postgresCredentials,
+      resultStorageTimeoutMs: 120_000,
+      resultStorageMaxBlobBytes: 1024 * 1024 * 1024,
+    }).resultStorage).toMatchObject({
+      timeoutMs: 120_000,
+      maxBlobBytes: 1024 * 1024 * 1024,
+    })
+    expect(() => createApiRuntimeConfig({ ...postgresCredentials, resultStorageTimeoutMs: 99 }))
+      .toThrow('between 100 and 120000')
+    expect(() => createApiRuntimeConfig({ ...postgresCredentials, resultStorageTimeoutMs: '100ms' }))
+      .toThrow('between 100 and 120000')
+    expect(() => createApiRuntimeConfig({ ...postgresCredentials, resultStorageMaxBlobBytes: 1_023 }))
+      .toThrow('between 1024 and 1073741824')
+    expect(() => createApiRuntimeConfig({
+      ...postgresCredentials,
+      resultStorageMaxBlobBytes: 1024 * 1024 * 1024 + 1,
+    })).toThrow('between 1024 and 1073741824')
   })
 
   it('requires both credential references in PostgreSQL mode', () => {
@@ -254,6 +378,15 @@ describe('API PostgreSQL control-plane configuration', () => {
       retryInitialMs: 1_000,
       retryMaxMs: 300_000,
       maxAttempts: 5,
+    })
+    expect(config.resultStorage).toEqual({
+      mode: 'inline',
+      endpoint: undefined,
+      region: undefined,
+      bucket: undefined,
+      credentialRef: undefined,
+      timeoutMs: 15_000,
+      maxBlobBytes: 64 * 1024 * 1024,
     })
   })
 })

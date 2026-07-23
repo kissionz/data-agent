@@ -1,4 +1,7 @@
 import {
+  createHash,
+} from 'node:crypto'
+import {
   CONTRACT_VERSION,
   validateActor,
   type ActorContext,
@@ -8,10 +11,19 @@ import {
   type ResultPageView,
 } from '../../../src/contracts'
 import type { QueryControlPlane } from '../../../src/persistence/controlPlanePorts'
-import type { ResultPageStore, RunEventStore, StoredRunEvent } from '../../../src/persistence/resultPorts'
+import type { StoredRunRecord } from '../../../src/persistence/ports'
+import type {
+  PublishedResultManifest,
+  PublishedResultPage,
+  PublishedResultPageResolver,
+  ResultPageStore,
+  RunEventStore,
+  StoredRunEvent,
+} from '../../../src/persistence/resultPorts'
 import type {
   TransactionalResultManifestMetadata,
   TransactionalResultPage,
+  TransactionalStoredResultPage,
 } from './transactionalQueryExecutionCoordinator'
 import {
   DEFAULT_DURABLE_EVENT_POLL_INTERVAL_MS,
@@ -40,14 +52,48 @@ export interface DurableRunEventsView<TEvent = unknown> {
   waitedMs: number
 }
 
+export const DURABLE_RESULT_STREAM_SCHEMA_VERSION = 'chatbi_result_stream.v1'
+export const MAX_DURABLE_RESULT_STREAM_ROWS = 100_000
+export const MAX_DURABLE_RESULT_STREAM_BYTES = 32 * 1024 * 1024
+export const MAX_DURABLE_RESULT_STREAM_DURATION_MS = 60_000
+
+const minimumResultStreamBytes = 1_024
+const minimumResultStreamDurationMs = 100
+
+export interface DurableResultStreamRequest {
+  runId: string
+  conversationId: string
+  actor: ActorContext
+  signal?: AbortSignal
+  maxRows?: number
+  maxBytes?: number
+  timeoutMs?: number
+}
+
+export interface DurableResultStreamView {
+  schemaVersion: typeof DURABLE_RESULT_STREAM_SCHEMA_VERSION
+  runId: string
+  resultId: string
+  totalRows: number
+  maxRows: number
+  maxBytes: number
+  timeoutMs: number
+  body: AsyncIterable<string>
+}
+
 export interface DurableQueryReadService<TEvent = unknown> {
   getResultPage(request: ResultPageRequest): Promise<ApiEnvelope<ResultPageView>>
+  openResultStream(request: DurableResultStreamRequest): Promise<ApiEnvelope<DurableResultStreamView>>
   getRunEvents(request: DurableRunEventsRequest): Promise<ApiEnvelope<DurableRunEventsView<TEvent>>>
 }
 
 export interface DurableQueryReadServiceOptions<TEvent = unknown> {
   controlPlane: QueryControlPlane
-  resultPageStore: ResultPageStore<TransactionalResultPage, TransactionalResultManifestMetadata>
+  resultPageStore: ResultPageStore<TransactionalStoredResultPage, TransactionalResultManifestMetadata>
+  publishedPageResolver?: PublishedResultPageResolver<
+    TransactionalResultPage,
+    TransactionalResultManifestMetadata
+  >
   runEventStore: RunEventStore<TEvent>
   eventPollIntervalMs?: number
 }
@@ -65,6 +111,20 @@ export function createDurableQueryReadService<TEvent = unknown>(
     const suffix = `${instanceId}_${String(sequence).padStart(6, '0')}`
     return { requestId: `req_${suffix}`, traceId: `trace_${suffix}` }
   }
+
+  const publishedPageResolver = options.publishedPageResolver ?? {
+    async resolve(input) {
+      const page = await options.resultPageStore.getPage(input)
+      if (!page) return undefined
+      if (!isInlineResultPage(page.payload)) {
+        throw new Error('External result page requires an authorized blob resolver')
+      }
+      return { ...page, payload: page.payload }
+    },
+  } satisfies PublishedResultPageResolver<
+    TransactionalResultPage,
+    TransactionalResultManifestMetadata
+  >
 
   async function authorize(
     request: { runId: string; conversationId: string; actor: ActorContext },
@@ -150,7 +210,12 @@ export function createDurableQueryReadService<TEvent = unknown>(
           : firstPageIndex - 1
         const intersectingRows: TransactionalResultPage['rows'] = []
         for (let pageIndex = firstPageIndex; pageIndex <= lastPageIndex; pageIndex += 1) {
-          const page = await options.resultPageStore.getPage({ ...authorized.scope, runId: request.runId, pageIndex })
+          const page = await publishedPageResolver.resolve({
+            ...authorized.scope,
+            runId: request.runId,
+            pageIndex,
+            manifest,
+          })
           const expectedRowCount = Math.min(
             manifest.metadata.pageSize,
             manifest.totalRows - pageIndex * manifest.metadata.pageSize,
@@ -224,6 +289,109 @@ export function createDurableQueryReadService<TEvent = unknown>(
       }
     },
 
+    async openResultStream(request) {
+      const { requestId, traceId } = ids()
+      const maxRows = normalizeStreamRows(request.maxRows)
+      const maxBytes = normalizeStreamBytes(request.maxBytes)
+      const timeoutMs = normalizeStreamDuration(request.timeoutMs)
+      if (maxRows === undefined || maxBytes === undefined || timeoutMs === undefined) {
+        return failure(
+          requestId,
+          traceId,
+          'VALIDATION_FAILED',
+          `流式结果预算无效：max_rows 必须为 1-${MAX_DURABLE_RESULT_STREAM_ROWS}，max_bytes 必须为 ${minimumResultStreamBytes}-${MAX_DURABLE_RESULT_STREAM_BYTES}，timeout_ms 必须为 ${minimumResultStreamDurationMs}-${MAX_DURABLE_RESULT_STREAM_DURATION_MS}。`,
+          `result_stream_budget_${request.runId}`,
+        )
+      }
+
+      const boundary = createResultStreamBoundary(request.signal, timeoutMs)
+      try {
+        assertResultStreamActive(boundary)
+        const authorized = await raceResultStreamBoundary(
+          authorize(request, requestId, traceId),
+          boundary,
+        )
+        if (!authorized.ok) {
+          boundary.dispose()
+          return authorized.envelope
+        }
+        assertResultStreamActive(boundary)
+        const manifest = await raceResultStreamBoundary(
+          Promise.resolve(options.resultPageStore.getManifest({
+            ...authorized.scope,
+            runId: request.runId,
+            signal: boundary.signal,
+            timeoutMs: boundary.remainingMs(),
+          })),
+          boundary,
+        )
+        if (!manifest || authorized.stored.run.displayStatus !== 'completed' || !authorized.stored.run.result) {
+          boundary.dispose()
+          return failure(
+            requestId,
+            traceId,
+            'SEMANTIC_NOT_FOUND',
+            '该运行尚无可流式读取的已发布结果',
+            `result_stream_${request.runId}`,
+          )
+        }
+        assertPublishedStreamManifest(manifest, authorized.stored)
+        if (manifest.totalRows > maxRows) {
+          boundary.dispose()
+          return failure(
+            requestId,
+            traceId,
+            'QUERY_TOO_EXPENSIVE',
+            '已发布结果超过本次流式读取的行数预算',
+            `result_stream_rows_${request.runId}`,
+          )
+        }
+
+        return {
+          ok: true,
+          requestId,
+          traceId,
+          data: {
+            schemaVersion: DURABLE_RESULT_STREAM_SCHEMA_VERSION,
+            runId: request.runId,
+            resultId: manifest.resultId,
+            totalRows: manifest.totalRows,
+            maxRows,
+            maxBytes,
+            timeoutMs,
+            body: streamPublishedResultNdjson({
+              scope: authorized.scope,
+              stored: authorized.stored,
+              manifest,
+              resolver: publishedPageResolver,
+              boundary,
+              externalSignal: request.signal,
+              maxBytes,
+            }),
+          },
+        }
+      } catch (error) {
+        boundary.dispose()
+        if (error instanceof ResultStreamAbortedError && request.signal?.aborted) {
+          return failure(
+            requestId,
+            traceId,
+            'RUN_CANCELLED',
+            '结果流已因客户端断开而结束',
+            `result_stream_aborted_${request.runId}`,
+          )
+        }
+        return failure(
+          requestId,
+          traceId,
+          'INTERNAL_ERROR',
+          '已发布结果流暂时不可用，请稍后重试',
+          `durable_result_stream_${request.runId}`,
+          true,
+        )
+      }
+    },
+
     async getRunEvents(request) {
       const { requestId, traceId } = ids()
       const afterSequence = parseSequence(request.afterSequence)
@@ -288,6 +456,347 @@ export function createDurableQueryReadService<TEvent = unknown>(
   }
 }
 
+interface ResultStreamBoundary {
+  signal: AbortSignal
+  timedOut(): boolean
+  remainingMs(): number
+  dispose(): void
+}
+
+class ResultStreamAbortedError extends Error {
+  constructor() {
+    super('result stream aborted')
+    this.name = 'ResultStreamAbortedError'
+  }
+}
+
+class ResultStreamIntegrityError extends Error {
+  constructor() {
+    super('published result integrity check failed')
+    this.name = 'ResultStreamIntegrityError'
+  }
+}
+
+class ResultStreamBudgetError extends Error {
+  constructor() {
+    super('result stream byte budget exceeded')
+    this.name = 'ResultStreamBudgetError'
+  }
+}
+
+function createResultStreamBoundary(
+  externalSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): ResultStreamBoundary {
+  const controller = new AbortController()
+  const startedAt = Date.now()
+  let timeoutReached = false
+  let disposed = false
+  const onExternalAbort = () => controller.abort()
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true })
+  if (externalSignal?.aborted) onExternalAbort()
+  const timeout = setTimeout(() => {
+    timeoutReached = true
+    controller.abort()
+  }, timeoutMs)
+  timeout.unref?.()
+  return {
+    signal: controller.signal,
+    timedOut: () => timeoutReached,
+    remainingMs: () => Math.max(1, timeoutMs - (Date.now() - startedAt)),
+    dispose() {
+      if (disposed) return
+      disposed = true
+      clearTimeout(timeout)
+      externalSignal?.removeEventListener('abort', onExternalAbort)
+    },
+  }
+}
+
+function assertResultStreamActive(boundary: ResultStreamBoundary) {
+  if (boundary.signal.aborted || boundary.remainingMs() <= 0) {
+    throw new ResultStreamAbortedError()
+  }
+}
+
+function raceResultStreamBoundary<T>(
+  operation: Promise<T>,
+  boundary: ResultStreamBoundary,
+): Promise<T> {
+  if (boundary.signal.aborted) return Promise.reject(new ResultStreamAbortedError())
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      boundary.signal.removeEventListener('abort', onAbort)
+      callback()
+    }
+    const onAbort = () => finish(() => reject(new ResultStreamAbortedError()))
+    boundary.signal.addEventListener('abort', onAbort, { once: true })
+    void operation.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    )
+    if (boundary.signal.aborted) onAbort()
+  })
+}
+
+interface StreamPublishedResultInput {
+  scope: { tenantId: string; workspaceId: string }
+  stored: StoredRunRecord
+  manifest: PublishedResultManifest<TransactionalResultManifestMetadata>
+  resolver: PublishedResultPageResolver<
+    TransactionalResultPage,
+    TransactionalResultManifestMetadata
+  >
+  boundary: ResultStreamBoundary
+  externalSignal?: AbortSignal
+  maxBytes: number
+}
+
+async function* streamPublishedResultNdjson(
+  input: StreamPublishedResultInput,
+): AsyncGenerator<string> {
+  const encoder = new TextEncoder()
+  let bytesWritten = 0
+  let rowsWritten = 0
+  const line = (record: unknown) => {
+    const serialized = `${JSON.stringify(record)}\n`
+    const bytes = encoder.encode(serialized).byteLength
+    if (bytesWritten + bytes > input.maxBytes) throw new ResultStreamBudgetError()
+    bytesWritten += bytes
+    return serialized
+  }
+
+  try {
+    assertResultStreamActive(input.boundary)
+    yield line({
+      type: 'manifest',
+      schemaVersion: DURABLE_RESULT_STREAM_SCHEMA_VERSION,
+      runId: input.manifest.runId,
+      resultId: input.manifest.resultId,
+      attempt: input.manifest.attempt,
+      semanticVersion: input.manifest.metadata.semanticVersion,
+      columns: input.manifest.metadata.columns,
+      totalRows: input.manifest.totalRows,
+      completeness: input.manifest.metadata.completeness,
+      warnings: input.manifest.metadata.warnings,
+      publishedAt: input.manifest.publishedAt,
+    })
+
+    for (let pageIndex = 0; pageIndex < input.manifest.pageCount; pageIndex += 1) {
+      assertResultStreamActive(input.boundary)
+      const page = await raceResultStreamBoundary(
+        Promise.resolve(input.resolver.resolve({
+          ...input.scope,
+          runId: input.manifest.runId,
+          pageIndex,
+          manifest: input.manifest,
+          signal: input.boundary.signal,
+          timeoutMs: input.boundary.remainingMs(),
+        })),
+        input.boundary,
+      )
+      assertPublishedStreamPage(page, input.manifest, input.scope, pageIndex)
+      for (const row of page.payload.rows) {
+        assertResultStreamActive(input.boundary)
+        assertPlainJsonValue(row)
+        yield line({
+          type: 'row',
+          schemaVersion: DURABLE_RESULT_STREAM_SCHEMA_VERSION,
+          index: rowsWritten,
+          row,
+        })
+        rowsWritten += 1
+      }
+    }
+    if (rowsWritten !== input.manifest.totalRows) throw new ResultStreamIntegrityError()
+    yield line({
+      type: 'complete',
+      schemaVersion: DURABLE_RESULT_STREAM_SCHEMA_VERSION,
+      rowCount: rowsWritten,
+      payloadBytes: bytesWritten,
+    })
+  } catch (error) {
+    if (input.externalSignal?.aborted) return
+    const code = input.boundary.timedOut()
+      ? 'RESULT_STREAM_TIMEOUT'
+      : error instanceof ResultStreamBudgetError
+        ? 'RESULT_STREAM_BYTE_BUDGET_EXCEEDED'
+        : error instanceof ResultStreamIntegrityError
+          ? 'RESULT_STREAM_INTEGRITY_FAILED'
+          : 'RESULT_STREAM_UNAVAILABLE'
+    try {
+      yield line({
+        type: 'error',
+        schemaVersion: DURABLE_RESULT_STREAM_SCHEMA_VERSION,
+        error: { code, retryable: code !== 'RESULT_STREAM_INTEGRITY_FAILED' },
+      })
+    } catch {
+      // The byte budget is absolute; do not exceed it to report its own failure.
+    }
+  } finally {
+    input.boundary.dispose()
+  }
+}
+
+function assertPublishedStreamManifest(
+  manifest: PublishedResultManifest<TransactionalResultManifestMetadata>,
+  stored: StoredRunRecord,
+) {
+  assertManifestMetadata(manifest.metadata)
+  if (
+    !stored.run.result
+    || manifest.tenantId !== stored.run.tenantId
+    || manifest.workspaceId !== stored.run.workspaceId
+    || manifest.runId !== stored.run.id
+    || manifest.resultId !== stored.run.result.id
+    || manifest.metadata.semanticVersion !== stored.run.semanticVersion
+    || !Number.isSafeInteger(manifest.attempt)
+    || manifest.attempt < 1
+    || !Number.isSafeInteger(manifest.totalRows)
+    || manifest.totalRows < 0
+    || manifest.pageCount !== Math.ceil(manifest.totalRows / manifest.metadata.pageSize)
+    || manifest.pageChecksums.length !== manifest.pageCount
+    || manifest.pageChecksums.some((checksum) => !/^sha256:[0-9a-f]{64}$/.test(checksum))
+  ) {
+    throw new ResultStreamIntegrityError()
+  }
+  assertPlainJsonValue(manifest.metadata)
+  const checksum = sha256({
+    runId: manifest.runId,
+    attempt: manifest.attempt,
+    resultId: manifest.resultId,
+    pageChecksums: manifest.pageChecksums,
+    totalRows: manifest.totalRows,
+    metadata: manifest.metadata,
+  })
+  if (manifest.manifestChecksum !== checksum) throw new ResultStreamIntegrityError()
+}
+
+function assertPublishedStreamPage(
+  page: PublishedResultPage<TransactionalResultPage> | undefined,
+  manifest: PublishedResultManifest<TransactionalResultManifestMetadata>,
+  scope: { tenantId: string; workspaceId: string },
+  pageIndex: number,
+): asserts page is PublishedResultPage<TransactionalResultPage> {
+  const expectedRowCount = Math.min(
+    manifest.metadata.pageSize,
+    manifest.totalRows - pageIndex * manifest.metadata.pageSize,
+  )
+  if (
+    !page
+    || page.tenantId !== scope.tenantId
+    || page.workspaceId !== scope.workspaceId
+    || page.runId !== manifest.runId
+    || page.resultId !== manifest.resultId
+    || page.manifestChecksum !== manifest.manifestChecksum
+    || page.attempt !== manifest.attempt
+    || page.pageIndex !== pageIndex
+    || page.checksum !== manifest.pageChecksums[pageIndex]
+    || page.rowCount !== expectedRowCount
+    || !isPlainObject(page.payload)
+    || !Array.isArray(page.payload.rows)
+    || page.payload.rows.length !== page.rowCount
+    || !Array.isArray(page.payload.columns)
+    || stableStringify(page.payload.columns) !== stableStringify(manifest.metadata.columns)
+  ) {
+    throw new ResultStreamIntegrityError()
+  }
+  assertPlainJsonValue(page.payload)
+  const checksum = sha256({
+    runId: manifest.runId,
+    attempt: manifest.attempt,
+    pageIndex,
+    payload: page.payload,
+  })
+  if (page.checksum !== checksum) throw new ResultStreamIntegrityError()
+}
+
+function assertPlainJsonValue(value: unknown) {
+  const seen = new Set<object>()
+  let nodes = 0
+  const visit = (candidate: unknown) => {
+    nodes += 1
+    if (nodes > 1_000_000) throw new ResultStreamIntegrityError()
+    if (
+      candidate === null
+      || typeof candidate === 'string'
+      || typeof candidate === 'boolean'
+      || (typeof candidate === 'number' && Number.isFinite(candidate))
+    ) return
+    if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) {
+      throw new ResultStreamIntegrityError()
+    }
+    seen.add(candidate)
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item)
+      seen.delete(candidate)
+      return
+    }
+    if (!isPlainObject(candidate)) throw new ResultStreamIntegrityError()
+    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(candidate))) {
+      if (!('value' in descriptor) || descriptor.enumerable !== true) {
+        throw new ResultStreamIntegrityError()
+      }
+      visit(descriptor.value)
+    }
+    seen.delete(candidate)
+  }
+  visit(value)
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+function sha256(value: unknown) {
+  return `sha256:${createHash('sha256').update(stableStringify(value), 'utf8').digest('hex')}`
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(stableValue(value))
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, stableValue(item)]))
+  }
+  return value
+}
+
+function normalizeStreamRows(value?: number) {
+  if (value === undefined) return MAX_DURABLE_RESULT_STREAM_ROWS
+  return Number.isSafeInteger(value) && value >= 1 && value <= MAX_DURABLE_RESULT_STREAM_ROWS
+    ? value
+    : undefined
+}
+
+function normalizeStreamBytes(value?: number) {
+  if (value === undefined) return MAX_DURABLE_RESULT_STREAM_BYTES
+  return Number.isSafeInteger(value)
+    && value >= minimumResultStreamBytes
+    && value <= MAX_DURABLE_RESULT_STREAM_BYTES
+    ? value
+    : undefined
+}
+
+function normalizeStreamDuration(value?: number) {
+  if (value === undefined) return MAX_DURABLE_RESULT_STREAM_DURATION_MS
+  return Number.isSafeInteger(value)
+    && value >= minimumResultStreamDurationMs
+    && value <= MAX_DURABLE_RESULT_STREAM_DURATION_MS
+    ? value
+    : undefined
+}
+
 function parseOffset(cursor?: string): number | undefined {
   if (!cursor) return 0
   const match = cursor.match(/^offset:(\d+)$/)
@@ -319,8 +828,18 @@ function normalizeEventWait(waitMs?: number): number | undefined {
 }
 
 function assertManifestMetadata(metadata: TransactionalResultManifestMetadata): void {
+  const validStorage = metadata.schemaVersion === 'chatbi_result_manifest.v1'
+    ? metadata.pageStorage === undefined || (
+      metadata.pageStorage.type === 'inline'
+      && metadata.pageStorage.encoding === 'canonical-json'
+      && metadata.pageStorage.contentType === 'application/vnd.insightflow.result-page+json'
+    )
+    : metadata.schemaVersion === 'chatbi_result_manifest.v2'
+      && metadata.pageStorage?.type === 's3'
+      && metadata.pageStorage.encoding === 'canonical-json'
+      && metadata.pageStorage.contentType === 'application/vnd.insightflow.result-page+json'
   if (
-    metadata?.schemaVersion !== 'chatbi_result_manifest.v1'
+    !validStorage
     || !Number.isInteger(metadata.pageSize)
     || metadata.pageSize < 1
     || metadata.pageSize > 10_000
@@ -332,6 +851,17 @@ function assertManifestMetadata(metadata: TransactionalResultManifestMetadata): 
   ) {
     throw new Error('published result manifest metadata is invalid')
   }
+}
+
+function isInlineResultPage(
+  payload: TransactionalStoredResultPage,
+): payload is TransactionalResultPage {
+  return Boolean(
+    payload
+    && typeof payload === 'object'
+    && Array.isArray((payload as TransactionalResultPage).columns)
+    && Array.isArray((payload as TransactionalResultPage).rows),
+  )
 }
 
 function failure<T>(

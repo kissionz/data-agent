@@ -1,11 +1,24 @@
 import { assertResultIntegrity, type DeterministicFact, type ResultColumn, type ResultRow, type RunResult } from '../domain'
+import { validateChartPublication } from './chartValidator'
 import type { MapQueryResultInput, QueryOutputColumn, QueryScalar } from './types'
 
 export function mapQueryResultToRunResult(input: MapQueryResultInput): RunResult {
   assertMappingInput(input)
   const columns = input.plan.outputColumns.map(toPublicColumn)
   const rows = mapRows(input.execution.rows, input.plan.outputColumns)
-  const chartSpec = createChartSpec(input.resultId, columns, rows)
+  const chartValidation = validateChartPublication({
+    proposedSpec: createChartSpec(input.resultId, columns, rows),
+    columns,
+    rows,
+  })
+  if (!chartValidation.accepted) {
+    const failedCodes = chartValidation.report.checks
+      .filter((check) => check.status === 'fail')
+      .map((check) => check.code)
+      .join(',')
+    throw new Error(`Chart publication rejected by deterministic validation: ${failedCodes}`)
+  }
+  const chartSpec = chartValidation.chartSpec
   const facts = createFacts(input.resultId, input.plan.outputColumns, rows)
   const primaryMetric = input.plan.outputColumns.find((column) => column.role === 'metric')
   const result: RunResult = {
@@ -101,7 +114,11 @@ function assertColumnValue(value: QueryScalar, column: QueryOutputColumn) {
   }
   if (column.type === 'number' || column.type === 'currency' || column.type === 'percentage') {
     if (typeof value === 'number') return
-    if (typeof value === 'string' && /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value.trim())) return
+    if (
+      typeof value === 'string'
+      && /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value.trim())
+      && Number.isFinite(Number(value))
+    ) return
     throw new Error(`Query column ${column.id} does not match its numeric output type`)
   }
   if (typeof value !== 'string') throw new Error(`Query column ${column.id} does not match its string output type`)

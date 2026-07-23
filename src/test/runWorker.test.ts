@@ -687,7 +687,7 @@ describe('run worker', () => {
         let workerSignal: AbortSignal | undefined
         let markStarted!: () => void
         const started = new Promise<void>((resolve) => { markStarted = resolve })
-        const worker = createRunWorker({
+        const worker = createRunWorker<Payload, Result>({
           queue,
           workerId: `worker_renew_${mode}`,
           leaseMs: 500,

@@ -355,6 +355,33 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/results/{runId}/stream': {
+      get: {
+        summary: '流式读取已发布 Run 结果集',
+        description: '鉴权并校验 published manifest 后，以 application/x-ndjson 逐页输出 manifest、row 和 complete 记录。服务端强制 page checksum/attempt/schema 校验、背压、断连取消以及行数、字节和总时长预算。',
+        parameters: [
+          { name: 'runId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'conversation_id', in: 'query', required: true, schema: { type: 'string' } },
+          { name: 'max_rows', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100000, default: 100000 } },
+          { name: 'max_bytes', in: 'query', required: false, schema: { type: 'integer', minimum: 1024, maximum: 33554432, default: 33554432 } },
+          { name: 'timeout_ms', in: 'query', required: false, schema: { type: 'integer', minimum: 100, maximum: 60000, default: 60000 } },
+        ],
+        responses: {
+          200: {
+            description: '有限、有预算的 NDJSON 结果流',
+            content: {
+              'application/x-ndjson': {
+                schema: { type: 'string' },
+              },
+            },
+          },
+          400: errorResponse('流式预算参数无效'),
+          403: errorResponse('租户/工作空间边界拒绝'),
+          404: errorResponse('Run 或 published result 不存在'),
+          422: errorResponse('结果超过流式行数预算'),
+        },
+      },
+    },
     '/v1/runs/{runId}/clarify': {
       post: {
         summary: '提交澄清候选',

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createApiRuntime } from '../../apps/api/src/app'
 import type { PostgresQueryRuntime, PostgresQueryRuntimeReadiness } from '../../apps/api/src/postgresQueryRuntime'
-import type { TransactionalQueryExecutionControlPlane } from '../../apps/api/src/transactionalQueryExecutionCoordinator'
+import type {
+  TransactionalQueryExecutionControlPlane,
+  TransactionalResultManifestMetadata,
+  TransactionalStoredResultPage,
+} from '../../apps/api/src/transactionalQueryExecutionCoordinator'
 import { createInMemoryQueryControlPlane } from '../persistence/controlPlaneMemory'
 import { createInMemoryResultPageStore, createInMemoryRunEventStore } from '../persistence/resultMemory'
 import type { QueryRunJobPayload } from '../application/queryExecutionCoordinator'
@@ -24,6 +28,11 @@ describe('API managed PostgreSQL runtime wiring', () => {
       outboxMode: 'http',
       outboxEndpointUrl: 'https://events.example.com/chatbi',
       outboxHmacSecretRef: 'env:CHATBI_OUTBOX_HMAC_SECRET',
+      resultStorageMode: 's3',
+      resultStorageEndpoint: 'https://objects.example.com',
+      resultStorageRegion: 'us-east-1',
+      resultStorageBucket: 'chatbi-results-prod',
+      resultStorageCredentialRef: 'env:CHATBI_RESULT_STORAGE_CREDENTIALS',
     }, {
       queryAdapter: {
         dialect: 'postgresql',
@@ -67,9 +76,20 @@ describe('API managed PostgreSQL runtime wiring', () => {
       }
     })
     const close = vi.fn(async () => ({ drained: true, timedOut: false }))
+    const resultPageStore = createInMemoryResultPageStore<
+      TransactionalStoredResultPage,
+      TransactionalResultManifestMetadata
+    >()
     const postgresRuntime: PostgresQueryRuntime = {
       controlPlane,
-      resultPageStore: createInMemoryResultPageStore(),
+      resultPageStore,
+      resultPageResolver: {
+        async resolve(input) {
+          const page = resultPageStore.getPage(input)
+          if (!page || 'storage' in (page.payload as object)) return undefined
+          return page as never
+        },
+      },
       runEventStore: createInMemoryRunEventStore(),
       start,
       runOnce: vi.fn(async () => ({ status: 'idle' })),
@@ -87,6 +107,11 @@ describe('API managed PostgreSQL runtime wiring', () => {
       outboxMode: 'http',
       outboxEndpointUrl: 'https://events.example.com/chatbi',
       outboxHmacSecretRef: 'env:CHATBI_OUTBOX_HMAC_SECRET',
+      resultStorageMode: 's3',
+      resultStorageEndpoint: 'https://objects.example.com',
+      resultStorageRegion: 'us-east-1',
+      resultStorageBucket: 'chatbi-results-prod',
+      resultStorageCredentialRef: 'env:CHATBI_RESULT_STORAGE_CREDENTIALS',
     }, { postgresRuntime })
 
     expect(runtime.readiness()).toMatchObject({

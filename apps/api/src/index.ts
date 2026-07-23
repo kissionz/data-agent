@@ -8,10 +8,12 @@ export {
   createApiRuntimeConfig,
   parseApiEnvironment,
   parseApiQuerySslMode,
+  parseApiResultStorageMode,
   type ApiAuthMode,
   type ApiOutboxMode,
   type ApiPersistenceMode,
   type ApiQueryMode,
   type ApiQuerySslMode,
+  type ApiResultStorageMode,
   type ApiRuntimeConfig,
 } from './config'

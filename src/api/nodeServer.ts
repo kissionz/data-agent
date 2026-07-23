@@ -36,12 +36,15 @@ async function handleNodeRequest(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
+  const disconnect = bindNodeDisconnect(request, response)
   try {
-    const httpRequest = await toHttpRequestLike(request)
+    const httpRequest = await toHttpRequestLike(request, disconnect.signal)
     const httpResponse = await resolveNodeBffResponse(router, httpRequest)
+    if (disconnect.signal.aborted || response.destroyed) return
     response.writeHead(httpResponse.status, httpResponse.headers)
     response.end(typeof httpResponse.body === 'string' ? httpResponse.body : JSON.stringify(httpResponse.body))
-  } catch (error) {
+  } catch {
+    if (disconnect.signal.aborted || response.destroyed) return
     response.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
     response.end(JSON.stringify({
       ok: false,
@@ -54,6 +57,8 @@ async function handleNodeRequest(
         debugReference: 'node_adapter',
       },
     }))
+  } finally {
+    disconnect.dispose()
   }
 }
 
@@ -64,7 +69,21 @@ export async function resolveNodeBffResponse(
   return await Promise.resolve(router.handle(request))
 }
 
-async function toHttpRequestLike(request: IncomingMessage): Promise<HttpRequestLike> {
+export function bindNodeDisconnect(request: IncomingMessage, response: ServerResponse) {
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  request.once('aborted', abort)
+  response.once('close', abort)
+  return {
+    signal: controller.signal,
+    dispose() {
+      request.removeListener('aborted', abort)
+      response.removeListener('close', abort)
+    },
+  }
+}
+
+async function toHttpRequestLike(request: IncomingMessage, signal: AbortSignal): Promise<HttpRequestLike> {
   const url = new URL(request.url ?? '/', 'http://local-bff')
   const query: Record<string, string> = {}
   for (const [key, value] of url.searchParams.entries()) query[key] = value
@@ -74,7 +93,8 @@ async function toHttpRequestLike(request: IncomingMessage): Promise<HttpRequestL
     path: url.pathname,
     query,
     headers: normalizeHeaders(request.headers),
-    body: await readJsonBody(request),
+    body: await readJsonBody(request, signal),
+    signal,
   }
 }
 
@@ -87,27 +107,44 @@ function normalizeHeaders(headers: IncomingMessage['headers']): Record<string, s
   return normalized
 }
 
-function readJsonBody(request: IncomingMessage): Promise<unknown> {
+function readJsonBody(request: IncomingMessage, signal: AbortSignal): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Uint8Array[] = []
-    request.on('data', (chunk) => chunks.push(chunk))
-    request.on('error', reject)
-    request.on('end', () => {
+    const cleanup = () => {
+      request.removeListener('data', onData)
+      request.removeListener('error', onError)
+      request.removeListener('end', onEnd)
+      signal.removeEventListener('abort', onAbort)
+    }
+    const settle = (operation: () => void) => {
+      cleanup()
+      operation()
+    }
+    const onData = (chunk: Uint8Array) => chunks.push(chunk)
+    const onError = (error: Error) => settle(() => reject(error))
+    const onAbort = () => settle(() => reject(new Error('request disconnected')))
+    const onEnd = () => {
       if (chunks.length === 0) {
-        resolve(undefined)
+        settle(() => resolve(undefined))
         return
       }
       const text = new TextDecoder().decode(concat(chunks))
       if (!text.trim()) {
-        resolve(undefined)
+        settle(() => resolve(undefined))
         return
       }
       try {
-        resolve(JSON.parse(text))
+        const body = JSON.parse(text)
+        settle(() => resolve(body))
       } catch {
-        reject(new Error('请求体不是有效 JSON'))
+        settle(() => reject(new Error('请求体不是有效 JSON')))
       }
-    })
+    }
+    request.on('data', onData)
+    request.on('error', onError)
+    request.on('end', onEnd)
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
   })
 }
 

@@ -47,6 +47,10 @@ export type PublishResultManifestResult<TMetadata = unknown> =
 
 export interface GetPublishedResultInput extends PersistenceScope {
   runId: string
+  /** Optional read-only cancellation boundary; adapters that cannot cancel may ignore it. */
+  signal?: AbortSignal
+  /** Optional hard timeout for one persistence read, in milliseconds. */
+  timeoutMs?: number
 }
 
 export interface GetPublishedResultPageInput extends GetPublishedResultInput {
@@ -104,6 +108,10 @@ export interface ListRunEventsInput extends PersistenceScope {
   runId: string
   afterSequence: number
   limit?: number
+  /** Optional read-only cancellation boundary; adapters that cannot cancel may ignore it. */
+  signal?: AbortSignal
+  /** Optional hard timeout for one persistence read, in milliseconds. */
+  timeoutMs?: number
 }
 
 /** Append-only per-run event log with optimistic sequence fencing. */

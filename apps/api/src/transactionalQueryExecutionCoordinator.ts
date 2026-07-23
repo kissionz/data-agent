@@ -68,6 +68,7 @@ export interface TransactionalQueryExecutionCoordinatorOptions {
 
 export interface TransactionalQueryExecutionRunner {
   runOnce(runId?: string): Promise<RunWorkerCycleResult>
+  abortActive(): void
 }
 
 export interface BuildTransactionalAttemptCommitInput {

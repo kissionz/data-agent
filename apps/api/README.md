@@ -13,6 +13,8 @@
 - `disabled_demo_actor`：本地环境默认演示 actor，便于前端和样例验收。
 - `memory` / `file` persistence mode：本地内存或 JSON 文件持久化。
 - `fixture` / `postgresql` query mode：浏览器演示保持同步 fixture；PostgreSQL 模式使用独立 warehouse/control-plane pool，Run+Job 原子提交后返回 202，由带 lease/fencing 的 worker 原子发布 Run、结果页、审计和 SSE 事件。
+- durable SSE 使用最长 25 秒的有限 long-poll；支持 `Last-Event-ID`，无新事件返回不推进 sequence 的 heartbeat。总 deadline 覆盖持久化读取；PostgreSQL event read 使用 dedicated client、硬 `query_timeout` 和独立取消池的 `pg_cancel_backend` 响应断连，随后释放监听器与连接。
+- control-plane reconciler 周期扫描不可能状态，只自动释放可证明终态的 Conversation 或 fence 已失效 Job；结果/manifest 不一致只持久告警，绝不推测或生成结果。
 
 ## 运行时配置
 
@@ -42,13 +44,15 @@
 | `CHATBI_CONTROL_PLANE_IDLE_TIMEOUT_MS` | `30000` | control-plane 空闲连接超时 |
 | `CHATBI_CONTROL_PLANE_CANCELLATION_POLL_MS` | `250` | 跨进程取消观察间隔，最小 25ms |
 | `CHATBI_CONTROL_PLANE_WORKER_DRAIN_MS` | `30000` | 停机时等待当前 worker cycle 的时间 |
+| `CHATBI_CONTROL_PLANE_RECONCILE_INTERVAL_MS` | `30000` | durable reconciler 非重叠扫描周期 |
+| `CHATBI_CONTROL_PLANE_RECONCILE_BATCH_SIZE` | `100` | 每批最多检查的异常候选 Run，范围 1–500 |
 | `CORS_ALLOW_ORIGIN` | `*` | CORS allow-origin |
 
-复制 `.env.example` 后可用 `npm run start:api` 启动 Node API。真实 PostgreSQL adapter 只在 `apps/api` 组合根导入；`src/query` 仅包含 browser-safe 端口和 mapper。
+复制 `.env.example` 后，先运行 `npm run migrate:control-plane`；migration CLI 使用非阻塞 advisory lock、001–005 SHA-256 ledger 和逐文件事务，检测到已应用文件变化、数据库未来版本，或 ledger 中存在 000/缺口/非连续前缀时会拒绝继续，避免向异常数据库补跑旧版本。空 ledger 若已存在任一已知 control-plane relation 也会拒绝接管；运行结束前还会核验 001–005 的必需关系和结果不可变触发器，防止 `CREATE IF NOT EXISTS` 为漂移 schema 错误背书。001 是不含演示数据、登录角色或数据库名称的纯 control-plane baseline；`scripts/postgres/init.sql` 仅供本地 PostgreSQL 集成测试使用，不属于生产迁移链。随后可用 `npm run start:api` 启动 Node API。真实 PostgreSQL adapter 只在 `apps/api` 组合根导入；`src/query` 仅包含 browser-safe 端口和 mapper。
 
 ## 后续生产化
 
 - 用 Fastify/TypeBox 替换当前 Node adapter。
 - 将 header actor 继续收敛到 OIDC/SAML；API Key Bearer 路径已具备本地验签和 service-account actor 注入，后续补轮换、持久化和审计落库。
-- 增加 durable outbox/reconciler、停机超时后的主动安全中断，并在真实 PostgreSQL 环境持续运行并发、接管和回滚集成门禁。
+- 增加 durable outbox，并在真实 PostgreSQL 环境持续运行并发、接管、reconciler、停机取消和回滚集成门禁。
 - 将当前一次性 SSE 序列升级为生产长连接事件流和事件保留窗口。

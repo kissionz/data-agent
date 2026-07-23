@@ -86,6 +86,8 @@ docker compose -f docker-compose.postgres.yml down
 
 该门禁覆盖真实参数绑定、租户/工作区/业务域隔离、JSON EXPLAIN 预算阻断、数据库只读角色、statement timeout 和三秒内取消传播。
 
+`docker-compose.postgres.yml` 会先按生产顺序装载纯 control-plane 001–005，再单独装载编号 900 的集成测试数据和 `chatbi_reader` 角色。生产部署只运行 `npm run migrate:control-plane`；`scripts/postgres/init.sql` 含本地 fixture、测试角色和测试数据库授权，禁止作为生产迁移执行。
+
 ## 本地 API 契约
 
 当前 API 处于本地 BFF/router 阶段，核心代码位于：

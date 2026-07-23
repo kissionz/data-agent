@@ -13,9 +13,13 @@ services:
       timeout: 3s
       retries: 20
     volumes:
-      - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/001-chatbi.sql:ro
+      # Production control-plane schema, in the same order as migrate:control-plane.
+      - ./scripts/postgres/001-control-plane-baseline.sql:/docker-entrypoint-initdb.d/001-control-plane-baseline.sql:ro
       - ./scripts/postgres/control-plane.sql:/docker-entrypoint-initdb.d/002-control-plane.sql:ro
       - ./scripts/postgres/result-event-store.sql:/docker-entrypoint-initdb.d/003-result-event-store.sql:ro
       - ./scripts/postgres/query-control-plane.sql:/docker-entrypoint-initdb.d/004-query-control-plane.sql:ro
+      - ./scripts/postgres/005-query-reconciler.sql:/docker-entrypoint-initdb.d/005-query-reconciler.sql:ro
+      # Integration-only warehouse fixtures and reader role; never part of the production migration chain.
+      - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/900-integration-fixtures.sql:ro
     tmpfs:
       - /var/lib/postgresql/data

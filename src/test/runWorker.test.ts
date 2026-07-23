@@ -259,6 +259,84 @@ describe('run worker', () => {
     expect((await queue.getJob('run_1'))?.result).toBeUndefined()
   })
 
+  it('exposes a cooperative abort for runtime shutdown', async () => {
+    const memory = createInMemoryRunJobQueue<Payload, Result>()
+    enqueue(memory)
+    const queue = asynchronousQueue(memory)
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => { markStarted = resolve })
+    let workerSignal: AbortSignal | undefined
+    const worker = createRunWorker({
+      queue,
+      workerId: 'worker_shutdown',
+      leaseMs: 5_000,
+      now: () => t0,
+      handler: {
+        execute(_payload, context) {
+          workerSignal = context.signal
+          markStarted()
+          return new Promise((resolve) => {
+            context.signal.addEventListener('abort', () => resolve({
+              type: 'failed',
+              failure: { code: 'SHUTDOWN_ABORTED', message: 'shutdown', retryable: true },
+              failedAt: t1,
+            }), { once: true })
+          })
+        },
+      },
+    })
+
+    const cycle = worker.runOnce()
+    await started
+    worker.abortActive()
+
+    expect(workerSignal?.aborted).toBe(true)
+    await expect(cycle).resolves.toEqual({ status: 'failed', runId: 'run_1', attempt: 1 })
+  })
+
+  it('can abort while the durable cancellation subscription is still pending', async () => {
+    const memory = createInMemoryRunJobQueue<Payload, Result>()
+    enqueue(memory)
+    const base = asynchronousQueue(memory)
+    let markSubscriptionStarted!: () => void
+    let releaseSubscription!: () => void
+    const subscriptionStarted = new Promise<void>((resolve) => { markSubscriptionStarted = resolve })
+    const subscriptionGate = new Promise<void>((resolve) => { releaseSubscription = resolve })
+    const queue: RunJobQueue<Payload, Result> = {
+      ...base,
+      async onCancelled(runId, listener) {
+        markSubscriptionStarted()
+        await subscriptionGate
+        return await base.onCancelled(runId, listener)
+      },
+    }
+    let observedSignal: AbortSignal | undefined
+    const worker = createRunWorker({
+      queue,
+      workerId: 'worker_shutdown_subscription',
+      leaseMs: 5_000,
+      now: () => t0,
+      handler: {
+        execute(_payload, context) {
+          observedSignal = context.signal
+          return {
+            type: 'failed',
+            failure: { code: 'SHUTDOWN_ABORTED', message: 'shutdown', retryable: true },
+            failedAt: t1,
+          }
+        },
+      },
+    })
+
+    const cycle = worker.runOnce()
+    await subscriptionStarted
+    worker.abortActive()
+    releaseSubscription()
+
+    await expect(cycle).resolves.toEqual({ status: 'failed', runId: 'run_1', attempt: 1 })
+    expect(observedSignal?.aborted).toBe(true)
+  })
+
   it('awaits every operation supplied by an asynchronous production-shaped queue', async () => {
     const memory = createInMemoryRunJobQueue<Payload, Result>()
     const queue = asynchronousQueue(memory)

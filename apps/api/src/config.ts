@@ -34,6 +34,8 @@ export interface ApiRuntimeConfig {
     idleTimeoutMs: number
     cancellationPollMs: number
     workerDrainMs: number
+    reconcileIntervalMs: number
+    reconcileBatchSize: number
   }
   cors: {
     allowOrigin: string
@@ -63,6 +65,8 @@ export interface ApiRuntimeConfigInput {
   controlPlaneIdleTimeoutMs?: number | string
   controlPlaneCancellationPollMs?: number | string
   controlPlaneWorkerDrainMs?: number | string
+  controlPlaneReconcileIntervalMs?: number | string
+  controlPlaneReconcileBatchSize?: number | string
   corsAllowOrigin?: string
 }
 
@@ -159,6 +163,20 @@ export function createApiRuntimeConfig(input: ApiRuntimeConfigInput = {}): ApiRu
         'control-plane worker drain timeout',
         0,
         300_000,
+      ),
+      reconcileIntervalMs: boundedInteger(
+        input.controlPlaneReconcileIntervalMs,
+        30_000,
+        'control-plane reconcile interval',
+        1_000,
+        3_600_000,
+      ),
+      reconcileBatchSize: boundedInteger(
+        input.controlPlaneReconcileBatchSize,
+        100,
+        'control-plane reconcile batch size',
+        1,
+        500,
       ),
     },
     cors: {

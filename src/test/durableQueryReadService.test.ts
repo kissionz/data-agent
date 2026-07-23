@@ -240,6 +240,13 @@ describe('durable query read service', () => {
       actor,
       afterSequence: 'evt_1',
     })).resolves.toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED' } })
+    await expect(service.getRunEvents({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+      limit: 1001,
+      waitMs: 25_001,
+    })).resolves.toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED' } })
 
     const failed = createDurableQueryReadService({
       ...test.options,
@@ -257,6 +264,20 @@ describe('durable query read service', () => {
     expect(JSON.stringify(response)).not.toContain('postgresql')
     expect(JSON.stringify(response)).not.toContain('secret')
     expect(JSON.stringify(response)).not.toContain('chatbi_run_events')
+
+    const controller = new AbortController()
+    const waiting = createDurableQueryReadService({ ...test.options, eventPollIntervalMs: 5 }).getRunEvents({
+      runId: test.record.run.id,
+      conversationId: test.conversation.id,
+      actor,
+      waitMs: 1000,
+      signal: controller.signal,
+    })
+    controller.abort()
+    await expect(waiting).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'RUN_CANCELLED', debugReference: `event_stream_aborted_${test.record.run.id}` },
+    })
   })
 
   it('serves published result pages and sequence-resumable SSE through ApiRuntime without memory fallback', async () => {
@@ -317,6 +338,22 @@ describe('durable query read service', () => {
     })
     expect(events.body).toContain('id: 2\nevent: query.attempt_completed')
     expect(events.body).not.toContain('id: 1\n')
+
+    const heartbeat = await runtime.handleAsync({
+      method: 'GET',
+      path: `/v1/runs/${test.record.run.id}/events`,
+      headers: { ...headers, 'last-event-id': '2' },
+      query: { conversation_id: test.conversation.id, wait_ms: '0', limit: '10' },
+    })
+    expect(heartbeat).toMatchObject({
+      status: 200,
+      headers: {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'x-stream-mode': 'finite-long-poll',
+        'x-event-sequence': '2',
+      },
+    })
+    expect(heartbeat.body).toBe('retry: 1000\n: heartbeat\n\n')
     await runtime.close()
   })
 })

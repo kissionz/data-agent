@@ -62,6 +62,8 @@ export interface HttpRequestLike {
   headers?: Record<string, string | undefined>
   query?: Record<string, string | undefined>
   body?: unknown
+  /** Set by server adapters so finite waits can be released on disconnect. */
+  signal?: AbortSignal
 }
 
 export interface HttpResponseLike {

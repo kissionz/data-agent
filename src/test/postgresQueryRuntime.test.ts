@@ -28,8 +28,23 @@ describe('PostgreSQL production query runtime resources', () => {
       query: 'checking',
       controlPlane: 'checking',
       worker: { running: false, draining: false, active: false },
+      reconciler: { running: false, draining: false, active: false },
     })
-    await expect(runtime.close()).resolves.toEqual({ drained: true, timedOut: false })
+    runtime.start()
+    expect(runtime.readiness()).toMatchObject({
+      ok: false,
+      worker: { running: true },
+      reconciler: { running: true, initialized: false },
+      shutdown: { closing: false, resourcesClosed: false },
+    })
+    await expect(Promise.all([runtime.close(), runtime.close()])).resolves.toEqual([
+      { drained: true, timedOut: false },
+      { drained: true, timedOut: false },
+    ])
+    expect(runtime.readiness()).toMatchObject({
+      ok: false,
+      shutdown: { closing: false, resourcesClosed: true },
+    })
     await expect(runtime.close()).resolves.toEqual({ drained: true, timedOut: false })
   })
 

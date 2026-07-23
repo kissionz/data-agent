@@ -16,6 +16,8 @@ describe('API PostgreSQL control-plane configuration', () => {
       controlPlaneIdleTimeoutMs: '45000',
       controlPlaneCancellationPollMs: '75',
       controlPlaneWorkerDrainMs: '12000',
+      controlPlaneReconcileIntervalMs: '45000',
+      controlPlaneReconcileBatchSize: '80',
     })
 
     expect(config.controlPlane).toEqual({
@@ -26,6 +28,8 @@ describe('API PostgreSQL control-plane configuration', () => {
       idleTimeoutMs: 45_000,
       cancellationPollMs: 75,
       workerDrainMs: 12_000,
+      reconcileIntervalMs: 45_000,
+      reconcileBatchSize: 80,
     })
     expect(config.query.credentialRef).toBe('env:CHATBI_QUERY_DATABASE_URL')
     expect(JSON.stringify(config)).not.toMatch(/postgres(?:ql)?:\/\//i)
@@ -91,6 +95,10 @@ describe('API PostgreSQL control-plane configuration', () => {
       .toThrow('between 1 and 120000')
     expect(() => createApiRuntimeConfig({ ...postgresCredentials, controlPlaneIdleTimeoutMs: 600_001 }))
       .toThrow('between 1 and 600000')
+    expect(() => createApiRuntimeConfig({ ...postgresCredentials, controlPlaneReconcileIntervalMs: 999 }))
+      .toThrow('between 1000 and 3600000')
+    expect(() => createApiRuntimeConfig({ ...postgresCredentials, controlPlaneReconcileBatchSize: 501 }))
+      .toThrow('between 1 and 500')
   })
 
   it('provides safe local defaults without requiring production credentials', () => {
@@ -103,6 +111,8 @@ describe('API PostgreSQL control-plane configuration', () => {
       idleTimeoutMs: 30_000,
       cancellationPollMs: 250,
       workerDrainMs: 30_000,
+      reconcileIntervalMs: 30_000,
+      reconcileBatchSize: 100,
     })
   })
 })

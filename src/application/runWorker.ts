@@ -87,6 +87,7 @@ export type RunWorkerCycleResult =
 export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPayload, TResult>) {
   const now = options.now ?? (() => new Date().toISOString())
   const heartbeatMs = resolveHeartbeatMs(options.leaseMs, options.heartbeatMs)
+  let activeCancellation: AbortController | undefined
 
   async function runOnce(runId?: string): Promise<RunWorkerCycleResult> {
     const claimedAt = now()
@@ -100,7 +101,14 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
 
     const identity = leaseIdentity(lease)
     const cancellation = new AbortController()
-    const unsubscribeCancellation = await options.queue.onCancelled(lease.runId, () => cancellation.abort())
+    activeCancellation = cancellation
+    let unsubscribeCancellation: () => MaybePromise<void>
+    try {
+      unsubscribeCancellation = await options.queue.onCancelled(lease.runId, () => cancellation.abort())
+    } catch (error) {
+      if (activeCancellation === cancellation) activeCancellation = undefined
+      throw error
+    }
     let heartbeatStopped = false
     let heartbeatTimer: ReturnType<typeof setTimeout> | undefined
     let heartbeatInFlight: Promise<void> | undefined
@@ -198,6 +206,7 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
     } finally {
       await stopHeartbeat()
       await unsubscribeCancellation()
+      if (activeCancellation === cancellation) activeCancellation = undefined
     }
 
     if (leaseLost) return await leaseLossResult(options.queue, lease)
@@ -255,7 +264,12 @@ export function createRunWorker<TPayload, TResult>(options: RunWorkerOptions<TPa
     return await leaseLossResult(options.queue, lease)
   }
 
-  return { runOnce }
+  return {
+    runOnce,
+    abortActive() {
+      activeCancellation?.abort()
+    },
+  }
 }
 
 async function leaseLossResult<TPayload, TResult>(

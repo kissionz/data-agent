@@ -13,6 +13,13 @@ import type {
   TransactionalResultManifestMetadata,
   TransactionalResultPage,
 } from './transactionalQueryExecutionCoordinator'
+import {
+  DEFAULT_DURABLE_EVENT_POLL_INTERVAL_MS,
+  DEFAULT_DURABLE_EVENT_WAIT_MS,
+  DurableEventPollAbortedError,
+  MAX_DURABLE_EVENT_WAIT_MS,
+  longPollDurableEvents,
+} from './durableEventLongPoll'
 
 export interface DurableRunEventsRequest {
   runId: string
@@ -20,12 +27,17 @@ export interface DurableRunEventsRequest {
   actor: ActorContext
   afterSequence?: string
   limit?: number
+  waitMs?: number
+  signal?: AbortSignal
 }
 
 export interface DurableRunEventsView<TEvent = unknown> {
   runId: string
   conversationId: string
   events: StoredRunEvent<TEvent>[]
+  afterSequence: number
+  timedOut: boolean
+  waitedMs: number
 }
 
 export interface DurableQueryReadService<TEvent = unknown> {
@@ -37,6 +49,7 @@ export interface DurableQueryReadServiceOptions<TEvent = unknown> {
   controlPlane: QueryControlPlane
   resultPageStore: ResultPageStore<TransactionalResultPage, TransactionalResultManifestMetadata>
   runEventStore: RunEventStore<TEvent>
+  eventPollIntervalMs?: number
 }
 
 /** Reads only committed control-plane state and published result manifests. */
@@ -215,23 +228,29 @@ export function createDurableQueryReadService<TEvent = unknown>(
       const { requestId, traceId } = ids()
       const afterSequence = parseSequence(request.afterSequence)
       const limit = normalizeEventLimit(request.limit)
-      if (afterSequence === undefined || limit === undefined) {
+      const waitMs = normalizeEventWait(request.waitMs)
+      if (afterSequence === undefined || limit === undefined || waitMs === undefined) {
         return failure(
           requestId,
           traceId,
           'VALIDATION_FAILED',
-          'Last-Event-ID 必须为非负整数，event limit 必须为 1-1000 的整数。',
+          `Last-Event-ID 必须为非负整数，event limit 必须为 1-1000，wait_ms 必须为 0-${MAX_DURABLE_EVENT_WAIT_MS} 的整数。`,
           `event_cursor_${request.runId}`,
         )
       }
       try {
         const authorized = await authorize(request, requestId, traceId)
         if (!authorized.ok) return authorized.envelope
-        const events = await options.runEventStore.listAfter({
-          ...authorized.scope,
+        const polled = await longPollDurableEvents({
+          store: options.runEventStore,
+          tenantId: authorized.scope.tenantId,
+          workspaceId: authorized.scope.workspaceId,
           runId: request.runId,
           afterSequence,
           limit,
+          waitMs,
+          signal: request.signal,
+          pollIntervalMs: options.eventPollIntervalMs ?? DEFAULT_DURABLE_EVENT_POLL_INTERVAL_MS,
         })
         return {
           ok: true,
@@ -240,10 +259,22 @@ export function createDurableQueryReadService<TEvent = unknown>(
           data: {
             runId: request.runId,
             conversationId: request.conversationId,
-            events: structuredClone(events),
+            events: structuredClone(polled.events),
+            afterSequence,
+            timedOut: polled.timedOut,
+            waitedMs: polled.waitedMs,
           },
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof DurableEventPollAbortedError) {
+          return failure(
+            requestId,
+            traceId,
+            'RUN_CANCELLED',
+            '事件等待已因客户端断开而结束',
+            `event_stream_aborted_${request.runId}`,
+          )
+        }
         return failure(
           requestId,
           traceId,
@@ -280,6 +311,11 @@ function parseSequence(value?: string): number | undefined {
 function normalizeEventLimit(limit?: number): number | undefined {
   if (limit === undefined) return 100
   return Number.isInteger(limit) && limit >= 1 && limit <= 1000 ? limit : undefined
+}
+
+function normalizeEventWait(waitMs?: number): number | undefined {
+  if (waitMs === undefined) return DEFAULT_DURABLE_EVENT_WAIT_MS
+  return Number.isInteger(waitMs) && waitMs >= 0 && waitMs <= MAX_DURABLE_EVENT_WAIT_MS ? waitMs : undefined
 }
 
 function assertManifestMetadata(metadata: TransactionalResultManifestMetadata): void {

@@ -22,8 +22,17 @@ interface PgResult<Row = Record<string, unknown>> {
   rowCount: number | null
 }
 
+interface BoundedPgQuery {
+  text: string
+  values: readonly unknown[]
+  query_timeout?: number
+}
+
 export interface PostgresResultEventClientLike {
-  query<Row = Record<string, unknown>>(text: string, values?: readonly unknown[]): Promise<PgResult<Row>>
+  query<Row = Record<string, unknown>>(
+    text: string | BoundedPgQuery,
+    values?: readonly unknown[],
+  ): Promise<PgResult<Row>>
   release(error?: Error | boolean): void
 }
 
@@ -35,7 +44,10 @@ export interface PostgresResultEventPoolLike {
 
 export interface PostgresResultEventStoreOptions {
   pool: PostgresResultEventPoolLike
+  /** Must be independent from pool in production so poolMax=1 can still cancel. */
+  cancellationPool?: PostgresResultEventPoolLike
   closePool?: boolean
+  closeCancellationPool?: boolean
 }
 
 export interface PostgresResultPageStore<TPayload = unknown, TMetadata = unknown>
@@ -281,24 +293,150 @@ returning *`, [
     const limit = input.limit ?? 100
     positiveInteger(limit, 'limit')
     if (limit > 1000) throw new Error('limit cannot exceed 1000')
-    const result = await options.pool.query<EventRow>(`select * from chatbi_run_events
+    const result = await boundedReadQuery<EventRow>(
+      options.pool,
+      options.cancellationPool ?? options.pool,
+      `select * from chatbi_run_events
 where tenant_id = $1 and workspace_id = $2 and run_id = $3 and sequence > $4
-order by sequence asc limit $5`, [input.tenantId, input.workspaceId, input.runId, input.afterSequence, limit])
+order by sequence asc limit $5`,
+      [input.tenantId, input.workspaceId, input.runId, input.afterSequence, limit],
+      input,
+    )
     return result.rows.map(mapEvent<TEvent>)
   }
 
   async function currentSequence(input: GetPublishedResultInput) {
     validateScope(input)
-    const result = await options.pool.query<EventStreamRow>(`select current_sequence from chatbi_run_event_streams
-where tenant_id = $1 and workspace_id = $2 and run_id = $3`, [input.tenantId, input.workspaceId, input.runId])
+    const result = await boundedReadQuery<EventStreamRow>(
+      options.pool,
+      options.cancellationPool ?? options.pool,
+      `select current_sequence from chatbi_run_event_streams
+where tenant_id = $1 and workspace_id = $2 and run_id = $3`,
+      [input.tenantId, input.workspaceId, input.runId],
+      input,
+    )
     return result.rows[0] ? integer(result.rows[0].current_sequence, 'current_sequence') : 0
   }
 
   async function close() {
     if (options.closePool) await options.pool.end?.()
+    if (options.closeCancellationPool && options.cancellationPool !== options.pool) {
+      await options.cancellationPool?.end?.()
+    }
   }
 
   return { append, listAfter, currentSequence, close }
+}
+
+async function boundedReadQuery<Row>(
+  pool: PostgresResultEventPoolLike,
+  cancellationPool: PostgresResultEventPoolLike,
+  text: string,
+  values: readonly unknown[],
+  boundary: { signal?: AbortSignal; timeoutMs?: number },
+): Promise<PgResult<Row>> {
+  if (boundary.signal?.aborted) throw abortError()
+  if (boundary.timeoutMs !== undefined) positiveInteger(boundary.timeoutMs, 'timeoutMs')
+  if (!boundary.signal && boundary.timeoutMs === undefined) return pool.query<Row>(text, values)
+
+  const client = await acquireReadClient(pool, boundary.signal)
+  let releaseWithError = false
+  try {
+    if (boundary.signal?.aborted) throw abortError()
+    const pidResult = await client.query<{ backend_pid: number | string }>({
+      text: 'select pg_backend_pid() as backend_pid',
+      values: [],
+      ...(boundary.timeoutMs !== undefined ? { query_timeout: boundary.timeoutMs } : {}),
+    })
+    const backendPid = positiveDatabaseInteger(pidResult.rows[0]?.backend_pid, 'backend_pid')
+    if (boundary.signal?.aborted) throw abortError()
+
+    let cancellation: Promise<void> | undefined
+    const onAbort = () => {
+      cancellation ??= cancelReadBackend(cancellationPool, backendPid).catch(() => undefined)
+    }
+    boundary.signal?.addEventListener('abort', onAbort, { once: true })
+    if (boundary.signal?.aborted) onAbort()
+    try {
+      return await client.query<Row>({
+        text,
+        values,
+        ...(boundary.timeoutMs !== undefined ? { query_timeout: boundary.timeoutMs } : {}),
+      })
+    } catch (error) {
+      releaseWithError = !isPostgresCancellation(error)
+      if (boundary.signal?.aborted) throw abortError()
+      throw error
+    } finally {
+      boundary.signal?.removeEventListener('abort', onAbort)
+      // Cancellation is best effort and already owns a rejection handler.
+      void cancellation
+    }
+  } catch (error) {
+    releaseWithError = !(error instanceof Error && error.name === 'AbortError')
+    throw error
+  } finally {
+    client.release(releaseWithError || undefined)
+  }
+}
+
+function abortError() {
+  const error = new Error('PostgreSQL event read aborted')
+  error.name = 'AbortError'
+  return error
+}
+
+function acquireReadClient(
+  pool: PostgresResultEventPoolLike,
+  signal: AbortSignal | undefined,
+): Promise<PostgresResultEventClientLike> {
+  if (signal?.aborted) return Promise.reject(abortError())
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const onAbort = () => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
+      reject(abortError())
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    void pool.connect().then((client) => {
+      if (settled) {
+        client.release()
+        return
+      }
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
+      resolve(client)
+    }, (error: unknown) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
+      reject(error)
+    })
+    if (signal?.aborted) onAbort()
+  })
+}
+
+async function cancelReadBackend(pool: PostgresResultEventPoolLike, backendPid: number): Promise<void> {
+  const result = await pool.query<{ cancelled: boolean }>(
+    'select pg_cancel_backend($1) as cancelled',
+    [backendPid],
+  )
+  if (result.rows[0]?.cancelled !== true) throw new Error('PostgreSQL event read cancellation rejected')
+}
+
+function positiveDatabaseInteger(value: unknown, name: string): number {
+  const number = typeof value === 'number' ? value : Number(value)
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error(`${name} must be a positive integer`)
+  return number
+}
+
+function isPostgresCancellation(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && String((error as { code: unknown }).code) === '57014'
 }
 
 async function loadPage(

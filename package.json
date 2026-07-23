@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "start:api": "tsx apps/api/src/main.ts",
+    "migrate:control-plane": "tsx apps/api/src/migrateControlPlane.ts",
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "test:integration:postgres": "vitest --config vitest.integration.config.ts --run",

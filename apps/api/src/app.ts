@@ -57,6 +57,7 @@ export interface ApiReadiness {
     query: 'fixture' | 'checking' | 'ok' | 'failed'
     controlPlane: 'not_configured' | 'checking' | 'ok' | 'failed'
     worker: 'not_configured' | 'stopped' | 'running' | 'draining' | 'failed'
+    reconciler: 'not_configured' | 'stopped' | 'initializing' | 'running' | 'draining' | 'failed'
   }
 }
 
@@ -106,6 +107,7 @@ export function createApiRuntime(
         query: query.status(),
         controlPlane: query.controlPlaneStatus(),
         worker: query.workerStatus(),
+        reconciler: query.reconcilerStatus(),
       },
     }
   }
@@ -177,6 +179,7 @@ export function createApiRuntime(
       if (method === 'GET' && eventMatch) {
         if (!durableReadService) return durableRouteUnavailable(config)
         const rawLimit = effectiveRequest.query?.limit
+        const rawWaitMs = effectiveRequest.query?.wait_ms ?? effectiveRequest.query?.waitMs
         const envelope = await durableReadService.getRunEvents({
           runId: decodeURIComponent(eventMatch[1]),
           conversationId: effectiveRequest.query?.conversation_id || effectiveRequest.query?.conversationId || '',
@@ -185,6 +188,8 @@ export function createApiRuntime(
             || effectiveRequest.headers?.['Last-Event-ID']
             || effectiveRequest.query?.last_event_id,
           limit: rawLimit === undefined ? undefined : Number(rawLimit),
+          waitMs: rawWaitMs === undefined ? undefined : Number(rawWaitMs),
+          signal: effectiveRequest.signal,
         })
         if (!envelope.ok) return json(httpStatusForError(envelope.error.code), envelope, config)
         return withConfiguredCors({
@@ -194,8 +199,13 @@ export function createApiRuntime(
             'cache-control': 'no-store',
             'connection': 'keep-alive',
             'x-content-type-options': 'nosniff',
+            'x-stream-mode': 'finite-long-poll',
+            'x-event-sequence': String(envelope.data.afterSequence),
+            'x-event-waited-ms': String(envelope.data.waitedMs),
           },
-          body: serializeDurableEvents(envelope.data.events),
+          body: envelope.data.events.length > 0
+            ? serializeDurableEvents(envelope.data.events)
+            : serializeDurableHeartbeat(),
         }, config)
       }
       if (isUnsupportedDurableRoute(method, path)) return durableRouteUnavailable(config)
@@ -268,6 +278,10 @@ function serializeDurableEvents(events: StoredRunEvent[]): string {
   }).join('\n')
 }
 
+function serializeDurableHeartbeat(): string {
+  return ['retry: 1000', ': heartbeat', '', ''].join('\n')
+}
+
 function isDurableQueryRoute(method: string, path: string): boolean {
   const normalizedMethod = method.toUpperCase()
   return (normalizedMethod === 'POST' && path === '/v1/questions')
@@ -324,6 +338,7 @@ interface QueryRuntimeBoundary {
   status(): ApiReadiness['checks']['query']
   controlPlaneStatus(): ApiReadiness['checks']['controlPlane']
   workerStatus(): ApiReadiness['checks']['worker']
+  reconcilerStatus(): ApiReadiness['checks']['reconciler']
   isReady(): boolean
   checkReadiness(): Promise<void>
   start(): void
@@ -342,6 +357,7 @@ function createQueryRuntime(
       status: () => 'fixture',
       controlPlaneStatus: () => dependencies.queryControlPlane ? 'ok' : 'not_configured',
       workerStatus: () => 'not_configured',
+      reconcilerStatus: () => 'not_configured',
       isReady: () => true,
       checkReadiness: async () => undefined,
       start: () => undefined,
@@ -360,6 +376,13 @@ function createQueryRuntime(
         if (worker.lastError) return 'failed'
         if (worker.draining) return 'draining'
         return worker.running ? 'running' : 'stopped'
+      },
+      reconcilerStatus: () => {
+        const reconciler = managedPostgres.readiness().reconciler
+        if (reconciler.lastError) return 'failed'
+        if (reconciler.draining) return 'draining'
+        if (reconciler.running && !reconciler.initialized) return 'initializing'
+        return reconciler.running ? 'running' : 'stopped'
       },
       isReady: () => managedPostgres.readiness().ok,
       async checkReadiness() {
@@ -398,6 +421,7 @@ function createQueryRuntime(
     status: () => currentStatus,
     controlPlaneStatus: () => dependencies.queryControlPlane ? 'ok' : 'not_configured',
     workerStatus: () => 'not_configured',
+    reconcilerStatus: () => 'not_configured',
     isReady: () => currentStatus === 'ok',
     checkReadiness,
     start: () => undefined,

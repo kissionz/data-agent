@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   createPostgresResultPageStore,
   createPostgresRunEventStore,
@@ -244,5 +244,82 @@ describe('PostgreSQL ResultPageStore and RunEventStore unit boundary', () => {
 
     await expect(store.listAfter({ ...scope, afterSequence: 0, limit: 10 })).resolves.toHaveLength(1)
     expect(pool.directCalls[0].values).toEqual([scope.tenantId, scope.workspaceId, scope.runId, 0, 10])
+  })
+
+  it('cancels a dedicated event-read backend through an independent pool', async () => {
+    const controller = new AbortController()
+    const add = vi.spyOn(controller.signal, 'addEventListener')
+    const remove = vi.spyOn(controller.signal, 'removeEventListener')
+    let rejectRead!: (error: Error) => void
+    let markReadStarted!: () => void
+    const readStarted = new Promise<void>((resolve) => { markReadStarted = resolve })
+    const calls: Array<{ text: string; values: readonly unknown[]; query_timeout?: number }> = []
+    const client = {
+      released: false,
+      releaseError: undefined as Error | boolean | undefined,
+      async query<Row = Record<string, unknown>>(input: string | {
+        text: string
+        values: readonly unknown[]
+        query_timeout?: number
+      }, values?: readonly unknown[]) {
+        const query = typeof input === 'string'
+          ? { text: input, values: values ?? [] }
+          : input
+        calls.push(query)
+        if (query.text.includes('pg_backend_pid')) {
+          return { rows: [{ backend_pid: 731 }], rowCount: 1 } as { rows: Row[]; rowCount: number }
+        }
+        markReadStarted()
+        return await new Promise<{ rows: Row[]; rowCount: number }>((_resolve, reject) => {
+          rejectRead = reject
+        })
+      },
+      release(error?: Error | boolean) {
+        this.released = true
+        this.releaseError = error
+      },
+    }
+    const pool = {
+      async connect() { return client },
+      async query() { throw new Error('event read must use its dedicated client') },
+    } as PostgresResultEventPoolLike
+    const cancellationCalls: Array<{ text: string; values?: readonly unknown[] }> = []
+    const cancellationPool = {
+      async connect() { throw new Error('not used') },
+      async query<Row = Record<string, unknown>>(text: string, values?: readonly unknown[]) {
+        cancellationCalls.push({ text, values })
+        rejectRead(Object.assign(new Error('cancelled'), { code: '57014' }))
+        return { rows: [{ cancelled: true }], rowCount: 1 } as { rows: Row[]; rowCount: number }
+      },
+    } as PostgresResultEventPoolLike
+    const store = createPostgresRunEventStore({ pool, cancellationPool })
+
+    const read = store.listAfter({
+      ...scope,
+      afterSequence: 0,
+      limit: 10,
+      signal: controller.signal,
+      timeoutMs: 321,
+    })
+    await readStarted
+    controller.abort()
+
+    await expect(read).rejects.toMatchObject({ name: 'AbortError' })
+    expect(calls).toEqual([
+      { text: 'select pg_backend_pid() as backend_pid', values: [], query_timeout: 321 },
+      {
+        text: expect.stringContaining('from chatbi_run_events'),
+        values: [scope.tenantId, scope.workspaceId, scope.runId, 0, 10],
+        query_timeout: 321,
+      },
+    ])
+    expect(cancellationCalls).toEqual([{
+      text: 'select pg_cancel_backend($1) as cancelled',
+      values: [731],
+    }])
+    expect(client.released).toBe(true)
+    expect(client.releaseError).toBeUndefined()
+    expect(add).toHaveBeenCalledWith('abort', expect.any(Function), { once: true })
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
   })
 })

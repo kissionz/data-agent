@@ -41,9 +41,16 @@ describe('API managed PostgreSQL runtime wiring', () => {
       query: 'ok',
       controlPlane: 'ok',
       worker: { running: false, draining: false, active: false },
+      reconciler: { running: false, draining: false, active: false, initialized: false },
+      shutdown: { closing: false, resourcesClosed: false },
     }
     const start = vi.fn(() => {
-      state = { ...state, ok: true, worker: { ...state.worker, running: true } }
+      state = {
+        ...state,
+        ok: false,
+        worker: { ...state.worker, running: true },
+        reconciler: { ...state.reconciler, running: true },
+      }
     })
     const close = vi.fn(async () => ({ drained: true, timedOut: false }))
     const postgresRuntime: PostgresQueryRuntime = {
@@ -52,6 +59,7 @@ describe('API managed PostgreSQL runtime wiring', () => {
       runEventStore: createInMemoryRunEventStore(),
       start,
       runOnce: vi.fn(async () => ({ status: 'idle' })),
+      reconcileOnce: vi.fn(async () => ({ scanned: 0, repaired: 0, alerted: 0 })),
       checkReadiness: vi.fn(async () => state),
       readiness: () => state,
       close,
@@ -65,14 +73,16 @@ describe('API managed PostgreSQL runtime wiring', () => {
 
     expect(runtime.readiness()).toMatchObject({
       ok: false,
-      checks: { query: 'ok', controlPlane: 'ok', worker: 'stopped' },
+      checks: { query: 'ok', controlPlane: 'ok', worker: 'stopped', reconciler: 'stopped' },
     })
     runtime.startQueryWorker()
     expect(start).toHaveBeenCalledTimes(1)
     expect(runtime.readiness()).toMatchObject({
-      ok: true,
-      checks: { query: 'ok', controlPlane: 'ok', worker: 'running' },
+      ok: false,
+      checks: { query: 'ok', controlPlane: 'ok', worker: 'running', reconciler: 'initializing' },
     })
+    state = { ...state, ok: true, reconciler: { ...state.reconciler, initialized: true } }
+    expect(runtime.readiness()).toMatchObject({ ok: true, checks: { reconciler: 'running' } })
 
     const response = await runtime.handleAsync({
       method: 'POST',

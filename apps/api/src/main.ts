@@ -1,11 +1,13 @@
 import { createNodeBffServer } from '../../../src/api/nodeServer'
 import { createApiRuntime } from './app'
 import { createApiRuntimeConfig } from './config'
+import { bindGracefulShutdown } from './gracefulShutdown'
 
 interface RuntimeProcess {
   env?: Record<string, string | undefined>
   stdout?: { write(text: string): void }
   on?(event: 'SIGINT' | 'SIGTERM', listener: () => void): void
+  removeListener?(event: 'SIGINT' | 'SIGTERM', listener: () => void): void
 }
 
 declare const process: RuntimeProcess | undefined
@@ -35,6 +37,8 @@ const input = {
   controlPlaneIdleTimeoutMs: env.CHATBI_CONTROL_PLANE_IDLE_TIMEOUT_MS,
   controlPlaneCancellationPollMs: env.CHATBI_CONTROL_PLANE_CANCELLATION_POLL_MS,
   controlPlaneWorkerDrainMs: env.CHATBI_CONTROL_PLANE_WORKER_DRAIN_MS,
+  controlPlaneReconcileIntervalMs: env.CHATBI_CONTROL_PLANE_RECONCILE_INTERVAL_MS,
+  controlPlaneReconcileBatchSize: env.CHATBI_CONTROL_PLANE_RECONCILE_BATCH_SIZE,
   corsAllowOrigin: env.CORS_ALLOW_ORIGIN,
 } as const
 const config = createApiRuntimeConfig(input)
@@ -68,14 +72,17 @@ server.listen(config.port, config.host, () => {
   process?.stdout?.write?.(`${config.serviceName} listening on http://${config.host}:${config.port}\n`)
 })
 
-let shuttingDown = false
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process?.on?.(signal, () => {
-    if (shuttingDown) return
-    shuttingDown = true
-    server.close(() => {
-      void runtime.close()
-    })
+if (process?.on) {
+  bindGracefulShutdown({
+    server,
+    runtime,
+    signalSource: {
+      on: (signal, listener) => process.on?.(signal, listener),
+      removeListener: (signal, listener) => process.removeListener?.(signal, listener),
+    },
+    onError(summary) {
+      process.stdout?.write?.(`${config.serviceName} shutdown ${summary.phase} failed (${summary.name})\n`)
+    },
   })
 }
 

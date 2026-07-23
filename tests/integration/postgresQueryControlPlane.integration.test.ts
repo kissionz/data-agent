@@ -196,6 +196,7 @@ describe('PostgreSQL atomic query control-plane real integration', () => {
 
   beforeEach(async () => {
     await admin.query(`truncate table
+      chatbi_query_reconciliation_findings,
       chatbi_query_audit_events,
       chatbi_query_idempotency,
       chatbi_run_events,

@@ -21,6 +21,9 @@ describe('API managed PostgreSQL runtime wiring', () => {
       queryMode: 'postgresql',
       queryCredentialRef: 'env:CHATBI_QUERY_DATABASE_URL',
       controlPlaneCredentialRef: 'env:CHATBI_CONTROL_PLANE_DATABASE_URL',
+      outboxMode: 'http',
+      outboxEndpointUrl: 'https://events.example.com/chatbi',
+      outboxHmacSecretRef: 'env:CHATBI_OUTBOX_HMAC_SECRET',
     }, {
       queryAdapter: {
         dialect: 'postgresql',
@@ -42,6 +45,16 @@ describe('API managed PostgreSQL runtime wiring', () => {
       controlPlane: 'ok',
       worker: { running: false, draining: false, active: false },
       reconciler: { running: false, draining: false, active: false, initialized: false },
+      outbox: {
+        mode: 'http',
+        running: false,
+        draining: false,
+        active: false,
+        initialized: false,
+        deliveryDegraded: false,
+        consecutiveDeliveryFailures: 0,
+        deadLetteredSinceStart: 0,
+      },
       shutdown: { closing: false, resourcesClosed: false },
     }
     const start = vi.fn(() => {
@@ -50,6 +63,7 @@ describe('API managed PostgreSQL runtime wiring', () => {
         ok: false,
         worker: { ...state.worker, running: true },
         reconciler: { ...state.reconciler, running: true },
+        outbox: { ...state.outbox, running: true },
       }
     })
     const close = vi.fn(async () => ({ drained: true, timedOut: false }))
@@ -60,6 +74,7 @@ describe('API managed PostgreSQL runtime wiring', () => {
       start,
       runOnce: vi.fn(async () => ({ status: 'idle' })),
       reconcileOnce: vi.fn(async () => ({ scanned: 0, repaired: 0, alerted: 0 })),
+      publishOutboxOnce: vi.fn(async () => ({ status: 'idle' })),
       checkReadiness: vi.fn(async () => state),
       readiness: () => state,
       close,
@@ -69,20 +84,97 @@ describe('API managed PostgreSQL runtime wiring', () => {
       queryMode: 'postgresql',
       queryCredentialRef: 'env:CHATBI_QUERY_DATABASE_URL',
       controlPlaneCredentialRef: 'env:CHATBI_CONTROL_PLANE_DATABASE_URL',
+      outboxMode: 'http',
+      outboxEndpointUrl: 'https://events.example.com/chatbi',
+      outboxHmacSecretRef: 'env:CHATBI_OUTBOX_HMAC_SECRET',
     }, { postgresRuntime })
 
     expect(runtime.readiness()).toMatchObject({
       ok: false,
-      checks: { query: 'ok', controlPlane: 'ok', worker: 'stopped', reconciler: 'stopped' },
+      checks: {
+        query: 'ok',
+        controlPlane: 'ok',
+        worker: 'stopped',
+        reconciler: 'stopped',
+        outbox: 'stopped',
+      },
     })
     runtime.startQueryWorker()
     expect(start).toHaveBeenCalledTimes(1)
     expect(runtime.readiness()).toMatchObject({
       ok: false,
-      checks: { query: 'ok', controlPlane: 'ok', worker: 'running', reconciler: 'initializing' },
+      checks: {
+        query: 'ok',
+        controlPlane: 'ok',
+        worker: 'running',
+        reconciler: 'initializing',
+        outbox: 'initializing',
+      },
     })
-    state = { ...state, ok: true, reconciler: { ...state.reconciler, initialized: true } }
-    expect(runtime.readiness()).toMatchObject({ ok: true, checks: { reconciler: 'running' } })
+    state = {
+      ...state,
+      ok: true,
+      reconciler: { ...state.reconciler, initialized: true },
+      outbox: { ...state.outbox, initialized: true },
+    }
+    expect(runtime.readiness()).toMatchObject({
+      ok: true,
+      checks: { reconciler: 'running', outbox: 'running' },
+    })
+    state = { ...state, ok: false, outbox: { ...state.outbox, draining: true } }
+    expect(runtime.readiness()).toMatchObject({ ok: false, checks: { outbox: 'draining' } })
+    state = {
+      ...state,
+      outbox: {
+        ...state.outbox,
+        draining: false,
+        lastError: { name: 'Error', at: '2026-07-23T12:00:00.000Z' },
+      },
+    }
+    expect(runtime.readiness()).toMatchObject({ ok: false, checks: { outbox: 'failed' } })
+    state = {
+      ...state,
+      ok: true,
+      outbox: { ...state.outbox, lastError: undefined },
+    }
+    state = {
+      ...state,
+      ok: false,
+      outbox: {
+        ...state.outbox,
+        deliveryDegraded: true,
+        consecutiveDeliveryFailures: 3,
+        deadLetteredSinceStart: 1,
+        lastDeliveryFailure: {
+          status: 'dead_lettered',
+          at: '2026-07-23T12:00:00.000Z',
+        },
+      },
+    }
+    expect(runtime.readiness()).toMatchObject({
+      ok: false,
+      checks: { outbox: 'failed' },
+      outboxDelivery: {
+        degraded: true,
+        consecutiveFailures: 3,
+        deadLetteredSinceStart: 1,
+        lastFailure: {
+          status: 'dead_lettered',
+          at: '2026-07-23T12:00:00.000Z',
+        },
+      },
+    })
+    state = {
+      ...state,
+      ok: true,
+      outbox: {
+        ...state.outbox,
+        deliveryDegraded: false,
+        consecutiveDeliveryFailures: 0,
+        deadLetteredSinceStart: 0,
+        lastDeliveryFailure: undefined,
+      },
+    }
 
     const response = await runtime.handleAsync({
       method: 'POST',

@@ -6,7 +6,10 @@ export {
 } from './postgresQueryRuntime'
 export {
   createApiRuntimeConfig,
+  parseApiEnvironment,
+  parseApiQuerySslMode,
   type ApiAuthMode,
+  type ApiOutboxMode,
   type ApiPersistenceMode,
   type ApiQueryMode,
   type ApiQuerySslMode,

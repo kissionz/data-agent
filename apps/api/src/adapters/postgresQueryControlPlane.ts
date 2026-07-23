@@ -48,8 +48,51 @@ export interface PostgresQueryControlPlanePoolLike {
   end?(): Promise<void>
 }
 
+export type QueryControlPlaneOutboxJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | QueryControlPlaneOutboxJsonValue[]
+  | { [key: string]: QueryControlPlaneOutboxJsonValue }
+
+export interface QueryControlPlaneOutboxEnqueueInput {
+  eventId: string
+  tenantId: string
+  workspaceId: string
+  aggregateType: 'query_run'
+  aggregateId: string
+  topic:
+    | 'query.run.submitted.v1'
+    | 'query.run.cancelled.v1'
+    | 'query.attempt.completed.v1'
+    | 'query.attempt.failed.v1'
+    | 'query.attempt.retry_scheduled.v1'
+  payload: { [key: string]: QueryControlPlaneOutboxJsonValue }
+  occurredAt: string
+  availableAt?: string
+  maxAttempts?: number
+}
+
+export type QueryControlPlaneOutboxEnqueueResult =
+  | { ok: true; created: boolean }
+  | { ok: false; reason: 'idempotency_conflict' }
+
+/**
+ * Transaction-bound port implemented by the durable outbox adapter. The
+ * supplied client already owns the control-plane transaction; implementations
+ * must not begin, commit, roll back, or release it.
+ */
+export interface PostgresQueryControlPlaneTransactionalOutbox {
+  enqueueWithClient(
+    client: PostgresQueryControlPlaneClientLike,
+    input: QueryControlPlaneOutboxEnqueueInput,
+  ): Promise<QueryControlPlaneOutboxEnqueueResult>
+}
+
 export interface PostgresQueryControlPlaneOptions {
   pool: PostgresQueryControlPlanePoolLike
+  transactionalOutbox?: PostgresQueryControlPlaneTransactionalOutbox
   closePool?: boolean
 }
 
@@ -649,6 +692,56 @@ function mapAttempt(row: AttemptRow): RunJobAttemptView {
   return attempt
 }
 
+function controlPlaneOutboxEvent(
+  input: Omit<QueryControlPlaneOutboxEnqueueInput, 'eventId' | 'aggregateType' | 'aggregateId' | 'availableAt'> & {
+    runId: string
+    identity?: { attempt: number; fence: number }
+  },
+): QueryControlPlaneOutboxEnqueueInput {
+  const occurredAt = instant(input.occurredAt, 'outbox.occurredAt')
+  const aggregateType = 'query_run' as const
+  const aggregateId = input.runId
+  const eventId = `outbox_query_run_${fingerprint({
+    tenantId: input.tenantId,
+    workspaceId: input.workspaceId,
+    aggregateType,
+    aggregateId,
+    topic: input.topic,
+    ...(input.identity ? { attempt: input.identity.attempt, fence: input.identity.fence } : {}),
+  })}`
+  return {
+    eventId,
+    tenantId: input.tenantId,
+    workspaceId: input.workspaceId,
+    aggregateType,
+    aggregateId,
+    topic: input.topic,
+    payload: input.payload,
+    occurredAt,
+    availableAt: occurredAt,
+  }
+}
+
+async function enqueueControlPlaneOutbox(
+  outbox: PostgresQueryControlPlaneTransactionalOutbox | undefined,
+  client: PostgresQueryControlPlaneClientLike,
+  event: QueryControlPlaneOutboxEnqueueInput,
+) {
+  if (!outbox) return
+  let result: QueryControlPlaneOutboxEnqueueResult
+  try {
+    result = await outbox.enqueueWithClient(client, event)
+  } catch {
+    // Adapter/driver messages may contain DSNs, statements, or parameters.
+    throw new Error('query control-plane outbox enqueue failed')
+  }
+  if (!result.ok) {
+    // Keep the thrown error public-safe: the existing row may contain data that
+    // must never be copied into logs or an HTTP response.
+    throw new Error('query control-plane outbox idempotency conflict')
+  }
+}
+
 export function createPostgresQueryControlPlane<
   TPayload = unknown,
   TResult = unknown,
@@ -867,6 +960,26 @@ returning run_id`, [
           if (!insertedJob.rowCount) conflict('run_identity_conflict', { existingRunId: run.id })
         }
 
+        await enqueueControlPlaneOutbox(
+          options.transactionalOutbox,
+          client,
+          controlPlaneOutboxEvent({
+            runId: run.id,
+            tenantId,
+            workspaceId,
+            topic: 'query.run.submitted.v1',
+            occurredAt: input.job?.enqueuedAt ?? run.createdAt,
+            payload: {
+              schemaVersion: 'query_control_plane.v1',
+              type: 'query.run.submitted',
+              runId: run.id,
+              conversationId,
+              state: run.displayStatus,
+              workScheduled: Boolean(input.job),
+            },
+          }),
+        )
+
         return {
           ok: true,
           created: true,
@@ -959,6 +1072,24 @@ where run_id = $1`, [input.runId, cancelledAt])
       await updateConversation(client, conversation, input.actor.businessDomainId)
       await insertAudit(client, audit)
       await appendEvent(client, input.tenantId, input.workspaceId, input.runId, input.event)
+      await enqueueControlPlaneOutbox(
+        options.transactionalOutbox,
+        client,
+        controlPlaneOutboxEvent({
+          runId: input.runId,
+          tenantId: input.tenantId,
+          workspaceId: input.workspaceId,
+          topic: 'query.run.cancelled.v1',
+          occurredAt: cancelledAt,
+          payload: {
+            schemaVersion: 'query_control_plane.v1',
+            type: 'query.run.cancelled',
+            runId: input.runId,
+            conversationId: input.conversationId,
+            state: 'cancelled',
+          },
+        }),
+      )
       return { ok: true, applied: true, conversation, runRecord }
     })
   }
@@ -1022,6 +1153,40 @@ where run_id = $1`, [input.runId, cancelledAt])
       await updateConversation(client, input.conversation, conversationRow.business_domain_id)
       for (const audit of input.newAuditEvents) await insertAudit(client, audit)
       await appendEvent(client, job!.tenant_id, job!.workspace_id, mutation.runId, input.event)
+      const topic = input.job.type === 'complete'
+        ? 'query.attempt.completed.v1' as const
+        : input.job.type === 'fail'
+          ? 'query.attempt.failed.v1' as const
+          : 'query.attempt.retry_scheduled.v1' as const
+      const state = input.job.type === 'complete'
+        ? 'completed'
+        : input.job.type === 'fail'
+          ? 'failed'
+          : 'retry_wait'
+      await enqueueControlPlaneOutbox(
+        options.transactionalOutbox,
+        client,
+        controlPlaneOutboxEvent({
+          runId: mutation.runId,
+          tenantId: job!.tenant_id,
+          workspaceId: job!.workspace_id,
+          topic,
+          occurredAt: at,
+          identity: { attempt: mutation.attempt, fence: mutation.fence },
+          payload: {
+            schemaVersion: 'query_control_plane.v1',
+            type: topic.slice(0, -'.v1'.length),
+            runId: mutation.runId,
+            conversationId: storedRow.conversation_id,
+            state,
+            attempt: mutation.attempt,
+            fence: mutation.fence,
+            ...(input.job.type === 'retry'
+              ? { nextAttemptAt: instant(input.job.input.availableAt, 'availableAt') }
+              : {}),
+          },
+        }),
+      )
       return { ok: true, applied: true, job: await requiredJob<TPayload, TResult>(client, mutation.runId) }
     })
   }

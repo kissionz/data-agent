@@ -27,6 +27,13 @@ class MigrationClient implements PostgresMigrationClientLike {
   unmanagedRelationCount = 0
   missingRelationCount = 0
   missingTriggerCount = 0
+  missingOutboxColumnCount = 0
+  missingOutboxIndexCount = 0
+  missingOutboxConstraintCount = 0
+  columnDefinitionMismatchCount = 0
+  indexDefinitionMismatchCount = 0
+  constraintDefinitionMismatchCount = 0
+  triggerDefinitionMismatchCount = 0
 
   constructor(private readonly migrations: readonly PostgresControlPlaneMigration[]) {}
 
@@ -50,7 +57,34 @@ class MigrationClient implements PostgresMigrationClientLike {
         rows: [{
           missing_relation_count: this.missingRelationCount,
           missing_trigger_count: this.missingTriggerCount,
+          missing_outbox_column_count: this.missingOutboxColumnCount,
+          missing_outbox_index_count: this.missingOutboxIndexCount,
+          missing_outbox_constraint_count: this.missingOutboxConstraintCount,
         }] as Row[],
+        rowCount: 1,
+      }
+    }
+    if (text.startsWith('with expected as (') && text.includes('from pg_class relation\n  join pg_namespace')) {
+      return {
+        rows: [{ definition_mismatch_count: this.columnDefinitionMismatchCount }] as Row[],
+        rowCount: 1,
+      }
+    }
+    if (text.startsWith('with expected as (') && text.includes('from pg_index definition')) {
+      return {
+        rows: [{ definition_mismatch_count: this.indexDefinitionMismatchCount }] as Row[],
+        rowCount: 1,
+      }
+    }
+    if (text.startsWith('with expected as (') && text.includes('from pg_constraint definition')) {
+      return {
+        rows: [{ definition_mismatch_count: this.constraintDefinitionMismatchCount }] as Row[],
+        rowCount: 1,
+      }
+    }
+    if (text.startsWith('with expected as (') && text.includes('from pg_trigger definition')) {
+      return {
+        rows: [{ definition_mismatch_count: this.triggerDefinitionMismatchCount }] as Row[],
         rowCount: 1,
       }
     }
@@ -88,7 +122,7 @@ class MigrationPool implements PostgresMigrationPoolLike {
 }
 
 describe('PostgreSQL control-plane migration runner', () => {
-  it('loads immutable 001-005 SQL files with SHA-256 checksums', () => {
+  it('loads immutable 001-006 SQL files with SHA-256 checksums', () => {
     const migrations = loadPostgresControlPlaneMigrations()
 
     expect(migrations.map(({ version, name }) => ({ version, name }))).toEqual([
@@ -97,6 +131,7 @@ describe('PostgreSQL control-plane migration runner', () => {
       { version: 3, name: '003-result-event-store' },
       { version: 4, name: '004-query-control-plane' },
       { version: 5, name: '005-query-reconciler' },
+      { version: 6, name: '006-query-outbox' },
     ])
     expect(migrations.every((migration) => /^[0-9a-f]{64}$/.test(migration.checksum))).toBe(true)
     expect(migrations.every((migration) => migration.sql.trim().length > 100)).toBe(true)
@@ -123,12 +158,12 @@ describe('PostgreSQL control-plane migration runner', () => {
 
     const result = await runPostgresControlPlaneMigrations(new MigrationPool(client), [...migrations].reverse())
 
-    expect(result).toEqual({ appliedVersions: [1, 2, 3, 4, 5], skippedVersions: [], latestVersion: 5 })
-    expect(client.executedMigrationVersions).toEqual([1, 2, 3, 4, 5])
+    expect(result).toEqual({ appliedVersions: [1, 2, 3, 4, 5, 6], skippedVersions: [], latestVersion: 6 })
+    expect(client.executedMigrationVersions).toEqual([1, 2, 3, 4, 5, 6])
     expect(client.calls[0]).toMatchObject({ text: 'select pg_try_advisory_lock($1::bigint) as locked' })
     expect(client.calls.at(-1)).toMatchObject({ text: 'select pg_advisory_unlock($1::bigint) as unlocked' })
-    expect(client.calls.filter((call) => call.text === 'BEGIN')).toHaveLength(5)
-    expect(client.calls.filter((call) => call.text === 'COMMIT')).toHaveLength(5)
+    expect(client.calls.filter((call) => call.text === 'BEGIN')).toHaveLength(6)
+    expect(client.calls.filter((call) => call.text === 'COMMIT')).toHaveLength(6)
     expect(client.released).toBe(true)
   })
 
@@ -141,7 +176,7 @@ describe('PostgreSQL control-plane migration runner', () => {
 
     const result = await runPostgresControlPlaneMigrations(pool, migrations)
 
-    expect(result).toEqual({ appliedVersions: [], skippedVersions: [1, 2, 3, 4, 5], latestVersion: 5 })
+    expect(result).toEqual({ appliedVersions: [], skippedVersions: [1, 2, 3, 4, 5, 6], latestVersion: 6 })
     expect(client.executedMigrationVersions).toEqual([])
   })
 
@@ -162,16 +197,60 @@ describe('PostgreSQL control-plane migration runner', () => {
   })
 
   it.each([
-    { name: 'required relation', missingRelationCount: 1, missingTriggerCount: 0 },
-    { name: 'immutability trigger', missingRelationCount: 0, missingTriggerCount: 1 },
+    {
+      name: 'required relation',
+      missingRelationCount: 1,
+      missingTriggerCount: 0,
+      missingOutboxColumnCount: 0,
+      missingOutboxIndexCount: 0,
+      missingOutboxConstraintCount: 0,
+    },
+    {
+      name: 'immutability trigger',
+      missingRelationCount: 0,
+      missingTriggerCount: 1,
+      missingOutboxColumnCount: 0,
+      missingOutboxIndexCount: 0,
+      missingOutboxConstraintCount: 0,
+    },
+    {
+      name: 'outbox column',
+      missingRelationCount: 0,
+      missingTriggerCount: 0,
+      missingOutboxColumnCount: 1,
+      missingOutboxIndexCount: 0,
+      missingOutboxConstraintCount: 0,
+    },
+    {
+      name: 'outbox index',
+      missingRelationCount: 0,
+      missingTriggerCount: 0,
+      missingOutboxColumnCount: 0,
+      missingOutboxIndexCount: 1,
+      missingOutboxConstraintCount: 0,
+    },
+    {
+      name: 'outbox constraint',
+      missingRelationCount: 0,
+      missingTriggerCount: 0,
+      missingOutboxColumnCount: 0,
+      missingOutboxIndexCount: 0,
+      missingOutboxConstraintCount: 1,
+    },
   ])('rejects a completed ledger when a $name is missing', async ({
     missingRelationCount,
     missingTriggerCount,
+    missingOutboxColumnCount,
+    missingOutboxIndexCount,
+    missingOutboxConstraintCount,
   }) => {
     const migrations = loadPostgresControlPlaneMigrations()
     const client = new MigrationClient(migrations)
     client.missingRelationCount = missingRelationCount
     client.missingTriggerCount = missingTriggerCount
+    client.missingOutboxColumnCount = missingOutboxColumnCount
+    client.missingOutboxIndexCount = missingOutboxIndexCount
+    client.missingOutboxConstraintCount = missingOutboxConstraintCount
 
     const error = await runPostgresControlPlaneMigrations(new MigrationPool(client), migrations)
       .catch((caught: unknown) => caught as PostgresMigrationError)
@@ -188,6 +267,8 @@ describe('PostgreSQL control-plane migration runner', () => {
       'chatbi_schema_migrations',
       'chatbi_run_jobs',
       'chatbi_query_reconciliation_findings',
+      'chatbi_query_outbox',
+      'chatbi_query_outbox_attempts',
     ]))
     expect(validation?.values?.[1]).toEqual([
       'chatbi_result_manifests',
@@ -197,6 +278,166 @@ describe('PostgreSQL control-plane migration runner', () => {
       'chatbi_result_manifests_immutable',
       'chatbi_result_pages_published_immutable',
     ])
+    expect(validation?.values?.[3]).toEqual(expect.arrayContaining([
+      'chatbi_query_outbox',
+      'chatbi_query_outbox_attempts',
+    ]))
+    expect(validation?.values?.[4]).toEqual(expect.arrayContaining([
+      'event_id',
+      'lease_token_hash',
+      'outcome',
+    ]))
+    expect(validation?.values?.[5]).toEqual(expect.arrayContaining([
+      'chatbi_query_outbox_claim_idx',
+      'chatbi_query_outbox_attempts_scope_idx',
+    ]))
+    expect(validation?.values?.[6]).toEqual(expect.arrayContaining([
+      'chatbi_query_outbox',
+      'chatbi_query_outbox_attempts',
+    ]))
+    expect(validation?.values?.[7]).toEqual(expect.arrayContaining([
+      'chatbi_query_outbox_status_check',
+      'chatbi_query_outbox_lease_shape_check',
+      'chatbi_query_outbox_terminal_metadata_check',
+      'chatbi_query_outbox_attempts_scope_event_fk',
+      'chatbi_query_outbox_attempts_terminal_shape_check',
+    ]))
+  })
+
+  it.each([
+    {
+      name: 'same-name column with a weaker type, nullability, default, identity, or generated definition',
+      mismatch: 'columnDefinitionMismatchCount' as const,
+      catalogNeedles: ['format_type(', 'attribute.attnotnull', 'pg_get_expr(default_value.adbin', 'attidentity', 'attgenerated'],
+    },
+    {
+      name: 'same-name index with weaker keys, ordering, predicate, access method, or validity flags',
+      mismatch: 'indexDefinitionMismatchCount' as const,
+      catalogNeedles: ['pg_get_indexdef(', 'pg_get_expr(definition.indpred', 'indisvalid', 'indisready', 'indnullsnotdistinct'],
+    },
+    {
+      name: 'same-name constraint with a weaker expression or wrong scoped foreign-key target',
+      mismatch: 'constraintDefinitionMismatchCount' as const,
+      catalogNeedles: ['pg_get_expr(definition.conbin', 'definition.confrelid', 'definition.confdeltype', 'definition.convalidated'],
+    },
+    {
+      name: 'same-name trigger with weaker events, function target, function body, or execution metadata',
+      mismatch: 'triggerDefinitionMismatchCount' as const,
+      catalogNeedles: ['definition.tgtype', 'definition.tgfoid', 'routine.prosrc', 'routine.provolatile', 'routine.prosecdef'],
+    },
+  ])('rejects a $name', async ({ mismatch, catalogNeedles }) => {
+    const migrations = loadPostgresControlPlaneMigrations()
+    const client = new MigrationClient(migrations)
+    for (const migration of migrations) {
+      client.applied.set(migration.version, {
+        version: migration.version,
+        name: migration.name,
+        checksum: migration.checksum,
+      })
+    }
+    client[mismatch] = 1
+
+    const error = await runPostgresControlPlaneMigrations(new MigrationPool(client), migrations)
+      .catch((caught: unknown) => caught as PostgresMigrationError)
+
+    expect(error).toMatchObject({
+      code: 'MIGRATION_SCHEMA_INVALID',
+      message: 'Control-plane schema definition validation failed',
+    })
+    expect(error.message).not.toContain('chatbi_')
+    const definitionQuery = client.calls.find((call) => (
+      call.text.startsWith('with expected as (')
+      && catalogNeedles.every((needle) => call.text.includes(needle))
+    ))
+    expect(definitionQuery).toBeDefined()
+    expect(definitionQuery?.values?.[0]).toEqual(expect.any(String))
+    expect(client.executedMigrationVersions).toEqual([])
+  })
+
+  it('binds the complete outbox and immutable-trigger catalog definition matrix', async () => {
+    const migrations = loadPostgresControlPlaneMigrations()
+    const client = new MigrationClient(migrations)
+
+    await runPostgresControlPlaneMigrations(new MigrationPool(client), migrations)
+
+    const definitionQueries = client.calls.filter((call) => call.text.startsWith('with expected as ('))
+    expect(definitionQueries).toHaveLength(4)
+    const [columns, indexes, constraints, triggers] = definitionQueries.map((call) => (
+      JSON.parse(String(call.values?.[0])) as Array<Record<string, unknown>>
+    ))
+
+    expect(columns).toHaveLength(41)
+    expect(columns).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        relationName: 'chatbi_query_outbox',
+        columnName: 'status',
+        dataType: 'text',
+        notNull: true,
+        defaultDefinition: "'pending'",
+      }),
+      expect.objectContaining({
+        relationName: 'chatbi_query_outbox_attempts',
+        columnName: 'ended_at',
+        dataType: 'timestamp with time zone',
+        notNull: false,
+        defaultDefinition: null,
+      }),
+    ]))
+    expect(indexes).toEqual([
+      expect.objectContaining({
+        indexName: 'chatbi_query_outbox_claim_idx',
+        keyDefinitions: ['available_at', 'occurred_at', 'event_id'],
+        predicateDefinition: "status=anyarray['pending','retry_wait']",
+      }),
+      expect.objectContaining({ indexName: 'chatbi_query_outbox_expired_lease_idx' }),
+      expect.objectContaining({
+        indexName: 'chatbi_query_outbox_scope_idx',
+        keyDefinitions: ['tenant_id', 'workspace_id', 'status', 'updated_atdesc'],
+      }),
+      expect.objectContaining({ indexName: 'chatbi_query_outbox_attempts_scope_idx' }),
+    ])
+    expect(constraints).toHaveLength(20)
+    expect(constraints).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        constraintName: 'chatbi_query_outbox_pkey',
+        kind: 'p',
+        localColumns: ['event_id'],
+      }),
+      expect.objectContaining({
+        constraintName: 'chatbi_query_outbox_attempts_scope_event_fk',
+        kind: 'f',
+        localColumns: ['tenant_id', 'workspace_id', 'event_id'],
+        targetRelation: 'chatbi_query_outbox',
+        targetColumns: ['tenant_id', 'workspace_id', 'event_id'],
+        deleteAction: 'c',
+      }),
+      expect.objectContaining({
+        constraintName: 'chatbi_query_outbox_terminal_metadata_check',
+        kind: 'c',
+        definitionSignature: expect.stringContaining("terminal_kind='published'andstatus='published'"),
+      }),
+      expect.objectContaining({
+        constraintName: 'chatbi_query_outbox_attempts_terminal_shape_check',
+        kind: 'c',
+        definitionSignature: expect.stringContaining("outcome='published'andfailure_jsonisnull"),
+      }),
+    ]))
+    expect(triggers).toHaveLength(2)
+    expect(triggers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        relationName: 'chatbi_result_manifests',
+        triggerName: 'chatbi_result_manifests_immutable',
+        functionName: 'chatbi_reject_published_result_mutation',
+        functionSourceSignature: expect.stringContaining("raiseexception'publishedresultmanifestsareimmutable'"),
+      }),
+      expect.objectContaining({
+        relationName: 'chatbi_result_pages',
+        triggerName: 'chatbi_result_pages_published_immutable',
+        functionName: 'chatbi_reject_published_page_mutation',
+        functionSourceSignature: expect.stringContaining('iftg_op='),
+      }),
+    ]))
+    expect(definitionQueries.every((call) => call.text.includes('full join actual'))).toBe(true)
   })
 
   it('refuses an applied migration whose name or checksum has changed', async () => {
@@ -229,7 +470,7 @@ describe('PostgreSQL control-plane migration runner', () => {
   it('refuses a database schema created by a newer migrator binary', async () => {
     const migrations = loadPostgresControlPlaneMigrations()
     const client = new MigrationClient(migrations)
-    client.applied.set(6, { version: 6, name: '006-future', checksum: 'a'.repeat(64) })
+    client.applied.set(7, { version: 7, name: '007-future', checksum: 'a'.repeat(64) })
 
     await expect(runPostgresControlPlaneMigrations(new MigrationPool(client), migrations)).rejects.toMatchObject({
       code: 'MIGRATION_FUTURE_VERSION',
@@ -301,19 +542,19 @@ describe('PostgreSQL control-plane migration runner', () => {
 
   it('accepts future contiguous definitions without hard-coding four migrations', async () => {
     const migrations = loadPostgresControlPlaneMigrations()
-    const sql = 'select 6 as future_migration'
-    const migration6 = {
-      version: 6,
-      name: '006-future',
+    const sql = 'select 7 as future_migration'
+    const migration7 = {
+      version: 7,
+      name: '007-future',
       sql,
       checksum: createHash('sha256').update(sql, 'utf8').digest('hex'),
     }
-    const expanded = [...migrations, migration6]
+    const expanded = [...migrations, migration7]
     const client = new MigrationClient(expanded)
 
     await expect(runPostgresControlPlaneMigrations(new MigrationPool(client), expanded)).resolves.toMatchObject({
-      appliedVersions: [1, 2, 3, 4, 5, 6],
-      latestVersion: 6,
+      appliedVersions: [1, 2, 3, 4, 5, 6, 7],
+      latestVersion: 7,
     })
   })
 })
@@ -356,7 +597,7 @@ describe('control-plane migration CLI credential boundary', () => {
     })
 
     expect(exitCode).toBe(0)
-    expect(JSON.parse(output.join(''))).toMatchObject({ ok: true, latestVersion: 5 })
+    expect(JSON.parse(output.join(''))).toMatchObject({ ok: true, latestVersion: 6 })
     expect(errors).toEqual([])
     expect(`${output.join('')} ${errors.join('')}`).not.toContain(dsn)
     expect(pool.ended).toBe(true)

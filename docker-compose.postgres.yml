@@ -19,6 +19,7 @@ services:
       - ./scripts/postgres/result-event-store.sql:/docker-entrypoint-initdb.d/003-result-event-store.sql:ro
       - ./scripts/postgres/query-control-plane.sql:/docker-entrypoint-initdb.d/004-query-control-plane.sql:ro
       - ./scripts/postgres/005-query-reconciler.sql:/docker-entrypoint-initdb.d/005-query-reconciler.sql:ro
+      - ./scripts/postgres/006-query-outbox.sql:/docker-entrypoint-initdb.d/006-query-outbox.sql:ro
       # Integration-only warehouse fixtures and reader role; never part of the production migration chain.
       - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/900-integration-fixtures.sql:ro
     tmpfs:

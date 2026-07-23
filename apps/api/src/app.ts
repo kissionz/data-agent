@@ -58,6 +58,17 @@ export interface ApiReadiness {
     controlPlane: 'not_configured' | 'checking' | 'ok' | 'failed'
     worker: 'not_configured' | 'stopped' | 'running' | 'draining' | 'failed'
     reconciler: 'not_configured' | 'stopped' | 'initializing' | 'running' | 'draining' | 'failed'
+    outbox: 'not_configured' | 'stopped' | 'initializing' | 'running' | 'draining' | 'failed'
+  }
+  outboxDelivery?: {
+    degraded: boolean
+    consecutiveFailures: number
+    deadLetteredSinceStart: number
+    lastPublishedAt?: string
+    lastFailure?: {
+      status: 'retry_scheduled' | 'dead_lettered' | 'lost_lease'
+      at: string
+    }
   }
 }
 
@@ -96,6 +107,7 @@ export function createApiRuntime(
   const router = createChatBiBffRouter(service)
 
   function readiness(): ApiReadiness {
+    const outboxDelivery = query.outboxDeliveryStatus()
     return {
       ok: query.isReady(),
       service: config.serviceName,
@@ -108,7 +120,9 @@ export function createApiRuntime(
         controlPlane: query.controlPlaneStatus(),
         worker: query.workerStatus(),
         reconciler: query.reconcilerStatus(),
+        outbox: query.outboxStatus(),
       },
+      ...(outboxDelivery ? { outboxDelivery } : {}),
     }
   }
 
@@ -339,6 +353,8 @@ interface QueryRuntimeBoundary {
   controlPlaneStatus(): ApiReadiness['checks']['controlPlane']
   workerStatus(): ApiReadiness['checks']['worker']
   reconcilerStatus(): ApiReadiness['checks']['reconciler']
+  outboxStatus(): ApiReadiness['checks']['outbox']
+  outboxDeliveryStatus(): ApiReadiness['outboxDelivery']
   isReady(): boolean
   checkReadiness(): Promise<void>
   start(): void
@@ -358,6 +374,8 @@ function createQueryRuntime(
       controlPlaneStatus: () => dependencies.queryControlPlane ? 'ok' : 'not_configured',
       workerStatus: () => 'not_configured',
       reconcilerStatus: () => 'not_configured',
+      outboxStatus: () => 'not_configured',
+      outboxDeliveryStatus: () => undefined,
       isReady: () => true,
       checkReadiness: async () => undefined,
       start: () => undefined,
@@ -383,6 +401,27 @@ function createQueryRuntime(
         if (reconciler.draining) return 'draining'
         if (reconciler.running && !reconciler.initialized) return 'initializing'
         return reconciler.running ? 'running' : 'stopped'
+      },
+      outboxStatus: () => {
+        const outbox = managedPostgres.readiness().outbox
+        if (outbox.mode === 'disabled') return 'not_configured'
+        if (outbox.lastError || outbox.deliveryDegraded) return 'failed'
+        if (outbox.draining) return 'draining'
+        if (outbox.running && !outbox.initialized) return 'initializing'
+        return outbox.running ? 'running' : 'stopped'
+      },
+      outboxDeliveryStatus: () => {
+        const outbox = managedPostgres.readiness().outbox
+        if (outbox.mode === 'disabled') return undefined
+        return {
+          degraded: outbox.deliveryDegraded,
+          consecutiveFailures: outbox.consecutiveDeliveryFailures,
+          deadLetteredSinceStart: outbox.deadLetteredSinceStart,
+          ...(outbox.lastPublishedAt ? { lastPublishedAt: outbox.lastPublishedAt } : {}),
+          ...(outbox.lastDeliveryFailure
+            ? { lastFailure: { ...outbox.lastDeliveryFailure } }
+            : {}),
+        }
       },
       isReady: () => managedPostgres.readiness().ok,
       async checkReadiness() {
@@ -422,6 +461,8 @@ function createQueryRuntime(
     controlPlaneStatus: () => dependencies.queryControlPlane ? 'ok' : 'not_configured',
     workerStatus: () => 'not_configured',
     reconcilerStatus: () => 'not_configured',
+    outboxStatus: () => 'not_configured',
+    outboxDeliveryStatus: () => undefined,
     isReady: () => currentStatus === 'ok',
     checkReadiness,
     start: () => undefined,

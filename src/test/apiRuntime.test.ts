@@ -155,6 +155,7 @@ describe('apps/api runtime boundary', () => {
           persistence: 'ok',
           router: 'ok',
           auth: 'required_header_actor',
+          outbox: 'not_configured',
         },
       },
     })

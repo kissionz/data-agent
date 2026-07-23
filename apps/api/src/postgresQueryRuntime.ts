@@ -1,6 +1,7 @@
 import type { ApiRuntimeConfig } from './config'
 import { createPostgresPool, createPostgresQueryAdapter } from './adapters/postgresQueryAdapter'
 import { createPostgresQueryControlPlane } from './adapters/postgresQueryControlPlane'
+import { createPostgresOutboxStore } from './adapters/postgresOutboxStore'
 import { createPostgresResultPageStore, createPostgresRunEventStore } from './adapters/postgresResultEventStore'
 import { createPostgresRunJobQueue } from './adapters/postgresRunJobQueue'
 import { createPostgresQueryReconciler } from './adapters/postgresQueryReconciler'
@@ -11,6 +12,12 @@ import {
   type QueryWorkerStopResult,
 } from './queryWorkerHost'
 import { createQueryReconcilerHost, type QueryReconcilerReadiness } from './queryReconcilerHost'
+import { createDurableOutboxPublisher } from '../../../src/application/outboxPublisher'
+import {
+  createOutboxPublisherHost,
+  type OutboxPublisherReadiness,
+} from './outboxPublisherHost'
+import { createOutboxHttpTransport } from './outboxHttpTransport'
 import {
   createTransactionalQueryExecutionCoordinator,
   type TransactionalQueryExecutionControlPlane,
@@ -38,6 +45,9 @@ export interface PostgresQueryRuntimeReadiness {
     lastError?: QueryWorkerErrorSummary
   }
   reconciler: QueryReconcilerReadiness
+  outbox: OutboxPublisherReadiness & {
+    mode: ApiRuntimeConfig['outbox']['mode']
+  }
   shutdown: {
     closing: boolean
     resourcesClosed: boolean
@@ -52,6 +62,7 @@ export interface PostgresQueryRuntime {
   start(): void
   runOnce(): Promise<{ status: string }>
   reconcileOnce(): Promise<{ scanned: number; repaired: number; alerted: number }>
+  publishOutboxOnce(): Promise<{ status: string }>
   checkReadiness(): Promise<PostgresQueryRuntimeReadiness>
   readiness(): PostgresQueryRuntimeReadiness
   close(): Promise<QueryWorkerStopResult>
@@ -72,9 +83,23 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
     options.resolveCredential(controlPlaneReference),
     'control-plane',
   )
+  const outboxEndpoint = options.config.outbox.mode === 'http'
+    ? requiredConfiguredValue(options.config.outbox.endpointUrl, 'outbox endpoint')
+    : undefined
+  const outboxHmacSecret = options.config.outbox.mode === 'http'
+    ? requiredSecret(options.resolveCredential(
+        requiredReference(options.config.outbox.hmacSecretRef, 'outbox HMAC secret'),
+      ))
+    : undefined
   if ((options.config.environment === 'staging' || options.config.environment === 'production')
     && queryConnectionString === controlPlaneConnectionString) {
     throw new Error('Production warehouse and control-plane credentials must resolve to different database roles')
+  }
+  if (
+    outboxHmacSecret
+    && (outboxHmacSecret === queryConnectionString || outboxHmacSecret === controlPlaneConnectionString)
+  ) {
+    throw new Error('Outbox HMAC secret must not reuse a database credential')
   }
 
   const querySsl = options.config.query.sslMode === 'disable'
@@ -112,13 +137,26 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
     dataSourceId: 'warehouse_sales',
     maxStatementTimeoutMs: options.config.query.statementTimeoutMs,
   })
+  const outboxStore = createPostgresOutboxStore({
+    pool: controlPlanePool,
+  })
   const controlPlane = createPostgresQueryControlPlane<
     QueryRunJobPayload,
     QueryRunJobPublication,
     TransactionalQueryRunEvent,
     TransactionalResultPage,
     TransactionalResultManifestMetadata
-  >({ pool: controlPlanePool })
+  >({
+    pool: controlPlanePool,
+    transactionalOutbox: {
+      async enqueueWithClient(client, input) {
+        return await outboxStore.enqueueWithClient(client, {
+          ...input,
+          maxAttempts: input.maxAttempts ?? options.config.outbox.maxAttempts,
+        })
+      },
+    },
+  })
   const queue = createPostgresRunJobQueue<QueryRunJobPayload, QueryRunJobPublication>({
     pool: controlPlanePool,
     cancellationPollMs: options.config.controlPlane.cancellationPollMs,
@@ -135,8 +173,31 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
     pool: controlPlanePool,
     maxBatchSize: options.config.controlPlane.reconcileBatchSize,
   })
+  const outboxPublisher = options.config.outbox.mode === 'http'
+    ? createDurableOutboxPublisher({
+        outbox: outboxStore,
+        transport: createOutboxHttpTransport({
+          endpoint: outboxEndpoint!,
+          hmacSecret: outboxHmacSecret!,
+          timeoutMs: options.config.outbox.httpTimeoutMs,
+        }),
+        publisherId: `outbox-publisher:${globalThis.crypto.randomUUID()}`,
+        leaseMs: options.config.outbox.leaseMs,
+        retryPolicy: {
+          initialDelayMs: options.config.outbox.retryInitialMs,
+          maxDelayMs: options.config.outbox.retryMaxMs,
+        },
+      })
+    : undefined
+  const outboxHost = outboxPublisher
+    ? createOutboxPublisherHost({
+        publisher: outboxPublisher,
+        pollIntervalMs: options.config.outbox.pollMs,
+      })
+    : undefined
 
   const closedResource = {
+    outbox: false,
     queue: false,
     adapter: false,
     controlPlane: false,
@@ -177,6 +238,7 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
     closeResourcesOperation = (async () => {
       const failures: unknown[] = []
       for (const resource of [
+        { key: 'outbox' as const, close: () => outboxStore.close() },
         { key: 'queue' as const, close: () => queue.close() },
         { key: 'adapter' as const, close: () => adapter.close() },
         { key: 'controlPlane' as const, close: () => controlPlanePool.end() },
@@ -208,6 +270,18 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
   function readiness(): PostgresQueryRuntimeReadiness {
     const workerState = worker.readiness()
     const reconcilerState = reconcilerHost.readiness()
+    const outboxState: PostgresQueryRuntimeReadiness['outbox'] = outboxHost
+      ? { mode: 'http', ...outboxHost.readiness() }
+      : {
+          mode: 'disabled',
+          running: false,
+          draining: false,
+          active: false,
+          initialized: false,
+          deliveryDegraded: false,
+          consecutiveDeliveryFailures: 0,
+          deadLetteredSinceStart: 0,
+        }
     const publicWorkerState = {
       running: workerState.running,
       draining: workerState.draining,
@@ -226,11 +300,18 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
         && reconcilerState.running
         && reconcilerState.initialized
         && !reconcilerState.draining
-        && !reconcilerState.lastError,
+        && !reconcilerState.lastError
+        && (outboxState.mode === 'disabled'
+          || (outboxState.running
+            && outboxState.initialized
+            && !outboxState.draining
+            && !outboxState.deliveryDegraded
+            && !outboxState.lastError)),
       query: queryStatus,
       controlPlane: controlPlaneStatus,
       worker: publicWorkerState,
       reconciler: reconcilerState,
+      outbox: outboxState,
       shutdown: {
         closing,
         resourcesClosed,
@@ -247,6 +328,7 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
       if (closing || resourcesClosed) throw new Error('PostgreSQL query runtime is closing or closed')
       worker.start()
       reconcilerHost.start()
+      outboxHost?.start()
     },
     async runOnce() {
       if (closing || resourcesClosed) throw new Error('PostgreSQL query runtime is closing or closed')
@@ -256,6 +338,10 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
       if (closing || resourcesClosed) throw new Error('PostgreSQL query runtime is closing or closed')
       const report = await reconcilerHost.runOnce()
       return { scanned: report.scanned, repaired: report.repaired, alerted: report.alerted }
+    },
+    async publishOutboxOnce() {
+      if (closing || resourcesClosed) throw new Error('PostgreSQL query runtime is closing or closed')
+      return outboxHost ? await outboxHost.runOnce() : { status: 'idle' }
     },
     async checkReadiness() {
       if (closing || resourcesClosed) return readiness()
@@ -273,12 +359,14 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
       if (closeOperation) return await closeOperation
       closing = true
       const operation = (async () => {
-        const [workerStop, reconcilerStop] = await Promise.all([
+        const [workerStop, reconcilerStop, outboxStop] = await Promise.all([
           worker.stop({ drainMs: options.config.controlPlane.workerDrainMs }),
           reconcilerHost.stop({ drainMs: options.config.controlPlane.workerDrainMs }),
+          outboxHost?.stop({ drainMs: options.config.controlPlane.workerDrainMs })
+            ?? Promise.resolve({ drained: true, timedOut: false }),
         ])
-        const cyclesDrained = workerStop.drained && reconcilerStop.drained
-        const cyclesTimedOut = workerStop.timedOut || reconcilerStop.timedOut
+        const cyclesDrained = workerStop.drained && reconcilerStop.drained && outboxStop.drained
+        const cyclesTimedOut = workerStop.timedOut || reconcilerStop.timedOut || outboxStop.timedOut
         if (!cyclesDrained) {
           scheduleDeferredClose()
           return { drained: false, timedOut: true }
@@ -322,6 +410,7 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
       const inactive = await waitUntilInactive(
         worker,
         reconcilerHost,
+        outboxHost,
         Math.max(1_000, options.config.controlPlane.workerDrainMs),
       )
       if (!inactive) {
@@ -351,10 +440,11 @@ export function createPostgresQueryRuntime(options: PostgresQueryRuntimeOptions)
 async function waitUntilInactive(
   worker: { readiness(): { active: boolean } },
   reconciler: { readiness(): { active: boolean } },
+  outbox: { readiness(): { active: boolean } } | undefined,
   timeoutMs: number,
 ): Promise<boolean> {
   const deadline = monotonicNow() + timeoutMs
-  while (worker.readiness().active || reconciler.readiness().active) {
+  while (worker.readiness().active || reconciler.readiness().active || outbox?.readiness().active) {
     const remainingMs = deadline - monotonicNow()
     if (remainingMs <= 0) return false
     await unrefDelay(Math.min(25, remainingMs))
@@ -402,4 +492,16 @@ function requiredReference(value: string | undefined, label: string) {
 function requiredConnectionString(value: string, label: string) {
   if (!value?.trim()) throw new Error(`PostgreSQL ${label} credential could not be resolved`)
   return value.trim()
+}
+
+function requiredSecret(value: string) {
+  if (!value?.trim() || Buffer.byteLength(value, 'utf8') < 32) {
+    throw new Error('PostgreSQL outbox HMAC secret must resolve to at least 32 bytes')
+  }
+  return value
+}
+
+function requiredConfiguredValue(value: string | undefined, label: string) {
+  if (!value?.trim()) throw new Error(`PostgreSQL ${label} is missing`)
+  return value
 }

@@ -15,6 +15,7 @@
 - `fixture` / `postgresql` query mode：浏览器演示保持同步 fixture；PostgreSQL 模式使用独立 warehouse/control-plane pool，Run+Job 原子提交后返回 202，由带 lease/fencing 的 worker 原子发布 Run、结果页、审计和 SSE 事件。
 - durable SSE 使用最长 25 秒的有限 long-poll；支持 `Last-Event-ID`，无新事件返回不推进 sequence 的 heartbeat。总 deadline 覆盖持久化读取；PostgreSQL event read 使用 dedicated client、硬 `query_timeout` 和独立取消池的 `pg_cancel_backend` 响应断连，随后释放监听器与连接。
 - control-plane reconciler 周期扫描不可能状态，只自动释放可证明终态的 Conversation 或 fence 已失效 Job；结果/manifest 不一致只持久告警，绝不推测或生成结果。
+- durable outbox 与 Run/Job/结果/事件使用同一 control-plane 事务提交；独立 publisher 通过数据库权威 lease 时钟、attempt、fence 和 token 提供至少一次投递，使用稳定 event ID、HMAC-SHA256、确定性指数退避和死信状态。连续投递失败与死信会让 readiness 退化并暴露 public-safe 计数；readiness、日志错误摘要和 outbox 状态视图不包含 payload、lease token、secret 或异常 message。
 
 ## 运行时配置
 
@@ -29,7 +30,7 @@
 | `CHATBI_QUERY_MODE` | local/test 为 `fixture`，staging/production 为 `postgresql` | 查询执行模式 |
 | `CHATBI_QUERY_CREDENTIAL_REF` | 无 | 服务端凭据引用，例如 `env:CHATBI_QUERY_DATABASE_URL`；公共配置不保存 DSN |
 | `CHATBI_QUERY_DATABASE_URL` | 无 | 仅由 Node 组合根通过 credential ref 解析 |
-| `CHATBI_QUERY_SSL_MODE` | `disable` | `disable`、`require` 或 `verify-full` |
+| `CHATBI_QUERY_SSL_MODE` | staging/production 为 `verify-full`，其他环境 `disable` | `disable`、`require` 或 `verify-full`；未知非空值拒绝启动 |
 | `CHATBI_QUERY_POOL_MAX` | `4` | 连接池大小；至少为 2，保证取消使用独立连接 |
 | `CHATBI_QUERY_CONNECT_TIMEOUT_MS` | `5000` | 建连超时 |
 | `CHATBI_QUERY_IDLE_TIMEOUT_MS` | `30000` | 空闲连接超时 |
@@ -46,13 +47,23 @@
 | `CHATBI_CONTROL_PLANE_WORKER_DRAIN_MS` | `30000` | 停机时等待当前 worker cycle 的时间 |
 | `CHATBI_CONTROL_PLANE_RECONCILE_INTERVAL_MS` | `30000` | durable reconciler 非重叠扫描周期 |
 | `CHATBI_CONTROL_PLANE_RECONCILE_BATCH_SIZE` | `100` | 每批最多检查的异常候选 Run，范围 1–500 |
+| `CHATBI_OUTBOX_MODE` | local/test 为 `disabled`，staging/production PostgreSQL 为 `http` | fixture 模式始终不配置 publisher；staging/production PostgreSQL 禁止关闭 |
+| `CHATBI_OUTBOX_HTTP_URL` | 无 | HTTPS 投递端点；禁止 URL userinfo、query parameter 和 fragment，避免凭据进入公共配置 |
+| `CHATBI_OUTBOX_HMAC_SECRET_REF` | 无 | 必须为 `env:CHATBI_*` 服务端引用，不在公共配置保存 secret |
+| `CHATBI_OUTBOX_HMAC_SECRET` | 无 | 示例 secret 环境变量；仅通过独立引用解析，至少 32 个随机字节且不得复用数据库凭据 |
+| `CHATBI_OUTBOX_POLL_MS` | `250` | single-flight publisher 轮询周期，范围 25–60000ms |
+| `CHATBI_OUTBOX_LEASE_MS` | `30000` | publisher lease，范围 1000–600000ms，必须大于 HTTP timeout |
+| `CHATBI_OUTBOX_HTTP_TIMEOUT_MS` | `10000` | 单次 HTTPS 投递超时，范围 100–120000ms |
+| `CHATBI_OUTBOX_RETRY_INITIAL_MS` | `1000` | 确定性指数退避初始延迟，范围 100–3600000ms |
+| `CHATBI_OUTBOX_RETRY_MAX_MS` | `300000` | 退避上限，不得小于初始延迟，最大 86400000ms |
+| `CHATBI_OUTBOX_MAX_ATTEMPTS` | `5` | 最大投递次数，范围 1–100；耗尽后进入死信 |
 | `CORS_ALLOW_ORIGIN` | `*` | CORS allow-origin |
 
-复制 `.env.example` 后，先运行 `npm run migrate:control-plane`；migration CLI 使用非阻塞 advisory lock、001–005 SHA-256 ledger 和逐文件事务，检测到已应用文件变化、数据库未来版本，或 ledger 中存在 000/缺口/非连续前缀时会拒绝继续，避免向异常数据库补跑旧版本。空 ledger 若已存在任一已知 control-plane relation 也会拒绝接管；运行结束前还会核验 001–005 的必需关系和结果不可变触发器，防止 `CREATE IF NOT EXISTS` 为漂移 schema 错误背书。001 是不含演示数据、登录角色或数据库名称的纯 control-plane baseline；`scripts/postgres/init.sql` 仅供本地 PostgreSQL 集成测试使用，不属于生产迁移链。随后可用 `npm run start:api` 启动 Node API。真实 PostgreSQL adapter 只在 `apps/api` 组合根导入；`src/query` 仅包含 browser-safe 端口和 mapper。
+复制 `.env.example` 后，先运行 `npm run migrate:control-plane`；migration CLI 使用非阻塞 advisory lock、SHA-256 ledger 和逐文件事务，检测到已应用文件变化、数据库未来版本，或 ledger 中存在 000/缺口/非连续前缀时会拒绝继续，避免向异常数据库补跑旧版本。空 ledger 若已存在任一已知 control-plane relation 也会拒绝接管；运行结束前还会核验全部已知 migration 的必需关系和结果不可变触发器，防止 `CREATE IF NOT EXISTS` 为漂移 schema 错误背书。001 是不含演示数据、登录角色或数据库名称的纯 control-plane baseline；006 增加 durable outbox message/attempt 状态。`scripts/postgres/init.sql` 仅供本地 PostgreSQL 集成测试使用，不属于生产迁移链。随后可用 `npm run start:api` 启动 Node API。真实 PostgreSQL adapter 只在 `apps/api` 组合根导入；`src/query` 仅包含 browser-safe 端口和 mapper。
 
 ## 后续生产化
 
 - 用 Fastify/TypeBox 替换当前 Node adapter。
 - 将 header actor 继续收敛到 OIDC/SAML；API Key Bearer 路径已具备本地验签和 service-account actor 注入，后续补轮换、持久化和审计落库。
-- 增加 durable outbox，并在真实 PostgreSQL 环境持续运行并发、接管、reconciler、停机取消和回滚集成门禁。
+- 在真实 PostgreSQL 环境持续运行 outbox 并发、lease 接管、事务回滚、reconciler、停机取消和多实例压测门禁。
 - 将当前一次性 SSE 序列升级为生产长连接事件流和事件保留窗口。

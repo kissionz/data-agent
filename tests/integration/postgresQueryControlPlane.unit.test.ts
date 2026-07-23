@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   createPostgresQueryControlPlane,
+  type PostgresQueryControlPlaneTransactionalOutbox,
+  type QueryControlPlaneOutboxEnqueueInput,
   type PostgresQueryControlPlaneClientLike,
   type PostgresQueryControlPlanePoolLike,
 } from '../../apps/api/src/adapters/postgresQueryControlPlane'
@@ -45,6 +47,26 @@ class ScriptedPool implements PostgresQueryControlPlanePoolLike {
   async query<Row = Record<string, unknown>>(text: string, values?: readonly unknown[]) {
     this.directCalls.push({ text, values })
     return await this.directHandler(text, values) as { rows: Row[]; rowCount: number | null }
+  }
+}
+
+class RecordingTransactionalOutbox implements PostgresQueryControlPlaneTransactionalOutbox {
+  readonly events: QueryControlPlaneOutboxEnqueueInput[] = []
+  readonly clients: PostgresQueryControlPlaneClientLike[] = []
+
+  constructor(
+    private readonly outcome: 'created' | 'idempotent' | 'conflict' | 'throw' = 'created',
+  ) {}
+
+  async enqueueWithClient(
+    client: PostgresQueryControlPlaneClientLike,
+    input: QueryControlPlaneOutboxEnqueueInput,
+  ) {
+    this.clients.push(client)
+    this.events.push(structuredClone(input))
+    if (this.outcome === 'throw') throw new Error('outbox write failed: password=must-not-escape')
+    if (this.outcome === 'conflict') return { ok: false as const, reason: 'idempotency_conflict' as const }
+    return { ok: true as const, created: this.outcome === 'created' }
   }
 }
 
@@ -340,6 +362,12 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
 
   it('publishes conversation, run, audit and job through parameters in one transaction', async () => {
     const input = makeInput()
+    Object.assign(input.job!.payload, {
+      sql: 'select * from private_table',
+      parameters: { password: 'warehouse-password' },
+      credential: 'postgresql://admin:secret@private-db/warehouse',
+      rows: [{ customer_email: 'private@example.com' }],
+    })
     const client = new ScriptedClient(async (text) => {
       if (text.startsWith('insert into chatbi_query_idempotency')) {
         return { rows: [{ request_fingerprint: requestFingerprint, run_id: input.runRecord.run.id }], rowCount: 1 }
@@ -354,7 +382,11 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       if (text.startsWith('insert into chatbi_run_jobs')) return { rows: [{ run_id: input.runRecord.run.id }], rowCount: 1 }
       return empty()
     })
-    const controlPlane = createPostgresQueryControlPlane<Payload>({ pool: new ScriptedPool(client) })
+    const outbox = new RecordingTransactionalOutbox()
+    const controlPlane = createPostgresQueryControlPlane<Payload>({
+      pool: new ScriptedPool(client),
+      transactionalOutbox: outbox,
+    })
 
     const result = await controlPlane.submitAndEnqueue(input)
 
@@ -370,6 +402,33 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
     const job = client.calls.find((call) => call.text.startsWith('insert into chatbi_run_jobs'))!
     expect(job.values?.[4]).toBe(JSON.stringify(input.job?.payload))
     expect(client.calls.some((call) => call.text.includes(input.runRecord.run.question))).toBe(false)
+    expect(outbox.clients).toEqual([client])
+    expect(outbox.events).toEqual([{
+      eventId: `outbox_query_run_${createHash('sha256').update(
+        '{"aggregateId":"run_atomic","aggregateType":"query_run","tenantId":"tenant_demo","topic":"query.run.submitted.v1","workspaceId":"workspace_sales"}',
+      ).digest('hex')}`,
+      tenantId: 'tenant_demo',
+      workspaceId: 'workspace_sales',
+      aggregateType: 'query_run',
+      aggregateId: 'run_atomic',
+      topic: 'query.run.submitted.v1',
+      payload: {
+        schemaVersion: 'query_control_plane.v1',
+        type: 'query.run.submitted',
+        runId: 'run_atomic',
+        conversationId: 'conversation_atomic',
+        state: 'querying',
+        workScheduled: true,
+      },
+      occurredAt: at,
+      availableAt: at,
+    }])
+    const publicEvent = JSON.stringify(outbox.events[0])
+    expect(publicEvent).not.toContain('private_table')
+    expect(publicEvent).not.toContain('warehouse-password')
+    expect(publicEvent).not.toContain('postgresql://')
+    expect(publicEvent).not.toContain('private@example.com')
+    expect(publicEvent).not.toMatch(/"(sql|parameters|params|credential|credentials|rows|result|data)"/i)
   })
 
   it('atomically saves a terminal run without creating a query job or active run', async () => {
@@ -387,12 +446,21 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       if (text.startsWith('insert into chatbi_query_runs')) return { rows: [runRow(input)], rowCount: 1 }
       return empty()
     })
-    const controlPlane = createPostgresQueryControlPlane<Payload>({ pool: new ScriptedPool(client) })
+    const outbox = new RecordingTransactionalOutbox()
+    const controlPlane = createPostgresQueryControlPlane<Payload>({
+      pool: new ScriptedPool(client),
+      transactionalOutbox: outbox,
+    })
 
     const result = await controlPlane.submitAndEnqueue(input)
 
     expect(result).toMatchObject({ ok: true, created: true, conversation: { activeRunId: undefined } })
     expect(client.calls.some((call) => call.text.includes('insert into chatbi_run_jobs'))).toBe(false)
+    expect(outbox.events).toHaveLength(1)
+    expect(outbox.events[0]).toMatchObject({
+      topic: 'query.run.submitted.v1',
+      payload: { state: 'failed', workScheduled: false },
+    })
     expect(client.calls.at(-1)?.text).toBe('COMMIT')
   })
 
@@ -407,7 +475,11 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       if (text.startsWith('select conversation_id')) return { rows: [conversationRow(input)], rowCount: 1 }
       return empty()
     })
-    const controlPlane = createPostgresQueryControlPlane<Payload>({ pool: new ScriptedPool(client) })
+    const outbox = new RecordingTransactionalOutbox()
+    const controlPlane = createPostgresQueryControlPlane<Payload>({
+      pool: new ScriptedPool(client),
+      transactionalOutbox: outbox,
+    })
 
     await expect(controlPlane.submitAndEnqueue(input)).resolves.toMatchObject({
       ok: true,
@@ -415,6 +487,7 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       runRecord: { run: { id: input.runRecord.run.id } },
     })
     expect(client.calls.some((call) => call.text.startsWith('insert into chatbi_query_runs'))).toBe(false)
+    expect(outbox.events).toHaveLength(0)
     expect(client.calls.at(-1)?.text).toBe('COMMIT')
   })
 
@@ -437,6 +510,46 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
     expect(client.calls.at(-1)?.text).toBe('ROLLBACK')
     expect(client.released).toBe(true)
   })
+
+  it.each(['conflict', 'throw'] as const)(
+    'rolls back every business write when the transactional outbox returns %s',
+    async (outcome) => {
+      const input = makeInput()
+      const client = new ScriptedClient(async (text) => {
+        if (text.startsWith('insert into chatbi_query_idempotency')) {
+          return { rows: [{ request_fingerprint: requestFingerprint, run_id: input.runRecord.run.id }], rowCount: 1 }
+        }
+        if (text.startsWith('select conversation_id') && text.includes('for update')) {
+          return { rows: [conversationRow(input)], rowCount: 1 }
+        }
+        if (text.startsWith('update chatbi_query_conversations')) {
+          return { rows: [conversationRow(input)], rowCount: 1 }
+        }
+        if (text.startsWith('insert into chatbi_query_runs')) return { rows: [runRow(input)], rowCount: 1 }
+        if (text.startsWith('insert into chatbi_run_jobs')) {
+          return { rows: [{ run_id: input.runRecord.run.id }], rowCount: 1 }
+        }
+        return empty()
+      })
+      const outbox = new RecordingTransactionalOutbox(outcome)
+      const controlPlane = createPostgresQueryControlPlane<Payload>({
+        pool: new ScriptedPool(client),
+        transactionalOutbox: outbox,
+      })
+
+      const error = await controlPlane.submitAndEnqueue(input).catch((caught: unknown) => caught as Error)
+
+      expect(error.message).toBe(outcome === 'conflict'
+        ? 'query control-plane outbox idempotency conflict'
+        : 'query control-plane outbox enqueue failed')
+      expect(error.message).not.toContain('must-not-escape')
+      expect(client.calls.some((call) => call.text.startsWith('insert into chatbi_run_jobs'))).toBe(true)
+      expect(outbox.clients).toEqual([client])
+      expect(client.calls.at(-1)?.text).toBe('ROLLBACK')
+      expect(client.calls.some((call) => call.text === 'COMMIT')).toBe(false)
+      expect(client.released).toBe(true)
+    },
+  )
 
   it('rejects rebinding an existing conversation to another business domain', async () => {
     const input = makeInput()
@@ -474,8 +587,10 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       if (text.startsWith('update chatbi_run_event_streams')) return { rows: [], rowCount: 1 }
       return empty()
     })
+    const outbox = new RecordingTransactionalOutbox()
     const controlPlane = createPostgresQueryControlPlane<Payload, unknown, { type: string }>({
       pool: new ScriptedPool(client),
+      transactionalOutbox: outbox,
     })
 
     const result = await controlPlane.cancelRun({
@@ -498,6 +613,24 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
     expect(client.calls.some((call) => call.text.startsWith('update chatbi_query_runs'))).toBe(true)
     expect(client.calls.some((call) => call.text.startsWith('insert into chatbi_query_audit_events'))).toBe(true)
     expect(client.calls.some((call) => call.text.startsWith('insert into chatbi_run_events'))).toBe(true)
+    expect(outbox.clients).toEqual([client])
+    expect(outbox.events).toHaveLength(1)
+    expect(outbox.events[0]).toMatchObject({
+      tenantId: 'tenant_demo',
+      workspaceId: 'workspace_sales',
+      aggregateType: 'query_run',
+      aggregateId: 'run_atomic',
+      topic: 'query.run.cancelled.v1',
+      payload: {
+        schemaVersion: 'query_control_plane.v1',
+        type: 'query.run.cancelled',
+        runId: 'run_atomic',
+        conversationId: 'conversation_atomic',
+        state: 'cancelled',
+      },
+      occurredAt: at1,
+      availableAt: at1,
+    })
     expect(client.calls[0].text).toBe('BEGIN')
     expect(client.calls.at(-1)?.text).toBe('COMMIT')
   })
@@ -526,7 +659,11 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       }
       return empty()
     })
-    const controlPlane = createPostgresQueryControlPlane<Payload, unknown, { type: string }>({ pool: new ScriptedPool(client) })
+    const outbox = new RecordingTransactionalOutbox()
+    const controlPlane = createPostgresQueryControlPlane<Payload, unknown, { type: string }>({
+      pool: new ScriptedPool(client),
+      transactionalOutbox: outbox,
+    })
 
     const result = await controlPlane.cancelRun({
       tenantId: 'tenant_demo', workspaceId: 'workspace_sales', runId: 'run_atomic',
@@ -541,6 +678,7 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
     expect(result).toMatchObject({ ok: true, applied: false, runRecord: { run: { internalStatus: 'cancelled' } } })
     expect(client.calls.some((call) => call.text.startsWith('update '))).toBe(false)
     expect(client.calls.some((call) => call.text.startsWith('insert into chatbi_run_events'))).toBe(false)
+    expect(outbox.events).toHaveLength(0)
   })
 
   it('publishes immutable result manifest and terminal job/Run/event in one transaction', async () => {
@@ -581,8 +719,10 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       }
       return empty()
     })
+    const outbox = new RecordingTransactionalOutbox()
     const controlPlane = createPostgresQueryControlPlane<Payload, { type: 'executed' }, { type: string }, { rows: unknown[] }, { semanticVersion: string }>({
       pool: new ScriptedPool(client),
+      transactionalOutbox: outbox,
     })
 
     const result = await controlPlane.commitAttempt(commit)
@@ -594,6 +734,24 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
     expect(manifestIndex).toBeGreaterThan(0)
     expect(runIndex).toBeGreaterThan(manifestIndex)
     expect(commitIndex).toBeGreaterThan(runIndex)
+    expect(outbox.clients).toEqual([client])
+    expect(outbox.events).toHaveLength(1)
+    expect(outbox.events[0]).toMatchObject({
+      topic: 'query.attempt.completed.v1',
+      payload: {
+        schemaVersion: 'query_control_plane.v1',
+        type: 'query.attempt.completed',
+        runId: 'run_atomic',
+        conversationId: 'conversation_atomic',
+        state: 'completed',
+        attempt: 1,
+        fence: 1,
+      },
+      occurredAt: at1,
+      availableAt: at1,
+    })
+    expect(JSON.stringify(outbox.events[0])).not.toContain('result_atomic')
+    expect(JSON.stringify(outbox.events[0])).not.toContain('result-v1')
   })
 
   it.each([
@@ -602,6 +760,8 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
   ] as const)('atomically applies %s job mutation with Run, Conversation, audit and event', async (kind, status) => {
     const submitted = makeInput()
     const commit = failureCommitInput(kind)
+    commit.job.input.failure.message = 'password=warehouse-secret at private-db\nError: stack trace'
+    commit.job.input.failure.debugReference = 'select * from private_table -- stack'
     let mutated = false
     const client = new ScriptedClient(async (text) => {
       if (text === 'select * from chatbi_run_jobs where run_id = $1 for update') return { rows: [jobRow()], rowCount: 1 }
@@ -636,7 +796,11 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       }
       return empty()
     })
-    const controlPlane = createPostgresQueryControlPlane<Payload>({ pool: new ScriptedPool(client) })
+    const outbox = new RecordingTransactionalOutbox()
+    const controlPlane = createPostgresQueryControlPlane<Payload>({
+      pool: new ScriptedPool(client),
+      transactionalOutbox: outbox,
+    })
 
     const result = await controlPlane.commitAttempt(commit)
 
@@ -644,6 +808,26 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
     expect(client.calls.some((call) => call.text.startsWith('update chatbi_query_runs'))).toBe(true)
     expect(client.calls.some((call) => call.text.startsWith('insert into chatbi_query_audit_events'))).toBe(true)
     expect(client.calls.some((call) => call.text.startsWith('insert into chatbi_run_events'))).toBe(true)
+    expect(outbox.clients).toEqual([client])
+    expect(outbox.events).toHaveLength(1)
+    expect(outbox.events[0]).toMatchObject({
+      topic: kind === 'fail' ? 'query.attempt.failed.v1' : 'query.attempt.retry_scheduled.v1',
+      payload: {
+        schemaVersion: 'query_control_plane.v1',
+        type: kind === 'fail' ? 'query.attempt.failed' : 'query.attempt.retry_scheduled',
+        runId: 'run_atomic',
+        conversationId: 'conversation_atomic',
+        state: status,
+        attempt: 1,
+        fence: 1,
+        ...(kind === 'retry' ? { nextAttemptAt: '2026-07-15T10:00:05.000Z' } : {}),
+      },
+    })
+    const publicEvent = JSON.stringify(outbox.events[0])
+    expect(publicEvent).not.toContain('warehouse-secret')
+    expect(publicEvent).not.toContain('private_table')
+    expect(publicEvent).not.toContain('stack trace')
+    expect(publicEvent).not.toMatch(/"(message|stack|sql|parameters|credentials|rows|result|data)"/i)
     expect(client.calls.at(-1)?.text).toBe('COMMIT')
   })
 
@@ -659,11 +843,16 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       if (text.startsWith('select attempt, fence')) return empty()
       return empty()
     })
-    const controlPlane = createPostgresQueryControlPlane<Payload, { type: 'executed' }>({ pool: new ScriptedPool(client) })
+    const outbox = new RecordingTransactionalOutbox()
+    const controlPlane = createPostgresQueryControlPlane<Payload, { type: 'executed' }>({
+      pool: new ScriptedPool(client),
+      transactionalOutbox: outbox,
+    })
 
     await expect(controlPlane.commitAttempt(commit)).resolves.toMatchObject({ ok: false, reason: 'stale_lease' })
     expect(client.calls.some((call) => call.text.startsWith('insert into chatbi_result_manifests'))).toBe(false)
     expect(client.calls.some((call) => call.text.startsWith('update chatbi_query_runs'))).toBe(false)
+    expect(outbox.events).toHaveLength(0)
     expect(client.calls.at(-1)?.text).toBe('COMMIT')
   })
 
@@ -681,7 +870,11 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
       if (text.startsWith('select attempt, fence')) return empty()
       return empty()
     })
-    const controlPlane = createPostgresQueryControlPlane<Payload, { type: 'executed' }>({ pool: new ScriptedPool(client) })
+    const outbox = new RecordingTransactionalOutbox()
+    const controlPlane = createPostgresQueryControlPlane<Payload, { type: 'executed' }>({
+      pool: new ScriptedPool(client),
+      transactionalOutbox: outbox,
+    })
 
     await expect(controlPlane.commitAttempt(commit)).resolves.toMatchObject({
       ok: true,
@@ -690,6 +883,7 @@ describe('PostgreSQL atomic query control-plane unit boundary', () => {
     })
     expect(client.calls.some((call) => call.text.startsWith('insert into chatbi_result_manifests'))).toBe(false)
     expect(client.calls.some((call) => call.text.startsWith('update chatbi_query_runs'))).toBe(false)
+    expect(outbox.events).toHaveLength(0)
   })
 
   it('rejects job/status mismatches before opening a transaction', async () => {
